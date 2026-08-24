@@ -28,9 +28,12 @@ dev = [
 [tool.pytest.ini_options]
 addopts = "-ra"
 asyncio_mode = "auto"
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 testpaths = ["tests"]
-markers = ["database: requires the local PostgreSQL development database"]
+markers = [
+    "database: requires the local PostgreSQL development database",
+    "live_model: consumes a configured real model provider",
+]
 
 [tool.ruff]
 line-length = 100

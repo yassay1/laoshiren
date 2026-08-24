@@ -91,6 +91,20 @@ async def test_thread_run_interrupt_resume_completion_and_event_replay() -> None
             assert waiting.status.value == "WAITING_USER"
             assert waiting.interrupt_id is not None
 
+            waiting_events = await app.state.container.runtime.list_events(
+                user_id=UUID(app.state.container.settings.dev_user_id), run_id=run_id
+            )
+            interrupt_event = next(
+                event
+                for event in waiting_events
+                if event.event is RunEventType.INTERRUPT_REQUIRED
+            )
+            waiting_replay = await client.get(
+                f"/api/v1/runs/{run_id}/events?follow=false",
+                headers={"Last-Event-ID": str(interrupt_event.id)},
+            )
+            assert "interrupt.required" not in waiting_replay.text
+
             invalid_resume = await client.post(
                 f"/api/v1/runs/{run_id}/resume",
                 headers={"Idempotency-Key": f"runtime-resume-{uuid4()}"},
@@ -142,6 +156,13 @@ async def test_thread_run_interrupt_resume_completion_and_event_replay() -> None
                 content="已经确认比赛演示任务。",
             )
             assert completed.status.value == "COMPLETED"
+
+            completed_events = await app.state.container.runtime.list_events(
+                user_id=UUID(app.state.container.settings.dev_user_id), run_id=run_id
+            )
+            sequences = [event.sequence for event in completed_events]
+            assert sequences == sorted(sequences)
+            assert len(sequences) == len(set(sequences))
 
             replay_stream = await client.get(
                 f"/api/v1/runs/{run_id}/events?follow=false",

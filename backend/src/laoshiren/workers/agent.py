@@ -12,6 +12,7 @@ from langgraph.types import Command
 
 from laoshiren.agent.contracts import AgentBudgetExceeded, GraphState, ToolStatus
 from laoshiren.agent.graph import ToolOutcomeUnknown
+from laoshiren.agent.model_gateway import ModelGatewayError
 from laoshiren.agent.tools import ToolReplayPolicy
 from laoshiren.application.context import AgentContextBuilder
 from laoshiren.application.memories.context import AgentMemoryApplicationService
@@ -171,6 +172,16 @@ class AgentRunWorker:
         if run.claim_token is None:
             raise RuntimeError("Claimed Run did not return its fencing token.")
         run_claim_token = run.claim_token
+        logger.info(
+            "agent_run_claimed",
+            extra={
+                "run_id": str(run_id),
+                "thread_id": str(run.thread_id),
+                "user_id": str(user_id),
+                "worker_id": self._worker_id,
+                "attempt_count": run.attempt_count,
+            },
+        )
         messages = await self._runtime.list_messages(
             user_id=user_id, thread_id=run.thread_id, limit=500
         )
@@ -306,6 +317,15 @@ class AgentRunWorker:
                 claim_owner=self._worker_id,
                 claim_token=run_claim_token,
             )
+            logger.info(
+                "agent_run_completed",
+                extra={
+                    "run_id": str(run_id),
+                    "thread_id": str(run.thread_id),
+                    "user_id": str(user_id),
+                    "worker_id": self._worker_id,
+                },
+            )
             if self._agent_memory is not None:
                 current = next(item for item in messages if item.id == run.input_message_id)
                 try:
@@ -326,6 +346,8 @@ class AgentRunWorker:
                 error_code = "AGENT_BUDGET_EXCEEDED"
             elif isinstance(exception, ToolOutcomeUnknown):
                 error_code = "TOOL_OUTCOME_UNKNOWN"
+            elif isinstance(exception, ModelGatewayError):
+                error_code = exception.code
             else:
                 error_code = "AGENT_EXECUTION_FAILED"
             await self._runtime.fail_run(
@@ -334,6 +356,16 @@ class AgentRunWorker:
                 error_code=error_code,
                 claim_owner=self._worker_id,
                 claim_token=run_claim_token,
+            )
+            logger.exception(
+                "agent_run_failed",
+                extra={
+                    "run_id": str(run_id),
+                    "thread_id": str(run.thread_id),
+                    "user_id": str(user_id),
+                    "worker_id": self._worker_id,
+                    "error_code": error_code,
+                },
             )
             raise
         finally:
