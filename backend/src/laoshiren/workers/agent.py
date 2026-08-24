@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 from contextlib import suppress
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -17,6 +18,8 @@ from laoshiren.application.memories.context import AgentMemoryApplicationService
 from laoshiren.application.runtime.service import RuntimeApplicationService
 from laoshiren.application.sources.service import SourceApplicationService
 from laoshiren.domain.runtime.entities import RunEventType, RunStatus
+
+logger = logging.getLogger(__name__)
 
 
 class RuntimeToolExecutionLedger:
@@ -296,11 +299,6 @@ class AgentRunWorker:
                 raise RuntimeError("Executive Graph ended without a response.")
             if lease_lost.is_set():
                 raise RuntimeError("Run lease was lost during execution.")
-            if self._agent_memory is not None:
-                current = next(item for item in messages if item.id == run.input_message_id)
-                await self._agent_memory.form_from_user_input(
-                    user_id=user_id, run_id=run_id, text=current.content
-                )
             await self._runtime.complete_run(
                 user_id=user_id,
                 run_id=run_id,
@@ -308,6 +306,20 @@ class AgentRunWorker:
                 claim_owner=self._worker_id,
                 claim_token=run_claim_token,
             )
+            if self._agent_memory is not None:
+                current = next(item for item in messages if item.id == run.input_message_id)
+                try:
+                    await self._agent_memory.form_from_user_input(
+                        user_id=user_id,
+                        run_id=run_id,
+                        source_message_id=current.id,
+                        text=current.content,
+                    )
+                except Exception:
+                    logger.exception(
+                        "memory_formation_failed",
+                        extra={"run_id": str(run_id), "user_id": str(user_id)},
+                    )
             return RunStatus.COMPLETED
         except Exception as exception:
             if isinstance(exception, AgentBudgetExceeded):

@@ -20,6 +20,8 @@ class MemoryDTO:
     valid_until: datetime | None
     profile_key: str | None
     supersedes_id: UUID | None
+    provenance_run_id: UUID | None
+    source_message_ids: tuple[UUID, ...]
     status: MemoryStatus
     version: int
     created_at: datetime

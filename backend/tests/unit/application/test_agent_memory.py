@@ -4,7 +4,10 @@ from uuid import UUID, uuid4
 import pytest
 
 from laoshiren.application.ai.ports import EmbeddingProviderError
-from laoshiren.application.memories.context import AgentMemoryApplicationService
+from laoshiren.application.memories.context import (
+    AgentMemoryApplicationService,
+    extract_memory_candidate,
+)
 from laoshiren.application.memories.dto import MemoryDTO
 from laoshiren.domain.memories.entities import MemoryStatus, MemoryType
 
@@ -27,6 +30,8 @@ def memory_dto(content: str, memory_type: MemoryType, importance: float) -> Memo
         valid_until=None,
         profile_key=None,
         supersedes_id=None,
+        provenance_run_id=None,
+        source_message_ids=(),
         status=MemoryStatus.ACTIVE,
         version=1,
         created_at=now,
@@ -80,17 +85,24 @@ async def test_only_explicit_memory_request_is_formed_and_is_idempotent_per_run(
     service = AgentMemoryApplicationService(memories)  # type: ignore[arg-type]
     user_id = UUID("00000000-0000-0000-0000-000000000001")
     run_id = uuid4()
+    message_id = uuid4()
 
     assert await service.form_from_user_input(
-        user_id=user_id, run_id=run_id, text="今天天气怎么样"
+        user_id=user_id, run_id=run_id, source_message_id=message_id, text="今天天气怎么样"
     ) is None
     formed = await service.form_from_user_input(
-        user_id=user_id, run_id=run_id, text="请记住：新的长期事实"
+        user_id=user_id,
+        run_id=run_id,
+        source_message_id=message_id,
+        text="请记住：新的长期事实",
     )
 
     assert formed is not None
     assert formed.content == "新的长期事实"
-    assert memories.created[0]["idempotency_key"] == f"agent-memory:{run_id}"
+    assert str(memories.created[0]["idempotency_key"]).startswith(
+        f"agent-memory:{run_id}:"
+    )
+    assert memories.created[0]["source_message_ids"] == (message_id,)
 
 
 async def test_embedding_failure_falls_back_without_failing_agent_memory() -> None:
@@ -102,9 +114,51 @@ async def test_embedding_failure_falls_back_without_failing_agent_memory() -> No
 
     context = await service.load_context(user_id=uuid4(), query="PostgreSQL")
     formed = await service.form_from_user_input(
-        user_id=uuid4(), run_id=uuid4(), text="请记住：新的长期事实"
+        user_id=uuid4(),
+        run_id=uuid4(),
+        source_message_id=uuid4(),
+        text="请记住：新的长期事实",
     )
 
     assert context.relevant
     assert formed is not None
     assert memories.created[-1]["embedding"] is None
+
+
+async def test_candidate_extraction_rejects_personal_state_and_keys_profile() -> None:
+    run_id = uuid4()
+    message_id = uuid4()
+
+    profile = extract_memory_candidate(
+        text="以后请用简洁的中文回答",
+        run_id=run_id,
+        source_message_id=message_id,
+    )
+    state_fact = extract_memory_candidate(
+        text="请记住：任务状态已经完成",
+        run_id=run_id,
+        source_message_id=message_id,
+    )
+
+    assert profile is not None
+    assert profile.memory_type is MemoryType.PROFILE
+    assert profile.profile_key == "preference:response_style"
+    assert profile.source_message_ids == (message_id,)
+    assert state_fact is None
+
+
+async def test_near_duplicate_candidate_reuses_existing_memory() -> None:
+    memories = FakeMemories()
+    existing = memory_dto("项目长期使用 PostgreSQL 数据库", MemoryType.SEMANTIC, 0.8)
+    memories.semantic = [existing]
+    service = AgentMemoryApplicationService(memories)  # type: ignore[arg-type]
+
+    formed = await service.form_from_user_input(
+        user_id=uuid4(),
+        run_id=uuid4(),
+        source_message_id=uuid4(),
+        text="请记住：项目长期使用 PostgreSQL 数据库。",
+    )
+
+    assert formed is existing
+    assert memories.created == []

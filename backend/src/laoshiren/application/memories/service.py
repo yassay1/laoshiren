@@ -25,6 +25,8 @@ def to_memory_dto(memory: Memory, *, replayed: bool = False) -> MemoryDTO:
         valid_until=memory.valid_until,
         profile_key=memory.profile_key,
         supersedes_id=memory.supersedes_id,
+        provenance_run_id=memory.provenance_run_id,
+        source_message_ids=memory.source_message_ids,
         status=memory.status,
         version=memory.version,
         created_at=memory.created_at,
@@ -54,6 +56,8 @@ class MemoryApplicationService:
         valid_until: datetime | None = None,
         embedding: list[float] | None = None,
         profile_key: str | None = None,
+        provenance_run_id: UUID | None = None,
+        source_message_ids: tuple[UUID, ...] = (),
     ) -> MemoryDTO:
         normalized_content = content.strip()
         normalized_summary = summary.strip()
@@ -116,6 +120,8 @@ class MemoryApplicationService:
                 embedding=embedding,
                 profile_key=normalized_profile_key,
                 supersedes_id=superseded.id if superseded is not None else None,
+                provenance_run_id=provenance_run_id,
+                source_message_ids=source_message_ids,
             )
             await unit_of_work.memories.add(memory)
             await unit_of_work.commit()

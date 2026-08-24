@@ -251,6 +251,10 @@ class MemoryORM(Base):
     supersedes_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("long_term_memories.id")
     )
+    provenance_run_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    source_message_ids: Mapped[list[UUID]] = mapped_column(
+        ARRAY(PG_UUID(as_uuid=True)), default=list
+    )
     status: Mapped[MemoryStatus] = mapped_column(Enum(MemoryStatus, name="memory_status"))
     version: Mapped[int] = mapped_column(Integer, default=1)
     idempotency_key: Mapped[str] = mapped_column(String(200))
