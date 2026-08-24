@@ -101,6 +101,8 @@ class SourceChunk:
     content: str
     char_start: int
     char_end: int
+    page_number: int | None = None
+    embedding: list[float] | None = None
     id: UUID = field(default_factory=uuid4)
     metadata: dict[str, object] = field(default_factory=dict)
     created_at: datetime = field(default_factory=utc_now)

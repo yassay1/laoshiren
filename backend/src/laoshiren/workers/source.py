@@ -59,13 +59,13 @@ class SourceProcessingWorker:
             heartbeat(), name=f"source-heartbeat-{job.id}"
         )
         try:
-            extracted_text = await self._service.extract_claimed_text(job)
+            parsed_content = await self._service.extract_claimed_content(job)
             if lease_lost.is_set():
                 return True
             await self._service.complete_processing(
                 source_id=job.id,
                 owner=self._worker_id,
-                extracted_text=extracted_text,
+                parsed_content=parsed_content,
             )
         except SourceParsingError:
             await self._service.fail_processing(

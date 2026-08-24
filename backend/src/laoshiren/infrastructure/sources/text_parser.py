@@ -8,18 +8,22 @@ from typing import cast
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
-from laoshiren.application.sources.ports import SourceParsingError
+from laoshiren.application.sources.ports import (
+    ParsedSourceContent,
+    ParsedSourcePage,
+    SourceParsingError,
+)
 
-type PdfWorkerResult = tuple[bool, str]
+type PdfWorkerResult = tuple[bool, str | list[str]]
 
 
-def _extract_pdf_text(
+def _extract_pdf_pages(
     content: bytes,
     *,
     max_pages: int,
     max_page_characters: int,
     max_characters: int,
-) -> str:
+) -> list[str]:
     reader = PdfReader(BytesIO(content))
     if reader.is_encrypted:
         raise SourceParsingError("Encrypted PDF Sources are not supported.")
@@ -33,7 +37,7 @@ def _extract_pdf_text(
         page_text = (page.extract_text() or "")[:max_page_characters]
         parts.append(page_text[:remaining])
         remaining -= len(parts[-1])
-    return "\n\n".join(parts)
+    return parts
 
 
 def _pdf_worker(
@@ -45,13 +49,13 @@ def _pdf_worker(
 ) -> None:
     """Process entry point: return sanitized data and never propagate child exceptions."""
     try:
-        text = _extract_pdf_text(
+        pages = _extract_pdf_pages(
             content,
             max_pages=max_pages,
             max_page_characters=max_page_characters,
             max_characters=max_characters,
         )
-        result: PdfWorkerResult = (True, text)
+        result: PdfWorkerResult = (True, pages)
     except SourceParsingError as exception:
         result = (False, str(exception))
     except (PdfReadError, UnicodeError):
@@ -82,24 +86,45 @@ class TextSourceParser:
         self._max_pdf_pages = max_pdf_pages
         self._max_pdf_page_characters = max_pdf_page_characters
 
-    async def parse(self, *, filename: str, mime_type: str, content: bytes) -> str:
+    async def parse(
+        self, *, filename: str, mime_type: str, content: bytes
+    ) -> ParsedSourceContent:
         del mime_type
         extension = PurePath(filename).suffix.lower()
         try:
             if extension in {".txt", ".md"}:
-                text = content.decode("utf-8-sig")
+                raw_pages = [content.decode("utf-8-sig")]
+                page_numbers: list[int | None] = [None]
             elif extension == ".pdf":
-                text = await self._parse_pdf_isolated(content)
+                raw_pages = await self._parse_pdf_isolated(content)
+                page_numbers = list(range(1, len(raw_pages) + 1))
             else:
                 raise SourceParsingError("No parser is available for this Source type.")
         except (UnicodeError, PdfReadError) as exception:
             raise SourceParsingError("Source text extraction failed.") from exception
-        normalized = "\n".join(line.rstrip() for line in text.splitlines()).strip()
+        normalized_pages: list[ParsedSourcePage] = []
+        remaining = self._max_extracted_characters
+        for page_number, raw in zip(page_numbers, raw_pages, strict=True):
+            separator_cost = 2 if normalized_pages else 0
+            remaining -= separator_cost
+            if remaining <= 0:
+                break
+            page_text = "\n".join(line.rstrip() for line in raw.splitlines()).strip()
+            page_text = page_text[:remaining]
+            if page_text:
+                normalized_pages.append(
+                    ParsedSourcePage(page_number=page_number, text=page_text)
+                )
+                remaining -= len(page_text)
+        pages = tuple(normalized_pages)
+        normalized = "\n\n".join(page.text for page in pages)
         if not normalized:
             raise SourceParsingError("Source contains no extractable text.")
-        return normalized[: self._max_extracted_characters]
+        return ParsedSourceContent(
+            text=normalized, pages=pages
+        )
 
-    async def _parse_pdf_isolated(self, content: bytes) -> str:
+    async def _parse_pdf_isolated(self, content: bytes) -> list[str]:
         context = get_context("spawn")
         receiver, sender = context.Pipe(duplex=False)
         process = context.Process(
@@ -121,7 +146,9 @@ class TextSourceParser:
                 if receiver.poll():
                     succeeded, payload = cast(PdfWorkerResult, receiver.recv())
                     if not succeeded:
-                        raise SourceParsingError(payload)
+                        raise SourceParsingError(str(payload))
+                    if not isinstance(payload, list):
+                        raise SourceParsingError("PDF parser returned invalid page data.")
                     return payload
                 if not process.is_alive():
                     raise SourceParsingError("PDF parser process exited without a result.")

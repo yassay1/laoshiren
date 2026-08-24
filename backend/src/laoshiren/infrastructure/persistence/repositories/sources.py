@@ -24,6 +24,8 @@ def chunk_to_domain(model: SourceChunkORM) -> SourceChunk:
         content=model.content,
         char_start=model.char_start,
         char_end=model.char_end,
+        page_number=model.page_number,
+        embedding=list(model.embedding) if model.embedding is not None else None,
         metadata=model.metadata_,
         created_at=model.created_at,
     )
@@ -246,6 +248,8 @@ class SqlAlchemySourceRepository:
                         content=chunk.content,
                         char_start=chunk.char_start,
                         char_end=chunk.char_end,
+                        page_number=chunk.page_number,
+                        embedding=chunk.embedding,
                         metadata_=chunk.metadata,
                         created_at=chunk.created_at,
                     )
@@ -286,18 +290,36 @@ class SqlAlchemySourceRepository:
         return result.rowcount == 1
 
     async def list_chunks(
-        self, *, user_id: UUID, source_id: UUID, limit: int
+        self,
+        *,
+        user_id: UUID,
+        source_id: UUID,
+        limit: int,
+        query_embedding: list[float] | None = None,
+        query_text: str | None = None,
     ) -> list[SourceChunk]:
+        statement = (
+            select(SourceChunkORM)
+            .join(SourceORM, SourceORM.id == SourceChunkORM.source_id)
+            .where(
+                SourceChunkORM.source_id == source_id,
+                SourceORM.user_id == user_id,
+            )
+        )
+        if query_embedding is not None:
+            statement = statement.where(SourceChunkORM.embedding.is_not(None)).order_by(
+                SourceChunkORM.embedding.cosine_distance(query_embedding),
+                SourceChunkORM.ordinal,
+            )
+        elif query_text is not None:
+            statement = statement.where(
+                SourceChunkORM.content.ilike(f"%{query_text}%")
+            ).order_by(SourceChunkORM.ordinal)
+        else:
+            statement = statement.order_by(SourceChunkORM.ordinal)
         models = (
             await self._session.scalars(
-                select(SourceChunkORM)
-                .join(SourceORM, SourceORM.id == SourceChunkORM.source_id)
-                .where(
-                    SourceChunkORM.source_id == source_id,
-                    SourceORM.user_id == user_id,
-                )
-                .order_by(SourceChunkORM.ordinal)
-                .limit(limit)
+                statement.limit(limit)
             )
         ).all()
         return [chunk_to_domain(model) for model in models]

@@ -43,3 +43,4 @@ class SourceContextChunkDTO:
     content: str
     char_start: int
     char_end: int
+    page_number: int | None

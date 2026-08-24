@@ -1,18 +1,10 @@
 from dataclasses import dataclass
-from typing import Protocol
 from uuid import UUID
 
+from laoshiren.application.ai.ports import EmbeddingProvider, EmbeddingProviderError
 from laoshiren.application.memories.dto import MemoryDTO
 from laoshiren.application.memories.service import MemoryApplicationService
 from laoshiren.domain.memories.entities import MemoryType
-
-
-class EmbeddingProvider(Protocol):
-    async def embed(self, text: str) -> list[float]: ...
-
-
-class EmbeddingProviderError(RuntimeError):
-    """Embedding infrastructure failed; callers may use lexical retrieval."""
 
 
 @dataclass(frozen=True, slots=True)

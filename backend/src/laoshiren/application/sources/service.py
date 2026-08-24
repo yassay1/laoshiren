@@ -1,9 +1,12 @@
 import asyncio
 from collections.abc import AsyncIterator, Callable
+from contextlib import suppress
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import PurePath
 from uuid import UUID, uuid4
 
+from laoshiren.application.ai.ports import EmbeddingProvider, EmbeddingProviderError
 from laoshiren.application.personal_state.ports import PersonalStateUnitOfWork
 from laoshiren.application.sources.dto import (
     SourceContextChunkDTO,
@@ -12,6 +15,8 @@ from laoshiren.application.sources.dto import (
 )
 from laoshiren.application.sources.ports import (
     ObjectStorage,
+    ParsedSourceContent,
+    ParsedSourcePage,
     SourceParser,
     SourceParsingError,
 )
@@ -84,6 +89,47 @@ def build_source_chunks(
     return chunks
 
 
+def build_source_chunks_from_content(
+    *,
+    source_id: UUID,
+    content: ParsedSourceContent,
+    chunk_characters: int = 2_000,
+    overlap: int = 200,
+) -> list[SourceChunk]:
+    if not content.pages:
+        return build_source_chunks(
+            source_id=source_id,
+            text=content.text,
+            chunk_characters=chunk_characters,
+            overlap=overlap,
+        )
+    chunks: list[SourceChunk] = []
+    base_offset = 0
+    for page in content.pages:
+        page_chunks = build_source_chunks(
+            source_id=source_id,
+            text=page.text,
+            chunk_characters=chunk_characters,
+            overlap=overlap,
+        )
+        for chunk in page_chunks:
+            chunks.append(
+                replace(
+                    chunk,
+                    ordinal=len(chunks),
+                    char_start=base_offset + chunk.char_start,
+                    char_end=base_offset + chunk.char_end,
+                    page_number=page.page_number,
+                    metadata={
+                        **chunk.metadata,
+                        "page_number": page.page_number,
+                    },
+                )
+            )
+        base_offset += len(page.text) + 2
+    return chunks
+
+
 def to_source_dto(source: Source, *, replayed: bool = False) -> SourceDTO:
     return SourceDTO(
         id=source.id,
@@ -113,12 +159,14 @@ class SourceApplicationService:
         *,
         max_upload_bytes: int,
         parser: SourceParser | None = None,
+        embedding_provider: EmbeddingProvider | None = None,
         parse_timeout_seconds: float = 30.0,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._storage = storage
         self._max_upload_bytes = max_upload_bytes
         self._parser = parser
+        self._embedding_provider = embedding_provider
         if parse_timeout_seconds <= 0:
             raise ValueError("Source parse timeout must be positive.")
         self._parse_timeout_seconds = parse_timeout_seconds
@@ -226,7 +274,9 @@ class SourceApplicationService:
                 attempt_count=source.processing_attempt_count,
             )
 
-    async def extract_claimed_text(self, job: SourceProcessingJobDTO) -> str:
+    async def extract_claimed_content(
+        self, job: SourceProcessingJobDTO
+    ) -> ParsedSourceContent:
         if self._parser is None:
             raise RuntimeError("No Source parser is configured.")
         content = await self._storage.read(object_key=job.object_key)
@@ -268,17 +318,40 @@ class SourceApplicationService:
         *,
         source_id: UUID,
         owner: str,
-        extracted_text: str,
+        parsed_content: ParsedSourceContent,
     ) -> bool:
-        clean_text = extracted_text.strip()
+        clean_text = parsed_content.text.strip()
         if not clean_text:
             raise ValueError("Extracted Source text cannot be empty.")
+        normalized = ParsedSourceContent(
+            text=clean_text,
+            pages=tuple(
+                ParsedSourcePage(page_number=page.page_number, text=page.text.strip())
+                for page in parsed_content.pages
+                if page.text.strip()
+            ),
+        )
+        chunks = build_source_chunks_from_content(
+            source_id=source_id, content=normalized
+        )
+        if self._embedding_provider is not None and chunks:
+            try:
+                embeddings = await self._embedding_provider.embed_many(
+                    [chunk.content for chunk in chunks]
+                )
+            except EmbeddingProviderError:
+                embeddings = []
+            if len(embeddings) == len(chunks):
+                chunks = [
+                    replace(chunk, embedding=embedding)
+                    for chunk, embedding in zip(chunks, embeddings, strict=True)
+                ]
         async with self._unit_of_work_factory() as unit_of_work:
             completed = await unit_of_work.sources.complete_processing(
                 source_id=source_id,
                 owner=owner,
                 extracted_text=clean_text,
-                chunks=build_source_chunks(source_id=source_id, text=clean_text),
+                chunks=chunks,
                 now=datetime.now(UTC),
             )
             if completed:
@@ -294,6 +367,7 @@ class SourceApplicationService:
         source_id: UUID,
         max_chunks: int = 8,
         max_characters: int = 12_000,
+        query: str | None = None,
     ) -> list[SourceContextChunkDTO]:
         if max_chunks <= 0 or max_characters <= 0:
             raise ValueError("Source context limits must be positive.")
@@ -303,9 +377,22 @@ class SourceApplicationService:
             )
             if source is None:
                 raise EntityNotFound("Source was not found.")
+            query_text = query.strip() if query and query.strip() else None
+            query_embedding: list[float] | None = None
+            if query_text is not None and self._embedding_provider is not None:
+                with suppress(EmbeddingProviderError):
+                    query_embedding = await self._embedding_provider.embed(query_text)
             chunks = await unit_of_work.sources.list_chunks(
-                user_id=user_id, source_id=source_id, limit=max_chunks
+                user_id=user_id,
+                source_id=source_id,
+                limit=max_chunks,
+                query_embedding=query_embedding,
+                query_text=query_text if query_embedding is None else None,
             )
+            if not chunks and query_text is not None:
+                chunks = await unit_of_work.sources.list_chunks(
+                    user_id=user_id, source_id=source_id, limit=max_chunks
+                )
         result: list[SourceContextChunkDTO] = []
         remaining = max_characters
         for chunk in chunks:
@@ -320,6 +407,7 @@ class SourceApplicationService:
                     content=content,
                     char_start=chunk.char_start,
                     char_end=min(chunk.char_start + len(content), chunk.char_end),
+                    page_number=chunk.page_number,
                 )
             )
             remaining -= len(content)

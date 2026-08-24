@@ -5,14 +5,12 @@ from uuid import uuid4
 from laoshiren.agent.graph import build_executive_graph
 from laoshiren.agent.model_gateway import ExecutiveModelGateway
 from laoshiren.agent.tools import ToolRegistry, register_personal_state_tools
+from laoshiren.application.ai.ports import EmbeddingProvider
 from laoshiren.application.automations.service import (
     AttentionApplicationService,
     AutomationApplicationService,
 )
-from laoshiren.application.memories.context import (
-    AgentMemoryApplicationService,
-    EmbeddingProvider,
-)
+from laoshiren.application.memories.context import AgentMemoryApplicationService
 from laoshiren.application.memories.service import MemoryApplicationService
 from laoshiren.application.personal_state.service import PersonalStateApplicationService
 from laoshiren.application.runtime.service import RuntimeApplicationService
@@ -68,31 +66,6 @@ def bootstrap() -> Container:
     database = Database(settings.database_url)
     personal_state = PersonalStateApplicationService(database.personal_state_unit_of_work)
     storage = LocalObjectStorage(Path(settings.object_storage_path))
-    sources = SourceApplicationService(
-        database.personal_state_unit_of_work,
-        storage,
-        max_upload_bytes=settings.max_upload_bytes,
-        parser=TextSourceParser(
-            max_extracted_characters=settings.source_max_extracted_characters,
-            max_pdf_pages=settings.source_max_pdf_pages,
-            max_pdf_page_characters=settings.source_max_pdf_page_characters,
-        ),
-        parse_timeout_seconds=settings.source_parse_timeout_seconds,
-    )
-    source_worker = SourceProcessingWorker(
-        sources,
-        lease_seconds=settings.source_lease_seconds,
-        heartbeat_seconds=settings.source_heartbeat_seconds,
-        max_attempts=settings.source_max_attempts,
-        retry_base_seconds=settings.source_retry_base_seconds,
-        retry_max_seconds=settings.source_retry_max_seconds,
-    )
-    source_scheduler = SourceProcessingScheduler(
-        source_worker,
-        interval_seconds=settings.source_poll_seconds,
-        batch_size=settings.source_batch_size,
-    )
-    memories = MemoryApplicationService(database.memory_unit_of_work)
     embedding_provider: EmbeddingProvider | None = None
     if (
         settings.embedding_model_name
@@ -108,6 +81,32 @@ def bootstrap() -> Container:
             dimensions=settings.embedding_dimensions,
             timeout_seconds=settings.embedding_timeout_seconds,
         )
+    sources = SourceApplicationService(
+        database.personal_state_unit_of_work,
+        storage,
+        max_upload_bytes=settings.max_upload_bytes,
+        parser=TextSourceParser(
+            max_extracted_characters=settings.source_max_extracted_characters,
+            max_pdf_pages=settings.source_max_pdf_pages,
+            max_pdf_page_characters=settings.source_max_pdf_page_characters,
+        ),
+        parse_timeout_seconds=settings.source_parse_timeout_seconds,
+        embedding_provider=embedding_provider,
+    )
+    source_worker = SourceProcessingWorker(
+        sources,
+        lease_seconds=settings.source_lease_seconds,
+        heartbeat_seconds=settings.source_heartbeat_seconds,
+        max_attempts=settings.source_max_attempts,
+        retry_base_seconds=settings.source_retry_base_seconds,
+        retry_max_seconds=settings.source_retry_max_seconds,
+    )
+    source_scheduler = SourceProcessingScheduler(
+        source_worker,
+        interval_seconds=settings.source_poll_seconds,
+        batch_size=settings.source_batch_size,
+    )
+    memories = MemoryApplicationService(database.memory_unit_of_work)
     notification_adapter = RecordingNotificationAdapter()
     automations = AutomationApplicationService(
         database.automation_unit_of_work, notification_adapter

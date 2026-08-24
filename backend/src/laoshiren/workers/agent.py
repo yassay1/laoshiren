@@ -206,6 +206,7 @@ class AgentRunWorker:
                             source_id=source_id,
                             max_chunks=8,
                             max_characters=remaining,
+                            query=current.content,
                         )
                         if not chunks and source.extracted_text and remaining > 0:
                             # Compatibility for READY rows created before chunk migration.
@@ -228,6 +229,11 @@ class AgentRunWorker:
                                     "source_id": str(source.id),
                                     "chunk_id": str(chunk.id),
                                     "ordinal": str(chunk.ordinal),
+                                    "page_number": (
+                                        str(chunk.page_number)
+                                        if chunk.page_number is not None
+                                        else ""
+                                    ),
                                     "title": source.title,
                                     "content": chunk.content,
                                 }

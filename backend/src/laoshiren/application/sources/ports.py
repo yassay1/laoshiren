@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 from uuid import UUID
@@ -62,7 +63,13 @@ class SourceRepository(Protocol):
     ) -> bool: ...
 
     async def list_chunks(
-        self, *, user_id: UUID, source_id: UUID, limit: int
+        self,
+        *,
+        user_id: UUID,
+        source_id: UUID,
+        limit: int,
+        query_embedding: list[float] | None = None,
+        query_text: str | None = None,
     ) -> list[SourceChunk]: ...
 
 
@@ -74,7 +81,21 @@ class ObjectStorage(Protocol):
 
 
 class SourceParser(Protocol):
-    async def parse(self, *, filename: str, mime_type: str, content: bytes) -> str: ...
+    async def parse(
+        self, *, filename: str, mime_type: str, content: bytes
+    ) -> "ParsedSourceContent": ...
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedSourcePage:
+    page_number: int | None
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedSourceContent:
+    text: str
+    pages: tuple[ParsedSourcePage, ...]
 
 
 class SourceParsingError(ValueError):
