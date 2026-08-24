@@ -39,7 +39,7 @@
 - 已提供可配置的 OpenAI-compatible Embedding Gateway，并在 Composition Root 注入 Agent Memory；配置 model/base/key 后走现有 1536 维 pgvector cosine retrieval。provider HTTP/响应/维度异常会归一化并回退文本检索，Memory formation 仍保存内容但 embedding 留空，不使 Agent Run 失败。
 - Model Gateway 只接收裁剪后的 `memory_context`，不会加载全部 Memory。
 - `form_from_user_input` 只处理显式长期记忆意图；普通聊天、Thread 历史、checkpoint 与当前 Personal State 不写入长期记忆。
-- 相同规范化内容不重复创建；创建使用 `agent-memory:{run_id}` 幂等键。既有 update API 继续提供 version、supersede、soft delete 和 operation idempotency。
+- 相同规范化内容不重复创建；创建使用 `agent-memory:{run_id}` 幂等键。PROFILE 可带稳定 `profile_key`；同用户同 key 更新使用事务 advisory lock，原子 supersede 旧 ACTIVE 值，新记录保存 `supersedes_id`，部分唯一索引保证最多一个 ACTIVE。既有 update API 继续提供 version、supersede、soft delete 和 operation idempotency。
 
 ## 6. Source 当前实现链路
 
@@ -144,7 +144,7 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。外部 adapter 
 ## 14. 尚未解决的问题
 
 - Embedding Gateway 已可配置，但部署环境仍需提供实际 embedding model/base/key；未配置时明确使用文本检索降级。
-- Memory formation 仅覆盖显式中文触发语，不是模型辅助的事实抽取、冲突检测和 PROFILE key-level supersede。
+- Memory formation 仍只覆盖显式中文触发语；回答风格和提醒偏好已有确定性 key-level supersede，但尚不是模型辅助的通用候选抽取和矛盾检测。
 - Source 已有解析资源限制与文本 Evidence chunks，但尚无 OCR、Office、图片理解、STT、页码级 provenance 和 semantic chunk retrieval。
 - Automation outbox 已有 claim/lease/backoff，但真实 Push adapter 仍须使用 occurrence_key 作为下游幂等键，才能覆盖“外部接收成功、ack 前崩溃”的窗口。
 - RecordingNotificationAdapter 不是真实 Push adapter。
@@ -190,7 +190,7 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。外部 adapter 
 6. Memory 写入：`请记住：我做医疗安排时希望至少提前三天提醒。`
 7. Memory 去重：原样再次发送上一句；确认没有第二条 ACTIVE Memory。
 8. PROFILE：`记住我偏好简洁、直接的回答。`
-9. 跨 Thread：新建会话后发送 `我偏好什么样的回答？`，检查模型 context 是否使用 PROFILE。
+9. PROFILE supersede：再发送 `记住我偏好详细回答并给出例子。`，确认旧回答风格为 SUPERSEDED、新值为唯一 ACTIVE；新建会话发送 `我偏好什么样的回答？`，检查只使用新值。
 10. Semantic 跨 Thread：新建会话后发送 `关于医疗安排，你记得我的提醒偏好吗？`
 11. Source：上传包含“体检地点：市中心医院三楼；携带身份证”的 `.txt` 或 `.md`，先轮询 Source API 直到状态从 PENDING 变为 READY，再在创建 Run 时带该 source_id，然后问 `根据我刚上传的文件，体检在哪里、要带什么？`
 12. PDF Source：上传真实可复制文本 PDF，问其中一个明确事实；再上传扫描图片 PDF，确认它显示 FAILED 或无法提取，而不是编造内容。
@@ -205,7 +205,7 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。外部 adapter 
 
 ## 20. 下一阶段建议
 
-下一阶段 P0 应规定所有外部副作用 Tool/Push adapter 的下游 idempotency contract，并进一步隔离无法被 asyncio timeout 终止的解析线程。P1 配置实际 Embedding 服务并增加 Memory candidate extraction/冲突 supersede eval。P2 为 Source 增加页码 provenance、semantic chunk retrieval 与 OCR adapter。P3 接入真实 Push adapter 并增加 outbox 可观测指标。前端继续维持联调范围。
+下一阶段 P0 应规定所有外部副作用 Tool/Push adapter 的下游 idempotency contract，并进一步隔离无法被 asyncio timeout 终止的解析线程。P1 配置实际 Embedding 服务并增加 Memory 通用 candidate extraction/矛盾检测 eval。P2 为 Source 增加页码 provenance、semantic chunk retrieval 与 OCR adapter。P3 接入真实 Push adapter 并增加 outbox 可观测指标。前端继续维持联调范围。
 
 ## 最终仓库与验证快照
 
@@ -223,13 +223,13 @@ ee596e5 feat: harden agent runtime and connect durable context
 测试汇总
 ruff: passed
 mypy strict: 100 source files passed
-pytest (not eval, database enabled): 55 passed
-Alembic 0012 downgrade/upgrade: passed
+pytest (not eval, database enabled): 56 passed
+Alembic 0013 downgrade/upgrade: passed
 真实模型 eval: not run
 HarmonyOS build/E2E: not run
 ```
 
-当前仍存在的 P0/P1：外部 Tool/Push 下游幂等契约、无法强制终止的 parser thread、实际 Embedding 服务配置、Memory 冲突/supersede formation、Source 页码 provenance/OCR/semantic retrieval。
+当前仍存在的 P0/P1：外部 Tool/Push 下游幂等契约、无法强制终止的 parser thread、实际 Embedding 服务配置、Memory 通用候选抽取/矛盾检测、Source 页码 provenance/OCR/semantic retrieval。
 
 ## 2026-08-25 外部参考与可靠性增量
 
