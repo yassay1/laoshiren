@@ -1,0 +1,750 @@
+==================================================
+HarmonyOS 官方开发资源调研与项目复用分析
+==================================================
+
+调研日期：2026-08-24
+适用项目：老实人（HarmonyOS 个人智能体）
+资料策略：华为官方资料优先；动态生态市场条目以官方落地页为准，代码、许可证、依赖和目标 SDK 在真正接入时再次核验。
+重要前提：当前尚未确定 bundle name、目标 HarmonyOS SDK/API Level、签名、开发者账号类型和首台真机。因此涉及 API Level、企业资质、权益申请、地区或设备限制的能力，本文件只给出选型建议，不视为已经具备接入条件。
+
+
+1. 当前项目理解
+==================================================
+
+1.1 App 是什么
+
+“老实人”不是聊天 Demo，也不是普通 Todo App，而是持续理解、记录并推进用户现实事务的 HarmonyOS 个人智能体。核心对象是 Thing；Personal State 是当前现实状态的权威来源，Long-term Memory 保存跨对话仍有价值的历史信息与经验。Executive Agent 通过 Application 用例和 Tool 推进事务，必要时追问、确认、并行或恢复执行。
+
+1.2 核心用户场景
+
+- 用户用自然语言、图片、截图、PDF、Word、PPT、音频或其他 App 分享内容输入现实信息。
+- Agent 把输入关联到 Thing，维护 Task、Deadline、Blocker、Next Action、Source、Timeline 和状态历史。
+- 用户从 Today 查看当前最重要事项，从 Things/Thing Detail 查看和修正现实状态，从 Chat 与 Agent 持续交互。
+- 用户离开 App 后，Automation 在后端继续运行，并通过 Push 主动触达。
+- 高风险或含歧义的状态写入、日历等副作用需要用户确认；Run 可中断、恢复，网络断开不应丢失服务端执行。
+
+1.3 计划中的主要页面
+
+- 一级入口：Today、Things、Chat、Me/Settings。
+- 业务页面：Thing Detail、Timeline、Source Preview、Automation、Thread List、Share Intake。
+- 交互状态：文件上传、流式回答、Run 状态、input-required/确认、冲突、失败、断网重连、空状态、骨架屏。
+
+1.4 实际完成情况（以代码为准）
+
+已完成：
+- 后端模块化单体骨架；bootstrap.py 组装依赖，main.py 保持轻薄。
+- Personal State：Thing、Task 状态机、ThingDate/正式 Deadline、Blocker、ThingRelation、StateMutation、Timeline、History、乐观并发与幂等。
+- Source：受控上传、文件类型/大小/basic magic bytes 校验、对象存储 port、本地 adapter、Thing 关联。
+- Long-term Memory：Profile/Semantic/Episodic、生命周期、关键词/元数据/pgvector 检索、provenance。
+- Automation/Attention：规则与调度数据、到期领取、NotificationOutbox、Recording Adapter、反馈去重/冷却。
+- Product API 与集成测试；OpenAPI 契约已生成。
+
+尚未完成：
+- HarmonyOS 客户端：apps/harmonyos 当前只有 README，占位目录中没有 DevEco 工程或 ArkTS 代码。
+- Thread/Message/Run/SSE、interrupt/resume、Executive Agent、LangGraph Runtime、Agent Tool Adapter。
+- Push Kit 真实 Adapter、设备注册与 token 更新。
+- 文件/PDF/Office 内容解析、OCR、图片理解、语音识别/音频理解。
+- Account/Auth、Calendar 系统同步、Intents/小艺、服务卡片、应用接续、跨设备能力。
+
+1.5 能力分类
+
+普通 HarmonyOS UI/工程能力：ArkTS、ArkUI、Stage 模型、Navigation、状态管理、MVVM、List/LazyForEach、Skeleton、RichEditor、响应式布局、Preferences、网络层、生命周期、权限和错误处理。
+
+系统服务能力：Core File Kit、PhotoAccessHelper、Share Kit、Core Speech Kit、Core Vision Kit、PDF Kit、Account Kit、Push Kit、Calendar Kit、Form Kit、App Linking、Intents Kit、应用接续、跨设备剪贴板；Live View Kit 仅在严格场景满足时使用。
+
+必须保留为项目自研的核心：Personal State/Memory 边界、Thing/Deadline/Timeline 领域规则、Agent Planner/Memory/Tools/Evidence、LangGraph durable runtime、Policy/HITL、Automation 业务语义与后端 Source 理解管线。
+
+
+2. 调研方法
+==================================================
+
+1）完整核对七份 v1.0 核心设计文档、README、ADR、工程目录、后端依赖、路由、领域枚举、迁移和测试。
+2）以“应用鸿蒙化一纸禅”为一级索引，沿模板与组件、Samples、Kits、最佳实践、行业解决方案下钻。
+3）以项目真实缺口生成关键词，优先查 developer.huawei.com 的最新指南、API 参考、FAQ、Kit 产品页和行业页。
+4）将每项能力按“直接复用 / 修改后复用 / 只参考 Sample / 使用 Kit 接入 / 暂不建议 / 必须自研”分类。
+5）凡涉及动态市场、API Level、权限、设备、地区、企业资质或开放审核，均在接入前设置二次核验点。
+
+说明：“一纸禅”、生态市场和 Samples 首页为动态页面，自动抓取有时无法取得正文。本次通过华为官方激励计划说明、具体 Kit/指南/FAQ、模板组件专区和行业方案页交叉核验。市场条目实际下载内容及许可证仍需登录官方页面确认。
+
+
+3. 官方总入口
+==================================================
+
+【资源名称】应用鸿蒙化一纸禅
+【资源类型】官方全流程一级索引
+【官方链接】https://developer.huawei.com/consumer/cn/harmonyos-pioneer/one-sheet
+【解决问题】把了解学习、开发调测、上架推广和商业变现资源串成一条路线。
+【项目对应】用于客户端启动前的资源导航和检查清单，不直接提供业务实现。
+【建议】作为长期入口；每次确定目标 SDK 或准备上架时复查。
+【风险】页面内容会持续更新，不能把一次截图当作永久版本基线。
+
+【资源名称】HarmonyOS 官方知识地图
+【资源类型】官方学习/能力索引
+【官方链接】https://developer.huawei.com/consumer/cn/app/knowledge-map/
+【项目对应】覆盖应用架构、UX、一多开发、应用接续、跨设备剪贴板等。
+【建议】客户端开发者的第二入口；按当前阶段选择性学习。
+
+【资源名称】HarmonyOS 官方文档中心
+【资源类型】SDK/Kit/API 总目录
+【官方链接】https://developer.huawei.com/consumer/cn/doc/
+【建议】所有生态市场组件和 Sample 结论最终回到这里核对当前 API。
+
+
+4. 模板与组件
+==================================================
+
+4.1 笔记应用模板
+
+资源类型：官方生态市场应用模板
+官方链接：https://developer.huawei.com/consumer/cn/market/prod-detail/0fb9c25383124abda514e41de1f1bffa/2adce9bbd4cb42d58a87e6add45594b3
+解决的问题：笔记/效率类应用常见页面、交互和工程实现起点。
+项目对应：Chat composer、Source 列表/预览、Things/Today 列表、空状态、设置页。
+可能位置：apps/harmonyos/entry/src/main/ets/features/*、common/ui/*。
+建议使用方式：修改后复用；只挑选 UI、导航、列表和媒体交互，不照搬数据模型、账号、云存储或提醒逻辑。
+预期收益：减少 ArkUI 页面和交互样板开发量。
+风险：下载包版本、API Level、许可证、依赖和代码质量需登录后检查；模板的“笔记”数据模型不能替换 Thing/Source/Application API。
+
+4.2 通用登录组件
+
+资源类型：官方生态市场组件
+官方链接：https://developer.huawei.com/consumer/cn/market/prod-detail/9c79aa386aab4750aabb0c388d070cd9/2adce9bbd4cb42d58a87e6add45594b3
+解决的问题：标准登录页面与交互。
+项目对应：首次使用、Me/Settings、Account Kit 授权入口。
+建议使用方式：修改后复用 UI；真实认证使用 Account Kit，授权结果必须发送后端验证并绑定项目用户。
+风险：不要把 UI 组件内的示例 token、本地账号状态或模拟接口当生产认证。
+
+4.3 骨架屏 UISkeleton
+
+资源类型：官方生态市场 UI 组件
+官方入口：https://developer.huawei.com/consumer/cn/market/landing/component
+解决的问题：头像、图片、文本、段落等加载占位。
+项目对应：Today、Things、Thing Detail、Thread、Source Preview。
+建议使用方式：修改后复用；统一放 common/ui，不在各页面重复实现。
+收益：减少开发量并改善弱网加载体验。
+风险：核验无障碍、深色模式、横竖屏、组件版本和依赖。
+
+4.4 日历选择器 / 日期格式化组件
+
+资源类型：官方生态市场组件 + ArkUI CalendarPicker
+官方入口：https://developer.huawei.com/consumer/cn/market/landing/component
+ArkUI API：https://developer.huawei.com/consumer/cn/doc/harmonyos-references-V13/ts-basic-components-calendarpicker-V13
+解决的问题：单日、多日、时间段选择和绝对/相对时间显示。
+项目对应：ThingDate/Deadline 编辑、Timeline、Automation 计划时间。
+建议使用方式：优先系统 CalendarPicker；生态组件只在需要范围选择或定制样式时修改复用。日期合法性、certainty 和正式 deadline 仍由专门 Application 用例决定。
+风险：日历 UI 不等于 Calendar Kit，也不能直接覆盖正式 Deadline。
+
+4.5 富文本编辑组件 / ArkUI RichEditor
+
+资源类型：生态组件 + 官方原生组件/最佳实践
+行业入口：https://developer.huawei.com/consumer/cn/market/landing/notessolution
+最佳实践入口：https://developer.huawei.com/consumer/cn/doc/best-practices/bpta-best-practices-overview
+原生 API：https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/api/ts-text-common
+解决的问题：带样式文本、图文混排、选择和编辑。
+项目对应：长回答展示、Source 标注、未来富文本笔记；V1 Chat composer 当前只需纯文本。
+建议使用方式：暂不把完整富文本编辑器放进 V1 Composer；优先用 Text/StyledString 展示，明确出现编辑需求后采用原生 RichEditor，并参考官方最佳实践。
+风险：富文本序列化、粘贴内容清洗、无障碍和大文档性能复杂；不要让 UI 富文本成为 Evidence 权威格式。
+
+4.6 UIFilePicker
+
+资源类型：生态市场功能组件
+官方入口：https://developer.huawei.com/consumer/cn/market/landing/component
+解决的问题：多类型文件选择、预览和可选自动云上传。
+项目对应：Chat 附件和 Source 导入。
+建议使用方式：当前不建议整组件接入。使用 Core File Kit/PhotoAccessHelper，自己保留很薄的 UI，上传复用既有 Source API。
+原因：组件内置云上传容易形成第二条上传链，绕开后端 MIME/magic bytes、幂等、provenance 和对象存储边界。
+
+
+5. 官方 Samples / 模块化示例代码
+==================================================
+
+Samples 总入口：https://developer.huawei.com/consumer/cn/samples/
+
+建议按以下项目关键词在目标 SDK 确定后下载对应官方 Sample，并以 Sample 验证 API，不整体复制应用：
+
+1）DocumentViewPicker / AudioViewPicker：文件和音频选择、URI 打开、取消与异常。
+API：https://developer.huawei.com/consumer/en/doc/harmonyos-references/js-apis-file-picker
+采用：只参考 Sample + 使用 Kit 接入。
+
+2）PhotoAccessHelper 图片选择：当前 Photo Picker、URI 授权、图片预览。
+文档中心检索：https://developer.huawei.com/consumer/cn/doc/
+采用：使用 Kit 接入；明确避开已 deprecated 的 `picker.PhotoViewPicker`。
+
+3）Share Kit 图片/文件分享与接收：SharedData、UTD、Want、URI 权限、冷/热启动。
+示例指导：https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V13/share-utd-image-V13
+最新 FAQ：https://developer.huawei.com/consumer/cn/doc/doccenter-dev-faq/faqs-share-2
+采用：只参考 Sample + 封装 ShareReceiver Adapter。
+
+4）Core Speech Kit 语音识别：短语音、实时 PCM、listener 生命周期、错误处理。
+示例指导：https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V13/speechrecognizer-guide-V13
+采用：只参考 Sample + 使用 Kit 接入；必须真机验证。
+
+5）Core Vision Kit 通用文字识别：图片转 PixelMap、init/release、recognizeText、坐标结果。
+示例指导：https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V5/core-vision-text-recognition-V5
+采用：只参考 Sample；首版可作为截图快速取字的可选入口。
+
+6）PDF Kit PdfView：加载沙箱 PDF、预览布局、跳页、缩放。
+示例指导：https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V5/pdf-pdfview-preview-method-V5
+Kit 产品页：https://developer.huawei.com/consumer/cn/sdk/pdf-kit/
+采用：直接使用 Kit + 修改 Sample 构建 Source Preview。
+
+7）服务卡片：DevEco 模板可自动生成卡片布局与 form_config.json。
+示例指导：https://developer.huawei.com/consumer/cn/doc/HarmonyOS-Guides/ide-service-widget
+采用：基础 App 闭环完成后参考，不作为首个可运行版本前置。
+
+8）Navigation + NavPathStack：路由表、跳转、参数、拦截和后台恢复。
+示例指导：https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/arkts-navigation-jump
+采用：客户端第一阶段直接按官方模式实现。
+
+9）跨设备剪贴板：系统自动完成跨设备数据传递。
+示例指导：https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V13/distributed-pasteboard-guide-V13
+采用：后续体验增强，只参考 Sample。
+
+10）应用接续：同一应用跨设备恢复操作状态。
+知识地图：https://developer.huawei.com/consumer/cn/app/knowledge-map/
+最新 FAQ：https://developer.huawei.com/consumer/cn/doc/doccenter-dev-faq/free-flow-faqs-1
+采用：后续阶段参考；先把服务端 Thread/Run 恢复做好。
+
+
+6. HarmonyOS Kits
+==================================================
+
+6.1 Core File Kit + PhotoAccessHelper（强烈建议）
+
+解决：用户授权的文档、音频、图片选择与保存。
+当前需求：PDF/Word/PPT/文本/图片/音频导入。
+当前实现：后端已有 Source 上传，客户端没有 Picker。
+建议：客户端 common/platform 下实现 FilePickerService、PhotoPickerService；URI 只在授权生命周期内读取/流式上传，服务端继续验证内容。
+架构影响：无。只增加客户端 Adapter，不改变 Source Domain/Application。
+注意：DocumentViewPicker 推荐使用带 UIAbilityContext 的 API 12+ 构造器；旧 picker.PhotoViewPicker 已废弃。目标 SDK 确定后以最新中文 API 为准。
+
+6.2 Share Kit（强烈建议）
+
+解决：跨应用/跨端分享文本、图片、视频和文件；接收其他 App 分享。
+当前需求：Share Intake 是核心入口。
+建议：ShareReceiver 解析 Want/SharedData/UTD，转成客户端 Intake DTO，再调用 Source 上传或 Chat 用例。冷启动和热启动都真机测试。
+架构影响：无。Share 只产生输入，不直接创建/修改 Thing；业务关联仍由 Application/Agent 决定。
+风险：URI、content、权限、记录数量、缩略图大小和 2in1 差异；不信任扩展名和发送方 MIME。
+
+6.3 PDF Kit（强烈建议用于预览）
+
+解决：PDF 解析/预览、缩放、跳页、批注、书签和格式转换。
+当前需求：Source Preview、PDF Evidence 查看。
+建议：Source Preview 直接采用 PdfView；V1 不自研 PDF 渲染器。后端仍负责全文抽取、结构化、引用定位和 Agent 证据链。
+风险：确认目标 API、服务开通/依赖和大文件内存；Web PDF 方案官方提示可能掉帧，不作为主方案。
+
+6.4 Preview Kit（建议评估）
+
+解决：便捷预览文件；openPreview 接收 URI，不接收普通沙箱路径。
+官方 FAQ：https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V13/preview-faq-1-V13
+当前需求：Word/PPT 等原文件快速查看。
+建议：对支持格式做能力矩阵验证。PDF 用 PdfView；Office/其他格式可优先 Preview Kit 或系统文件处理 App，避免 V1 自研渲染器。
+风险：支持格式、设备与 URI 权限在目标 SDK 上待确认。
+
+6.5 Core Speech Kit（强烈建议）
+
+解决：实时或文件音频转文字；短语音不超过 60 秒，长语音不超过 8 小时。
+当前需求：麦克风输入转 Composer 文本。
+建议：VoiceService 负责录音/识别生命周期，结果只填入 Composer，用户确认发送。音频 Source 的深层理解仍走后端。
+风险：不支持模拟器；权限应在用户点击麦克风时动态申请；语言、噪声和设备差异需真机测试。
+
+6.6 Core Vision Kit / Vision Kit（条件接入）
+
+解决：通用 OCR；Vision Kit 另提供文档扫描和 AI 识图控件。
+官方入口：https://developer.huawei.com/consumer/cn/sdk/core-vision-kit
+限制依据：https://developer.huawei.com/consumer/en/doc/harmonyos-guides-V13/core-vision-introduction-V13
+数据说明：https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/corevisionkit-personal-data
+当前需求：截图/文档照片取字、可选扫描入口。
+建议：端侧 OCR 作为“快速提取文本/预填”能力；原图仍可作为 Source 上传，OCR 结果带来源并由后端判断可信度。Vision Kit 文档扫描后续按地区/设备决定。
+风险：OCR 只支持指定图片格式/语言，印刷体优于手写，不支持模拟器；Vision Kit 部分能力仅中国大陆。隐私政策需告知数据处理。
+
+6.7 Account Kit（强烈建议，但需账号决策）
+
+解决：华为账号登录、静默登录、一键登录和统一身份标识。
+官方入口：https://developer.huawei.com/consumer/cn/sdk/account-kit
+最新概述：https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/account-quick-login-overview
+当前需求：项目 Auth 尚未实现。
+建议：以 Account Kit 作为客户端认证入口，后端新增 Auth Adapter 验证授权码/ID Token并绑定 user。OpenID/UnionID 映射不能只保存在客户端。
+风险：一键登录仅企业开发者；华为账号登录和静默登录支持个人/企业。最终方案取决于开发者账号类型、隐私设计和后端会话策略。
+
+6.8 Push Kit（强烈建议）
+
+解决：后端到 HarmonyOS 设备的远程通知。
+官方入口：https://developer.huawei.com/consumer/cn/sdk/push-kit/
+服务端鉴权：https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/push-jwt-token
+当前需求：Automation/Attention 已生成 NotificationOutbox，但只有 Recording Adapter。
+建议：在 backend Infrastructure 新增 HuaweiPushAdapter；凭据/JWT 仅服务端保存。客户端 PushService 获取/更新标识并调用设备注册 Application 用例；点击后通过 App Linking/Navigation 打开目标 Thing/Thread。
+架构影响：完全符合现有 port/adapter 设计，不改变 Domain 或 Agent Runtime。
+风险：HarmonyOS NEXT/5.x+ 使用 v3 接口；订阅/通知授权、token 变化、送达回执、重复消息和点击幂等需设计。Outbox“提交 adapter”不可宣称已送达。
+
+6.9 Calendar Kit（条件接入，不替代 Automation）
+
+解决：系统日历和日程管理。
+官方总目录：https://developer.huawei.com/consumer/cn/doc/?istab=1
+API 错误码入口：https://developer.huawei.com/consumer/cn/doc/harmonyos-references/calendar-arkts-errorcode
+当前需求：PRD 有 Calendar；正式 Deadline 已在后端实现。
+建议：仅当用户明确要求“写入系统日历”时，由 Agent/客户端调用专门 Application 用例，经 Policy/确认后通过 Calendar Adapter 执行并保存外部事件 ID。普通 Deadline 和 Automation 不自动复制到系统日历。
+风险：权限、重复日程、删除/更新同步和双向冲突；绝不能让 Calendar 反向无条件覆盖 Personal State。
+
+6.10 Form Kit 服务卡片（建议第二阶段接入）
+
+解决：桌面/锁屏展示重要信息和快捷直达。
+官方简介：https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V13/formkit-overview-V13
+当前需求：Today/Attention 的低打扰主动触达。
+建议：展示后端返回的 Attention 摘要、最近 Thing、快捷打开 Chat；卡片内写操作也必须调用 Application API。
+风险：更新频率、数据过期、隐私可见性、卡片包形态和尺寸适配。卡片不能缓存完整 Personal State。
+
+6.11 Intents Kit + 小艺（建议作为系统入口）
+
+解决：把应用功能声明给系统/小艺，实现自然语言任务、信息查询和一步直达。
+官方场景：https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/intents-skill-all-rec-scene-experience
+InsightIntent API：https://developer.huawei.com/consumer/cn/doc/harmonyos-references-v5/intents-arkts-api-insightintent-V5
+上架配置：https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V5/intents-kit-listing-configuration-V5
+当前需求：系统入口、打开 Today/Thing/Chat、触发受控 Agent 请求。
+建议：先开放低风险、边界清楚的意图，如“打开 Today”“查看某 Thing”“开始与老实人对话”。带写入或外部副作用的意图把参数传入 App/Agent Adapter，继续走后端 Run/Policy/HITL。
+架构影响：Intents 是入口和 Adapter，不是 Planner/Memory/Tool Runtime。
+风险：正式上线需 App 先上架 AGC，并在小艺开放平台审核；自测试能力和版本门槛随 HarmonyOS 6/API 20+ 演进，接入时重新核验。
+
+6.12 App Linking（强烈建议）
+
+解决：HTTPS 链接安全拉起指定应用页面；未安装时也可进入网页。
+官方指导：https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V14/app-linking-startup-V14
+当前需求：Push、分享、二维码、小艺使用统一深链。
+建议：以 App Linking 作为外部正式链接，内部统一映射到 Navigation route；自定义 scheme 只作开发或兼容备选。
+风险：HarmonyOS 应用 API 12+；需要 AGC、域名关联和服务器验证配置。
+
+6.13 跨设备剪贴板 / 应用接续（建议后续）
+
+解决：跨设备复制素材；把同一应用操作状态从一个设备接到另一个设备。
+官方链接：https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V13/distributed-pasteboard-guide-V13
+应用接续 FAQ：https://developer.huawei.com/consumer/cn/doc/doccenter-dev-faq/free-flow-faqs-1
+当前需求：多设备输入和长任务连续性。
+建议：先用服务端 Thread/Run 恢复形成跨设备基础，再增加剪贴板和应用接续。接续只传页面/资源标识和必要轻状态，不传完整 Agent Graph State。
+风险：同一华为账号、Wi-Fi/蓝牙、亮屏/解锁、DISTRIBUTED_DATASYNC 权限及设备组合限制。
+
+6.14 Live View Kit（当前通常不建议）
+
+解决：锁屏、通知中心、状态栏展示最长 8 小时内持续变化的进行中事件。
+官方简介：https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V13/liveview-introduction-V13
+当前需求：大部分 Deadline/Attention 是单点提醒，不符合实况窗准入语义。
+建议：暂不接。将来只有“用户主动启动、持续一段短时间、状态动态变化且高关注”的 Agent 任务才申请评估。
+风险：Phone/Tablet、非模拟器、中国大陆、场景准入和反营销限制；不可把普通长任务或所有 Run 都做实况窗。
+
+
+7. 官方最佳实践
+==================================================
+
+总入口：https://developer.huawei.com/consumer/cn/doc/best-practices/bpta-best-practices-overview
+
+7.1 工程与架构
+
+- Stage 模型是长期演进方向；本项目选择正确。
+- 官方分层架构：https://developer.huawei.com/consumer/cn/doc/doccenter-architecture/bpta-layered-architecture-design
+- 官方模块化设计：https://developer.huawei.com/consumer/cn/doc/doccenter-architecture/bpta-modular-design
+- 项目采用单 entry、feature-first + MVVM 合理。当前规模不要为了“模块化”先拆 HAR/HSP；出现明确复用、独立部署或构建收益时再拆。
+
+7.2 Navigation
+
+- 使用 Navigation + NavDestination + NavPathStack；API 10+ 官方更推荐 NavPathStack。
+- Push、Share、App Linking、Intents 和冷启动统一进入同一个路由解析器，避免五套跳转逻辑。
+- 路由参数只传资源 ID/轻量 DTO，不传完整实体或 Graph State。
+
+7.3 状态管理与 MVVM
+
+- 官方 MVVM 指导：https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V13/arkts-mvvm-V13
+- 新工程优先评估状态管理 V2；目标 API 确定后锁定装饰器版本，不混用两套全局状态方案。
+- ViewModel 管 UI 状态和交互；Repository/ApiClient 管远端数据；Thing 业务规则仍在后端。
+
+7.4 长列表和流式 Chat
+
+- Things、Timeline、Thread 使用 LazyForEach/懒加载、稳定 key、组件复用和分页。
+- 性能指导：https://developer.huawei.com/consumer/cn/doc/best-practices-V5/bpta-control-rendering-range-V5
+- assistant.delta 不应每个 token 触发整条消息列表重建；做增量缓冲与受控刷新。
+- 图片缩略图与 Source 大文件异步加载，避免 UI 主线程解析。
+
+7.5 数据与网络
+
+- Preferences 只存 theme、onboarding、last thread、环境等小型设置；不存完整 Thread/Thing、token 明文或大文件。
+- 离线缓存按真实需求使用 ArkData，不复制服务器全部表；缓存应带版本/时间并允许失效。
+- 普通 REST 与上传统一 ApiClient；Thread/Run/SSE 的 durable 语义由服务端资源保证。HarmonyOS 网络 API 是否稳定支持目标 SSE 方式需在首轮真机联调验证，必要时选择官方支持的 HTTP 流或 WebSocket，但不改变事件契约。
+
+7.6 权限、隐私和安全
+
+- 官方隐私最佳实践：https://developer.huawei.com/consumer/cn/doc/doccenter-architecture/bpta-app-privacy-protection
+- 坚持透明、最小化、用户控制、安全和优先本地处理；权限在功能触发时动态申请，不在首次启动一次性索要。
+- 不申请“遍历全盘”式高权限；文件、图片通过系统 Picker 授权。
+- 麦克风、通知、分布式同步分别解释用途；拒绝后保留降级路径。
+- Provider 密钥、Push 服务账号、数据库凭据和模型密钥绝不进入客户端。
+
+7.7 测试和性能
+
+- Push、Share、文件 URI、Photo Picker、Speech/OCR、后台恢复、Deep Link、权限、大文件上传必须真机。
+- 没有真机时可用官方云测试/云调试，但最终仍需目标真机覆盖账号、Push 和跨设备场景。
+- 使用 DevEco Profiler 验证冷启动、长列表、内存、网络和主线程耗时；不为了性能提前采用复杂并发。
+
+
+8. 教育行业样板间及相关行业解决方案
+==================================================
+
+教育行业样板间：https://developer.huawei.com/consumer/cn/market/landing/education
+工具行业-笔记类解决方案：https://developer.huawei.com/consumer/cn/market/landing/notessolution
+模板组件专区：https://developer.huawei.com/consumer/cn/market/landing/component
+
+教育样板间对本项目的价值主要是体验与场景参考：课程/作业资料导入、日程、提醒、语音、OCR、跨设备和主动触达。它不是项目架构模板。
+
+更直接的参考是“工具行业-笔记类解决方案”。官方页面明确组合了：
+- 笔记应用模板、富文本编辑组件、登录组件；
+- Account、一键登录、App Linking、服务卡片、应用接续、跨设备剪贴板；
+- PDF、分享、Push、意图框架；
+- AudioCapturer + speechRecognizer 的录音转文字 Sample；
+- 待办便贴场景。
+
+适合吸收的“鸿蒙化”体验：
+- 通过 Share、Picker、跨设备剪贴板低成本获得现实资料。
+- 通过 Account、App Linking、Intents 降低进入应用和定位功能的成本。
+- 通过服务卡片和 Push 做有价值、低打扰的 Today/Attention 触达。
+- 通过 Speech/OCR/PDF 降低输入和查看成本。
+
+不应照抄：
+- 笔记模板的数据模型、云存储、账号状态、提醒逻辑。
+- 教育 Demo 的固定页面层级和业务规则。
+- 为展示“鸿蒙特性”强行引入位置、支付、扫码、Live View 或复杂分布式能力。
+
+
+9. Agent / AI / Intents 相关能力
+==================================================
+
+9.1 推荐边界
+
+HarmonyOS 系统能力
+  -> HarmonyOS App / Intents / AgentAbilityExtension
+  -> Agent Adapter
+  -> 现有后端 API（Thread/Run/Resume/Tool contracts）
+  -> LangGraph Runtime
+  -> Planner / Memory / Tools / Evidence / Policy
+
+系统入口层只负责发现、唤起、参数传递、端侧交互和状态呈现。真正的 Agent 计划、长期记忆、现实状态判断、Tool 执行、证据与恢复继续在后端。
+
+9.2 Agent Framework Kit / A2A
+
+官方指南：https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/hmaf-a2a-dev-guide
+
+官方 2026-07-28 指南描述：ArkTS 应用可通过 AgentAbilityExtension 构建 A2A 服务端；A2A 包含 Agent Card（身份、能力、端点、技能、认证元数据）、Artifact，以及 TaskState（submitted、working、input-required、completed、cancelled、failed、rejected、auth-required 等）。
+
+与项目映射：
+- Agent Card -> 可描述“老实人”的能力与认证，但不是 Tool Registry 或 Prompt。
+- A2A Task -> 可映射/桥接后端 Run，但不能直接复用同一个状态表；需要明确 ID、状态和错误转换。
+- Artifact -> 可映射 Source/生成文档引用，但不能把临时产物自动写成 Personal State。
+- input-required -> 映射现有 interrupt.required / WAITING_USER 与客户端确认 UI。
+- 用户确认 -> 仍由后端 Policy/HITL 给出权威决策；端侧只呈现和提交 resume payload。
+- Agent Discovery -> 只决定系统如何发现/调用客户端 Agent，不替代后端能力注册。
+
+建议：当前只做协议预留和概念映射，不在 Thread/Run/SSE 之前接入。待目标 SDK、设备、账号和开放范围确认后做独立 Spike。不要让 AgentAbilityExtension 直接访问后端 ORM、客户端凭据或本地数据库。
+
+9.3 Intents / 小艺
+
+Intents 比完整 A2A 更适合早期系统入口：先接低风险“打开 Today/查看 Thing/开始对话”；未来再接带参数的任务。任何写状态、发通知、建日程、删除或外部服务操作都继续走 Agent Adapter -> Application/Policy/HITL。
+
+9.4 Core Speech / Core Vision 与 Agent
+
+这些 Kit 是感知 Adapter，不是 Agent。端侧输出应作为用户输入或 Source 派生数据，保留原始来源、能力版本和用户确认。它们不能直接更新 Deadline、Task 状态或 Memory。
+
+
+10. 当前项目功能 -> 官方资源映射（重点）
+==================================================
+
+【项目能力】Evidence 文件导入
+【官方资源】Core File Kit DocumentViewPicker / AudioViewPicker
+【官方链接】https://developer.huawei.com/consumer/en/doc/harmonyos-references/js-apis-file-picker
+【当前实现】后端 Source 上传、校验、对象存储和 Thing 关联已完成；客户端未实现。
+【代码位置】未来 apps/harmonyos/.../common/platform/FilePickerService.ets；现有 backend/.../application/sources 与 presentation/api/routers/sources.py。
+【建议】使用 Kit 接入。Picker 获取 URI后流式上传现有 API，不采用组件自带云存储。
+【收益】减少权限和文件选择 UI 开发量；使用系统标准授权体验。
+【风险】URI 生命周期、取消、权限、超大文件、文件名/MIME 不可信。
+
+【项目能力】图片选择
+【官方资源】PhotoAccessHelper 当前图片选择能力
+【官方链接】https://developer.huawei.com/consumer/cn/doc/
+【当前实现】后端允许 PNG/JPEG Source；客户端未实现。
+【建议】使用 Kit 接入；不要使用已 deprecated 的 `picker.PhotoViewPicker`。
+【收益】系统图库体验与最小权限。
+【风险】目标 API 确定后锁定最新接口；处理 URI 和缩略图内存。
+
+【项目能力】其他 App 分享到老实人
+【官方资源】Share Kit / systemShare / Want / UTD
+【官方链接】https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V13/share-utd-image-V13
+【当前实现】后端有 Source，但没有 Share Intake 客户端。
+【代码位置】未来 ShareReceiver.ets、Share Intake feature、EntryAbility 生命周期。
+【建议】使用 Kit 接入；SharedData 只转成输入 DTO，业务关联走 Application/Agent。
+【收益】获得真正的系统入口和跨应用体验。
+【风险】冷/热启动、URI 授权、记录数量、UTD、重复上传和恶意输入。
+
+【项目能力】PDF 查看
+【官方资源】PDF Kit PdfView
+【官方链接】https://developer.huawei.com/consumer/cn/sdk/pdf-kit/
+【当前实现】仅保存 PDF 原件，未解析/预览。
+【代码位置】未来 Source Preview feature。
+【建议】直接使用 Kit；不要自研 PDF renderer。
+【收益】显著减少开发量，提高原生体验和稳定性。
+【风险】预览不等于文本抽取；Evidence 仍需后端管线。
+
+【项目能力】Word/PPT/其他文件预览
+【官方资源】Preview Kit / 系统文件处理应用
+【官方链接】https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V13/preview-faq-1-V13
+【当前实现】保存原件，无客户端预览。
+【建议】修改后复用/使用 Kit；按格式和设备做能力矩阵，无法内嵌时安全拉起系统处理应用。
+【收益】避免自研 Office renderer。
+【风险】仅接受 URI、格式支持和权限待目标 SDK 验证。
+
+【项目能力】语音输入
+【官方资源】Core Speech Kit speechRecognizer
+【官方链接】https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V13/speechrecognizer-guide-V13
+【当前实现】仅设计，未实现。
+【代码位置】未来 VoiceService.ets、Chat composer。
+【建议】使用 Kit 接入，结果先填 Composer，由用户发送。
+【收益】减少 STT 自研和服务成本，支持离线场景。
+【风险】不支持模拟器；权限、语言和真机差异。
+
+【项目能力】截图/文档照片 OCR
+【官方资源】Core Vision Kit textRecognition
+【官方链接】https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V5/core-vision-text-recognition-V5
+【当前实现】未实现多模态解析。
+【建议】只参考 Sample + 条件接入。作为快速取字/预填，不直接写 State。
+【收益】减少 OCR 基础能力开发量。
+【风险】格式/语言/长度/印刷体限制、不支持模拟器、隐私告知。
+
+【项目能力】华为账号登录
+【官方资源】Account Kit + 通用登录组件
+【官方链接】https://developer.huawei.com/consumer/cn/sdk/account-kit
+【当前实现】Auth 未实现。
+【建议】Kit 负责端侧授权，后端验证并建立会话；登录组件只复用 UI。
+【收益】原生登录、静默回流和稳定身份标识。
+【风险】一键登录企业资质限制，token 验证和账号注销/切换。
+
+【项目能力】Automation 主动通知
+【官方资源】Push Kit v3
+【官方链接】https://developer.huawei.com/consumer/cn/sdk/push-kit/
+【当前实现】NotificationOutbox + Recording Adapter 已完成，无真实 Push。
+【代码位置】backend Infrastructure notifications、未来设备注册 Application/API、客户端 PushService。
+【建议】使用 Kit 接入；后端 Adapter 发送，客户端注册/点击，状态仍由后端查询。
+【收益】获得系统级触达，复用现有 Outbox。
+【风险】凭据仅后端、授权、token 轮换、重复和送达语义。
+
+【项目能力】Today/Attention 桌面入口
+【官方资源】Form Kit 服务卡片
+【官方链接】https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V13/formkit-overview-V13
+【当前实现】后端 Attention 已完成；无客户端。
+【建议】第二阶段修改 Sample 接入，只读展示摘要和深链。
+【收益】增强鸿蒙原生主动体验，降低打开层级。
+【风险】隐私、过期数据、更新频率；不能成为 State 真相源。
+
+【项目能力】系统/小艺入口
+【官方资源】Intents Kit + App Linking
+【官方链接】https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/intents-skill-all-rec-scene-experience
+【当前实现】无。
+【建议】先接低风险打开/查询意图；写入或副作用继续走后端 Run/Policy。
+【收益】一步直达和自然语言系统入口。
+【风险】上架/审核/版本门槛，参数和确认语义不能在客户端复制。
+
+【项目能力】Agent 与系统智能体互操作
+【官方资源】Agent Framework Kit / A2A / AgentAbilityExtension
+【官方链接】https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/hmaf-a2a-dev-guide
+【当前实现】LangGraph Runtime 也尚未实现，但架构已定。
+【建议】暂只做概念映射；作为端侧 Agent Adapter，不替代 LangGraph。
+【收益】未来获得 Agent Card、Discovery、Task/Artifact 和系统互操作。
+【风险】最新能力、API/设备/开放范围待目标环境确认；双重任务状态和安全边界复杂。
+
+【项目能力】正式 Deadline 编辑
+【官方资源】ArkUI CalendarPicker / 日期组件
+【官方链接】https://developer.huawei.com/consumer/cn/doc/harmonyos-references-V13/ts-basic-components-calendarpicker-V13
+【当前实现】专门 Application 用例、certainty 四值、乐观并发已完成。
+【建议】只复用输入 UI；提交仍调用专门 Deadline API。
+【收益】减少日期输入 UI 代码。
+【风险】不能让通用 Thing patch 或客户端选择器绕过 certainty/冲突规则。
+
+【项目能力】写入系统日历
+【官方资源】Calendar Kit
+【官方链接】https://developer.huawei.com/consumer/cn/doc/?istab=1
+【当前实现】未实现；后端 Automation 与 Deadline 已自有模型。
+【建议】仅用户明确请求且确认后接入专门 Adapter，保存外部 event ID。
+【收益】系统日历协同和用户熟悉的提醒体验。
+【风险】形成第二提醒系统、重复/冲突、权限和删除同步。
+
+【项目能力】Things/Timeline/Chat 长列表
+【官方资源】LazyForEach、组件复用、控制渲染范围最佳实践
+【官方链接】https://developer.huawei.com/consumer/cn/doc/best-practices-V5/bpta-control-rendering-range-V5
+【当前实现】客户端未实现；后端已有分页/过滤基础。
+【建议】作为工程最佳实践直接采用。
+【收益】避免长列表掉帧，支持持续使用。
+【风险】稳定 key、分页去重、流式消息刷新和图片内存。
+
+【项目能力】页面导航与外部入口
+【官方资源】Navigation + NavPathStack + App Linking
+【官方链接】https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/arkts-navigation-jump
+【当前实现】客户端未实现。
+【建议】直接采用；所有入口汇入统一 Router。
+【收益】减少跳转分叉和冷启动 bug。
+【风险】恢复时资源可能不存在，必须显示可理解的降级页面。
+
+【项目能力】跨设备继续处理
+【官方资源】应用接续 + 跨设备剪贴板
+【官方链接】https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V13/distributed-pasteboard-guide-V13
+【当前实现】后端 Thread/Run 尚未完成。
+【建议】暂缓。先完成服务端 durable Run，再把页面/资源 ID 接续到另一设备。
+【收益】后续增强一多体验。
+【风险】设备/账号/权限/网络条件；禁止传完整 Graph State。
+
+
+11. 强烈建议复用的资源
+==================================================
+
+P0（客户端一开始就用）：
+1. Stage 模型、ArkTS + ArkUI、Navigation + NavPathStack。
+2. Core File Kit DocumentViewPicker/AudioViewPicker + 当前 PhotoAccessHelper。
+3. Share Kit + Want/UTD。
+4. PDF Kit PdfView。
+5. Core Speech Kit speechRecognizer。
+6. 官方 MVVM、状态管理、长列表、隐私和权限最佳实践。
+
+P1（形成基础闭环后接）：
+7. Account Kit（先确定个人/企业账号与后端 Auth）。
+8. Push Kit v3（复用现有 NotificationOutbox port）。
+9. App Linking（统一 Push/Share/小艺外部路由）。
+10. Form Kit（Today/Attention 卡片）。
+
+
+12. 建议参考但暂不接入的资源
+==================================================
+
+- 笔记应用模板：挑 UI/交互，不照搬业务与数据层。
+- 富文本编辑组件：V1 Composer 不需要完整富文本；先参考 RichEditor 最佳实践。
+- UIFilePicker：不采用内置云上传，只参考展示。
+- Core Vision OCR/Vision 文档扫描：多模态阶段按隐私和设备条件接。
+- Preview Kit：按 Word/PPT 等格式验证后采用。
+- Calendar Kit：仅明确系统日历需求时接。
+- Intents Kit：App 基础能力、路由和后端 Run 稳定后接。
+- Agent Framework/A2A：先完成现有 Runtime，再做端侧互操作 Spike。
+- 应用接续/跨设备剪贴板：服务端恢复和真机矩阵准备后接。
+- Live View Kit：只有严格满足短时动态事件准入时才接。
+- Location Kit、Scan Kit：当前产品没有不可替代的 V1 需求，不为凑 Kit 引入。
+
+
+13. 当前仍然需要自研的能力
+==================================================
+
+- Thing/Task/Deadline/Blocker/Relation/Timeline/StateMutation 领域模型及四值 certainty。
+- Personal State 与 Long-term Memory 权威边界、冲突与检索策略。
+- Thread/Message/Run/SSE、interrupt/resume 与 durable execution。
+- Executive Agent、LangGraph、Planner、Tool Registry/Router、Policy/HITL、Evidence 和引用。
+- Source 后端解析、Office/PDF 文本抽取、切片、证据定位、多模态融合和 provenance。
+- Automation/Attention 业务规则、去重、冷却和后端调度。
+- Product API、客户端 DTO/Repository/ViewModel、缓存失效、乐观冲突 UI。
+- 华为 Push/Account/Calendar/Intents/A2A 与 Application 的 Adapter 和映射层。
+
+
+14. 可能值得调整的现有实现（非本轮代码修改）
+==================================================
+
+1）HarmonyOS 设计文档中“优先使用当前官方推荐的 photoAccessHelper.PhotoViewPicker”表述需在建工程时再核对准确类名；可以确定的是 `@ohos.file.picker` 内旧 PhotoViewPicker 已 deprecated，不能照旧示例实现。
+
+2）客户端设计已有 FilePickerService/PhotoPickerService/ShareReceiver/VoiceService/PushService 分层，方向正确。建议增加 AppLinkRouter、AccountService、PdfPreviewService，并把 Intents/A2A 预留为 platform adapter，而不是 feature 业务层。
+
+3）现有 NotificationOutbox 只记录 SUBMITTED_TO_ADAPTER/FAILED。接 Push 前明确“提交华为 Push”与“设备送达/用户点击”不同语义，不要把平台接受响应写成送达成功。
+
+4）Source 当前允许 PDF/PNG/JPEG/DOCX/PPTX/MP3。客户端 Picker 的类型过滤应由后端能力清单或共享 contract 驱动，避免客户端与后端各维护一份漂移名单。
+
+5）Source Preview 应采用“PDF Kit + Preview Kit/系统处理应用 + 图片原生预览”的组合，不建一个万能自研渲染器。
+
+6）语音 V1 采用“识别成文本 -> Composer -> 用户发送”。不要同时建立端侧语音命令引擎和后端 Agent 两套意图判断。
+
+7）Push/Share/Intents/App Linking 应共享一个外部路由解析与幂等入口。设计文档中的自定义 `laoshiren://` 可保留开发用途，生产优先 HTTPS App Linking。
+
+8）Agent Framework TaskState 与后端 RunStatus 需要显式映射文档/ADR；不能复用同名字段制造隐式耦合。
+
+
+15. 推荐后续开发优先级
+==================================================
+
+阶段 A：确定 bundle name、目标 SDK/API、签名、个人/企业开发者账号和真机；逐项确认 Kit 可见性、权益和地区。
+
+阶段 B：创建单 entry Stage 工程，落地 feature-first + MVVM、Navigation/NavPathStack、统一 ApiClient、状态管理和基础设计系统。
+
+阶段 C：完成 Chat/Things/Thing Detail/Today 的纯 API 闭环；同时用官方长列表、骨架屏、权限和隐私最佳实践。
+
+阶段 D：接 Core File/Photo Picker、Share Intake、PDF/Preview，复用现有 Source API；真机验证 URI、冷/热启动和大文件。
+
+阶段 E：接 Core Speech；按需要试验 Core Vision OCR。两者都作为输入 Adapter，不直写 State。
+
+阶段 F：后端完成 Thread/Run/SSE/LangGraph/HITL 后，客户端完成流式、input-required、resume 和断线恢复。
+
+阶段 G：确定 Auth 后接 Account Kit；随后用 Push Kit 替换 Recording Adapter，并接 App Linking。
+
+阶段 H：接服务卡片和低风险 Intents；根据真实使用再评估 Calendar、应用接续、跨设备剪贴板。
+
+阶段 I：Agent Framework/A2A 独立 Spike。确认 API Level、设备、权限、审核和安全后，才决定是否产品化；LangGraph 不迁移到客户端。
+
+
+16. 官方资料链接索引
+==================================================
+
+总入口
+- 应用鸿蒙化一纸禅：https://developer.huawei.com/consumer/cn/harmonyos-pioneer/one-sheet
+- 官方文档中心：https://developer.huawei.com/consumer/cn/doc/
+- 官方 Samples：https://developer.huawei.com/consumer/cn/samples/
+- 官方知识地图：https://developer.huawei.com/consumer/cn/app/knowledge-map/
+- 最佳实践总览：https://developer.huawei.com/consumer/cn/doc/best-practices/bpta-best-practices-overview
+
+模板/行业
+- 模板组件专区：https://developer.huawei.com/consumer/cn/market/landing/component
+- 笔记类解决方案：https://developer.huawei.com/consumer/cn/market/landing/notessolution
+- 教育行业样板间：https://developer.huawei.com/consumer/cn/market/landing/education
+- 笔记应用模板：https://developer.huawei.com/consumer/cn/market/prod-detail/0fb9c25383124abda514e41de1f1bffa/2adce9bbd4cb42d58a87e6add45594b3
+- 通用登录组件：https://developer.huawei.com/consumer/cn/market/prod-detail/9c79aa386aab4750aabb0c388d070cd9/2adce9bbd4cb42d58a87e6add45594b3
+
+基础工程/UI
+- Stage 模型：https://developer.huawei.com/consumer/cn/arkui/arkui-stage
+- Navigation：https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/arkts-navigation-jump
+- MVVM：https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V13/arkts-mvvm-V13
+- 分层架构：https://developer.huawei.com/consumer/cn/doc/doccenter-architecture/bpta-layered-architecture-design
+- 模块化设计：https://developer.huawei.com/consumer/cn/doc/doccenter-architecture/bpta-modular-design
+- 长列表/控制渲染范围：https://developer.huawei.com/consumer/cn/doc/best-practices-V5/bpta-control-rendering-range-V5
+- 隐私保护：https://developer.huawei.com/consumer/cn/doc/doccenter-architecture/bpta-app-privacy-protection
+
+文件/多模态
+- File Picker：https://developer.huawei.com/consumer/en/doc/harmonyos-references/js-apis-file-picker
+- Share 图片示例：https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V13/share-utd-image-V13
+- Share 最新 FAQ：https://developer.huawei.com/consumer/cn/doc/doccenter-dev-faq/faqs-share-2
+- PDF Kit：https://developer.huawei.com/consumer/cn/sdk/pdf-kit/
+- PdfView 示例：https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V5/pdf-pdfview-preview-method-V5
+- Preview Kit FAQ：https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V13/preview-faq-1-V13
+- Core Speech 识别：https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V13/speechrecognizer-guide-V13
+- Core Vision Kit：https://developer.huawei.com/consumer/cn/sdk/core-vision-kit
+- OCR 指南：https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V5/core-vision-text-recognition-V5
+- Vision Kit：https://developer.huawei.com/consumer/cn/doc/HarmonyOS-Guides/vision-introduction
+
+账号/触达/系统入口
+- Account Kit：https://developer.huawei.com/consumer/cn/sdk/account-kit
+- Account 登录概述：https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/account-quick-login-overview
+- Push Kit：https://developer.huawei.com/consumer/cn/sdk/push-kit/
+- Push v3/JWT：https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/push-jwt-token
+- Form Kit：https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V13/formkit-overview-V13
+- App Linking：https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V14/app-linking-startup-V14
+- Intents 场景：https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/intents-skill-all-rec-scene-experience
+- InsightIntent API：https://developer.huawei.com/consumer/cn/doc/harmonyos-references-v5/intents-arkts-api-insightintent-V5
+- Intents 上架：https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V5/intents-kit-listing-configuration-V5
+- Calendar Kit 总目录：https://developer.huawei.com/consumer/cn/doc/?istab=1
+- Live View Kit：https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V13/liveview-introduction-V13
+
+Agent/跨设备
+- Agent Framework A2A：https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/hmaf-a2a-dev-guide
+- 跨设备剪贴板：https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V13/distributed-pasteboard-guide-V13
+- 应用接续 FAQ：https://developer.huawei.com/consumer/cn/doc/doccenter-dev-faq/free-flow-faqs-1
+
+
+==================================================
+结论
+==================================================
+
+华为官方已经替本项目解决了大量“手机系统入口与通用客户端能力”：文件/图片选择、跨应用分享、PDF 渲染、语音识别、OCR、账号、Push、深链、桌面卡片、意图入口、基础导航/状态管理/长列表/隐私实践。这些能力应作为 HarmonyOS platform Adapter 或后端 Infrastructure Adapter 接入。
+
+官方没有替项目解决、也不应替换的是“老实人”的产品核心：Personal State、Memory、Thing、Evidence、Automation 语义、Policy/HITL 和 LangGraph Agent Runtime。正确的鸿蒙化不是把后端大脑搬到端上，而是用 HarmonyOS 官方能力让用户更自然地输入、查看、唤起、确认、跨场景继续并被恰当地触达。
+

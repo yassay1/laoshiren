@@ -1,0 +1,2951 @@
+《老实人｜Personal State + Memory 数据设计 v1.0》
+
+版本：v1.0
+项目名称：老实人
+文档类型：Domain State & Memory Data Design
+当前阶段：V1 正式开发设计
+目标：定义 Personal State、Thing、Task、Deadline、Timeline、Source、Long-term Memory 的数据边界与核心结构
+
+==================================================
+0. 文档目的
+==================================================
+
+本文件用于确定老实人 V1 的“数据大脑”。
+
+重点回答：
+
+1. 用户现实中的一件事情如何表示；
+2. Thing、Task、Deadline、Status、Progress、Next Action 如何组织；
+3. Personal State 保存什么；
+4. Long-term Memory 保存什么；
+5. Thread Memory 与 Long-term Memory 的边界；
+6. Timeline 保存什么；
+7. Source 如何与事务关联；
+8. Agent 如何读取和修改这些数据；
+9. 如何避免同一个事实在 State 和 Memory 中产生冲突；
+10. 如何为后续 Attention、Automation、Retrieval 和 Eval 提供稳定数据基础。
+
+核心原则：
+
+Personal State = 当前现实状态
+Long-term Memory = 跨对话长期信息与经验
+Thread State = 当前对话运行上下文
+Timeline = 重要变化过程
+Source = 原始现实信息来源
+
+这五者必须分开。
+
+
+==================================================
+1. 总体数据分层
+==================================================
+
+老实人 V1 的数据可分为五层：
+
+A. Runtime / Thread Layer
+B. Personal State Layer
+C. Long-term Memory Layer
+D. Source / Timeline Layer
+E. Automation Layer
+
+
+总体关系：
+
+User
+ │
+ ├── Threads / Messages
+ │
+ ├── Things
+ │     ├── Tasks
+ │     ├── Deadlines
+ │     ├── Next Actions
+ │     ├── Blockers
+ │     ├── Related People
+ │     ├── Related Sources
+ │     └── Timeline Events
+ │
+ ├── Long-term Memories
+ │     ├── Profile
+ │     ├── Semantic
+ │     └── Episodic
+ │
+ ├── Sources
+ │
+ └── Automations
+
+
+==================================================
+2. Personal State 定义
+==================================================
+
+Personal State 是：
+
+“用户现实事务当前状态的权威存储。”
+
+它必须回答：
+
+- 用户现在有哪些事情；
+- 每件事情现在处于什么阶段；
+- 当前有哪些任务；
+- 哪些已完成；
+- 哪些未完成；
+- 当前截止日期是什么；
+- 当前最大的阻碍是什么；
+- 下一步应该做什么；
+- 哪些事情正在等待别人；
+- 哪些状态最近发生变化。
+
+Personal State 不负责：
+
+- 保存完整聊天记录；
+- 保存所有过去版本的全文；
+- 保存用户所有历史经验；
+- 保存未来调度器；
+- 保存大文件内容；
+- 保存模型推理过程。
+
+
+==================================================
+3. Thing 作为核心领域对象
+==================================================
+
+Thing 表示一个需要持续维护的现实事务。
+
+例如：
+
+- 一个比赛；
+- 一个项目；
+- 一篇论文；
+- 一门课程；
+- 一份申请；
+- 一段实习任务；
+- 一次旅行计划；
+- 一个长期目标。
+
+Thing 不是 Task。
+
+Task 通常是 Thing 内部可执行的具体工作。
+
+
+示例：
+
+Thing：
+鸿蒙应用开发者激励计划
+
+Tasks：
+- 学习 ArkTS
+- 完成 Chat 页面
+- 接入 FastAPI
+- 完成上架材料
+- 提交审核
+
+
+==================================================
+4. Thing 核心结构
+==================================================
+
+V1 建议：
+
+Thing
+├── identity
+├── classification
+├── current_state
+├── temporal_state
+├── progress_state
+├── execution_state
+├── relationship_state
+├── source_state
+└── audit_state
+
+
+建议核心字段：
+
+id
+user_id
+name
+type
+description
+
+status
+current_stage
+priority
+progress
+
+start_at
+target_at
+deadline_at
+
+next_action_summary
+
+created_at
+updated_at
+version
+archived_at
+
+
+说明：
+
+id
+- 全局唯一 Thing ID。
+
+user_id
+- 所属用户。
+
+name
+- 用户能理解的事务名称。
+
+type
+- Thing 类型。
+
+description
+- 一段稳定简介，不放过多临时信息。
+
+status
+- 当前总体状态。
+
+current_stage
+- 当前阶段。
+
+priority
+- 当前优先级。
+
+progress
+- 进度表达。
+
+deadline_at
+- 当前主要截止时间。
+
+next_action_summary
+- 当前最值得执行的一步简要摘要。
+
+version
+- 乐观并发控制版本号。
+
+
+==================================================
+5. Thing Type
+==================================================
+
+V1 不为每一种现实事务创建独立数据库表。
+
+统一使用 Thing Core
++
+Type-specific extension。
+
+
+建议基础类型：
+
+PROJECT
+COMPETITION
+COURSE
+PAPER
+WORK
+APPLICATION
+PLAN
+EVENT
+PERSONAL
+OTHER
+
+
+类型的意义主要用于：
+
+- Skill Resolution；
+- UI 表达；
+- 推荐字段；
+- Attention Rule；
+- Search Filter。
+
+
+不要让 type 变成强限制。
+
+一个现实事项如果暂时无法分类：
+
+type = OTHER
+
+即可。
+
+
+==================================================
+6. Thing Status
+==================================================
+
+建议 V1 使用有限状态集：
+
+PLANNING
+ACTIVE
+BLOCKED
+WAITING
+PAUSED
+COMPLETED
+CANCELLED
+ARCHIVED
+
+
+说明：
+
+PLANNING
+- 已创建，但还在规划。
+
+ACTIVE
+- 正在推进。
+
+BLOCKED
+- 当前存在明确阻碍。
+
+WAITING
+- 当前主要等待外部人/事件。
+
+PAUSED
+- 主动暂停。
+
+COMPLETED
+- 事务完成。
+
+CANCELLED
+- 终止，不再推进。
+
+ARCHIVED
+- 历史归档。
+
+
+状态不要设计得过细。
+
+更具体的阶段：
+
+用 current_stage 表达。
+
+
+例如：
+
+status = ACTIVE
+current_stage = “正式开发”
+
+而不是创造：
+
+DEVELOPING_FRONTEND
+DEVELOPING_BACKEND
+WAITING_REVIEW
+...
+
+
+==================================================
+7. Priority
+==================================================
+
+建议：
+
+LOW
+NORMAL
+HIGH
+URGENT
+
+
+优先级来源可以有两种：
+
+user_defined_priority
+agent_inferred_priority
+
+
+最终展示：
+
+effective_priority
+
+
+原则：
+
+用户明确设置 > Agent 推断。
+
+
+Agent 可以根据：
+
+- deadline proximity；
+- importance；
+- blocker；
+- dependencies；
+- user language；
+
+建议提升优先级。
+
+但除非 Policy 允许，不应频繁自行改变用户明确设置的优先级。
+
+
+==================================================
+8. Progress
+==================================================
+
+Progress 不建议只存 0-100%。
+
+因为很多现实事务无法准确量化。
+
+建议：
+
+progress_mode
+
+可选：
+
+TASK_BASED
+PERCENTAGE
+STAGE_BASED
+MANUAL
+UNKNOWN
+
+
+字段：
+
+progress_value
+progress_summary
+
+
+例如：
+
+progress_mode = TASK_BASED
+progress_value = 0.65
+
+或：
+
+progress_mode = STAGE_BASED
+progress_summary = “已进入正式审核准备阶段”
+
+
+UI 可以根据不同类型选择不同表达。
+
+
+==================================================
+9. Task 模型
+==================================================
+
+Task 是一个可以明确完成、取消、等待或阻塞的执行单元。
+
+Task
+├── id
+├── thing_id
+├── parent_task_id
+├── title
+├── description
+├── status
+├── priority
+├── due_at
+├── start_at
+├── completed_at
+├── owner
+├── source_ref
+├── created_by
+├── created_at
+├── updated_at
+└── version
+
+
+Task Status 建议：
+
+TODO
+IN_PROGRESS
+WAITING
+BLOCKED
+DONE
+CANCELLED
+
+
+支持简单子任务：
+
+parent_task_id
+
+
+V1 不建议做复杂无限层级任务树。
+
+最多：
+
+Task
+└── Subtask
+
+即可。
+
+
+==================================================
+10. Deadline / Important Date
+==================================================
+
+一个 Thing 可能不止一个日期。
+
+因此：
+
+Thing.deadline_at
+
+只作为“当前主要截止日期”的快捷字段。
+
+同时应有：
+
+ThingDate
+
+
+建议：
+
+ThingDate
+├── id
+├── thing_id
+├── label
+├── kind
+├── starts_at
+├── ends_at
+├── is_primary
+├── certainty
+├── source_id
+├── status
+├── created_at
+└── updated_at
+
+
+kind 例如：
+
+REGISTRATION_DEADLINE
+SUBMISSION_DEADLINE
+REVIEW_DATE
+MEETING
+EXAM
+RESULT_DATE
+CUSTOM
+
+
+certainty：
+
+CONFIRMED
+PROBABLE
+UNCONFIRMED
+DISPUTED
+
+
+这非常重要。
+
+例如：
+
+“老师说好像延期到22号。”
+
+可以先保存为：
+
+candidate date
+certainty = UNCONFIRMED
+
+而不是直接覆盖：
+
+Thing.deadline_at。
+
+
+正式验证后：
+
+certainty = CONFIRMED
+is_primary = true
+Thing.deadline_at = 9/22
+
+
+==================================================
+11. Next Action
+==================================================
+
+Next Action 是 Agent 很重要的当前状态。
+
+Thing 可以有多个 Action Candidate，
+但应尽量明确一个：
+
+primary_next_action
+
+
+V1 可以直接从 Task 派生，
+也可以单独维护：
+
+NextAction
+├── thing_id
+├── task_id
+├── summary
+├── reason
+├── priority
+├── suggested_at
+└── status
+
+
+V1 为避免模型过重：
+
+建议先不单建复杂 NextAction 表。
+
+优先采用：
+
+Task
++
+Thing.next_action_summary
+
+后续出现需要再升级。
+
+
+==================================================
+12. Blocker
+==================================================
+
+Blocker 是导致 Thing / Task 无法继续推进的现实阻碍。
+
+建议：
+
+Blocker
+├── id
+├── thing_id
+├── task_id
+├── description
+├── severity
+├── status
+├── blocked_since
+├── resolved_at
+└── source_id
+
+
+status：
+
+OPEN
+RESOLVED
+IGNORED
+
+
+Blocker 有助于：
+
+- Attention；
+- 主动提醒；
+- Next Action；
+- 长期复盘。
+
+
+==================================================
+13. Related People
+==================================================
+
+V1 不必做复杂联系人 CRM。
+
+可以：
+
+ThingRelation
+
+其中 relation_type：
+
+PERSON
+THING
+SOURCE
+
+
+对 Person：
+
+related_people
+至少保存：
+
+display_name
+role
+note
+
+
+例如：
+
+秦老师
+role = 指导老师
+
+
+是否引入全局 Person Entity：
+
+V1 可以暂缓。
+
+先满足 Thing 局部关联即可。
+
+
+==================================================
+14. Thing Relation
+==================================================
+
+现实事务之间经常有关联。
+
+例如：
+
+“鸿蒙激励计划”
+depends_on
+“老实人 App 开发”
+
+
+建议：
+
+ThingRelation
+├── from_thing_id
+├── to_thing_id
+├── relation_type
+├── note
+└── created_at
+
+
+relation_type：
+
+RELATED_TO
+DEPENDS_ON
+PART_OF
+BLOCKED_BY
+DERIVED_FROM
+
+
+V1 可以先支持：
+
+RELATED_TO
+DEPENDS_ON
+PART_OF
+
+
+==================================================
+15. Source 模型
+==================================================
+
+Source 是现实信息的原始来源。
+
+例如：
+
+- 用户消息；
+- 截图；
+- 图片；
+- PDF；
+- Word；
+- PPT；
+- 音频；
+- 网页；
+- 官方通知。
+
+
+Source
+├── id
+├── user_id
+├── type
+├── origin
+├── title
+├── mime_type
+├── object_key
+├── external_url
+├── hash
+├── size
+├── created_at
+├── captured_at
+├── metadata
+└── processing_status
+
+
+type：
+
+MESSAGE
+IMAGE
+PDF
+WORD
+PPT
+AUDIO
+WEBPAGE
+OTHER
+
+
+origin：
+
+CHAT
+SHARE
+UPLOAD
+WEB_SEARCH
+AUTOMATION
+SYSTEM
+
+
+文件内容：
+
+Object Storage
+
+数据库只存：
+
+metadata
++
+object reference
+
+
+==================================================
+16. Source 与 Thing
+==================================================
+
+不要强制一个 Source 只能属于一个 Thing。
+
+建议：
+
+ThingSource
+├── thing_id
+├── source_id
+├── relation_type
+├── relevance
+└── created_at
+
+
+relation_type：
+
+PRIMARY
+SUPPORTING
+REFERENCE
+EVIDENCE
+OTHER
+
+
+例如：
+
+一个比赛通知 PDF
+可能同时影响：
+
+比赛 Thing
++
+论文提交 Thing
+
+允许多对多。
+
+
+==================================================
+17. Timeline Event
+==================================================
+
+Timeline 用于记录“现实事务的重要变化”。
+
+TimelineEvent
+├── id
+├── user_id
+├── thing_id
+├── event_type
+├── title
+├── summary
+├── occurred_at
+├── source_id
+├── actor_type
+├── actor_id
+├── mutation_id
+├── metadata
+└── created_at
+
+
+event_type：
+
+THING_CREATED
+STATUS_CHANGED
+STAGE_CHANGED
+TASK_CREATED
+TASK_COMPLETED
+DEADLINE_CHANGED
+SOURCE_ADDED
+DECISION_MADE
+BLOCKER_ADDED
+BLOCKER_RESOLVED
+AUTOMATION_CREATED
+TOOL_ACTION
+CUSTOM
+
+
+Timeline 不是：
+
+每句话一条记录。
+
+只有具备现实意义的变化才进入 Timeline。
+
+
+==================================================
+18. State Mutation
+==================================================
+
+所有重要 Personal State 修改建议保留变更记录。
+
+StateMutation
+├── id
+├── user_id
+├── thing_id
+├── run_id
+├── action_id
+├── mutation_type
+├── target_type
+├── target_id
+├── before
+├── after
+├── reason
+├── source_id
+├── created_by
+├── idempotency_key
+└── created_at
+
+
+价值：
+
+- Debug；
+- 回滚；
+- Timeline；
+- 用户发现 Agent 修改错误；
+- Eval；
+- 并发冲突分析。
+
+
+不要只保留数据库最终状态。
+
+
+==================================================
+19. 当前状态的权威来源
+==================================================
+
+一个非常重要的规则：
+
+Current Operational Truth
+=
+Personal State
+
+
+例如：
+
+Task:
+技术报告
+
+Current Status:
+DONE
+
+
+即使某条旧 Memory 写着：
+
+“技术报告还没完成。”
+
+也不能回答：
+
+“还没完成。”
+
+
+优先级：
+
+Personal State
+>
+Recent verified Tool Result
+>
+Current Source
+>
+Long-term Memory
+>
+Old Conversation Text
+
+
+Memory 不能覆盖当前业务状态。
+
+
+==================================================
+20. Thread Memory
+==================================================
+
+Thread Memory 由 LangGraph Checkpoint / State 管理。
+
+主要包含：
+
+- messages；
+- working plan；
+- tool results；
+- pending actions；
+- interrupt；
+- runtime state。
+
+
+Thread Memory 生命周期：
+
+围绕 Thread 持续。
+
+但不承担：
+
+跨 Thread 用户知识库。
+
+
+例如：
+
+Thread A 中：
+
+用户：
+“Demo做完了。”
+
+Task 更新后：
+
+当前状态进入 Personal State。
+
+用户新开 Thread B：
+
+不需要复制 Thread A 全部消息。
+
+Thread B 可以直接读取：
+
+Personal State:
+Demo = DONE
+
+
+==================================================
+21. Long-term Memory 总体模型
+==================================================
+
+Long-term Memory 分三类：
+
+PROFILE
+SEMANTIC
+EPISODIC
+
+
+统一基础结构可以是：
+
+Memory
+├── id
+├── user_id
+├── memory_type
+├── content
+├── summary
+├── thing_id
+├── importance
+├── confidence
+├── valid_from
+├── valid_until
+├── source_thread_id
+├── source_message_ids
+├── source_ids
+├── embedding
+├── created_at
+├── updated_at
+├── last_accessed_at
+└── status
+
+
+status：
+
+ACTIVE
+SUPERSEDED
+DELETED
+
+
+==================================================
+22. Profile Memory
+==================================================
+
+Profile Memory 表示相对稳定的用户偏好和长期特征。
+
+例如：
+
+“用户偏好简洁直接的提醒。”
+“用户不喜欢同一个提醒频繁重复。”
+“用户经常同时推进多个项目。”
+
+
+Profile Memory 不应保存：
+
+“今天报告没写完。”
+
+因为这不是稳定信息。
+
+
+Profile 可以采用两层：
+
+A. Core Profile
+
+少量稳定字段，可直接预加载。
+
+B. Profile Memories
+
+更细碎的长期偏好，通过检索加载。
+
+
+==================================================
+23. Semantic Memory
+==================================================
+
+Semantic Memory 表示跨 Thread 仍有长期价值的事实、决策和关系。
+
+例如：
+
+“老实人 V1 决定采用单一 Executive Agent。”
+“客户端采用 ArkTS + ArkUI。”
+“Personal State 不作为固定 Graph Node。”
+“Competition Skill 中应区分报名截止和提交截止。”
+
+
+Semantic Memory 适合：
+
+- 技术决定；
+- 长期规则；
+- 稳定事实；
+- 重要关系；
+- 经过确认的结论。
+
+
+==================================================
+24. Episodic Memory
+==================================================
+
+Episodic Memory 表示过去发生的重要经历。
+
+例如：
+
+“上一次正式汇报时，先重新根据老师要求搭故事线，比直接拼旧 PPT 效果更好。”
+
+“上次某个 Tool 因重复执行导致创建了两个相同日历事件，后来加入 idempotency key。”
+
+
+它强调：
+
+过去发生过什么
++
+结果如何
++
+未来类似场景有什么参考价值。
+
+
+==================================================
+25. Memory 与 Timeline 的区别
+==================================================
+
+Timeline：
+
+记录“发生过什么”。
+
+Memory：
+
+记录“未来还值得记住什么”。
+
+
+例如：
+
+Timeline：
+
+8/23
+确定 Agent 架构采用单一 Executive Agent。
+
+
+Memory Formation 后：
+
+Semantic Memory：
+
+“老实人架构已确定以单一 Executive Agent 为全局交互和决策核心。”
+
+
+并不是每条 Timeline 都必须形成 Memory。
+
+
+==================================================
+26. Memory 与 Source 的区别
+==================================================
+
+Source：
+
+原始来源。
+
+Memory：
+
+从对话和现实事件中抽取出的长期有价值内容。
+
+
+例如：
+
+Source：
+
+官方 PDF。
+
+Memory：
+
+“官方要求应用必须在 9/30 前正式上架。”
+
+
+如果未来需要验证：
+
+Memory
+→ source reference
+→ Source
+
+可以回溯。
+
+
+==================================================
+27. Memory Formation
+==================================================
+
+推荐：
+
+不要每轮用户消息都立即调用一次 Memory LLM。
+
+
+使用：
+
+Event Buffer
+↓
+Debounce / Batch
+↓
+Memory Formation Worker
+↓
+Extract Candidates
+↓
+Compare Existing Memories
+↓
+Decide:
+  Profile Update
+  Semantic Upsert
+  Episodic Insert
+  Ignore
+
+
+输入至少包含：
+
+- 最近对话；
+- 当前相关 Thing；
+- 最近 State Mutation；
+- Existing Relevant Memories。
+
+
+这样 Memory Manager 能知道：
+
+“哪些信息已经在 Personal State 中维护，不应该重复写成当前状态 Memory。”
+
+
+==================================================
+28. Memory Formation Candidate
+==================================================
+
+Memory Manager 可以先生成 Candidate：
+
+MemoryCandidate
+├── memory_type
+├── content
+├── reason
+├── importance
+├── confidence
+├── thing_id
+├── source_refs
+└── action
+
+
+action：
+
+CREATE
+UPDATE
+MERGE
+SUPERSEDE
+IGNORE
+
+
+例如：
+
+输入：
+
+“以后重要比赛都提前三天提醒我。”
+
+Candidate：
+
+type = PROFILE
+content = 用户偏好重要比赛截止前3天收到提醒
+action = CREATE
+
+
+输入：
+
+“Demo做完了。”
+
+Personal State 已更新：
+
+Demo = DONE
+
+Memory Candidate：
+
+IGNORE
+
+因为这是当前状态，不需要再作为长期事实复制。
+
+
+==================================================
+29. Memory 更新与合并
+==================================================
+
+Memory 不是只增不改。
+
+
+例如：
+
+旧 Profile Memory：
+
+“用户喜欢截止前一天提醒。”
+
+新明确表达：
+
+“以后重要事情提前三天提醒。”
+
+
+可以：
+
+old memory
+→ SUPERSEDED
+
+new memory
+→ ACTIVE
+
+
+或直接 update。
+
+
+Semantic Memory 也可能变化：
+
+旧：
+
+“项目采用多 Agent。”
+
+新：
+
+“最终架构改为单一 Executive Agent。”
+
+
+应该：
+
+旧 Memory 标记 superseded
++
+新 Memory active
+
+
+避免检索时同时返回两个互相冲突的结论。
+
+
+==================================================
+30. Memory Retrieval
+==================================================
+
+V1 推荐使用：
+
+PostgreSQL
++
+pgvector
+
+
+查询流程：
+
+Query Context
+├── current user message
+├── active Thing
+├── thread summary
+└── desired memory types
+
+        ↓
+
+Metadata Filter
++
+Vector Similarity
++
+Optional Keyword Match
++
+Ranking
+
+        ↓
+
+Top-K Memories
+
+
+==================================================
+31. Metadata Filter
+==================================================
+
+优先过滤：
+
+user_id
+
+
+然后根据上下文可选：
+
+thing_id
+memory_type
+domain
+time
+status = ACTIVE
+
+
+例如：
+
+用户：
+
+“之前这个比赛为什么没用多Agent？”
+
+可以：
+
+user_id = X
+thing_id = competition/project
+memory_type = SEMANTIC | EPISODIC
+status = ACTIVE
+
+
+再做向量召回。
+
+
+==================================================
+32. Memory Ranking
+==================================================
+
+简单 V1 Ranking 可综合：
+
+semantic_similarity
+importance
+recency
+thing_match
+memory_type_weight
+
+
+概念：
+
+score =
+semantic relevance
++
+thing relevance
++
+importance
++
+small recency bonus
+
+
+不需要 V1 一开始训练独立 Ranker。
+
+
+==================================================
+33. Memory Top-K
+==================================================
+
+不要检索几十条 Memory 全塞 Context。
+
+
+V1 可起步：
+
+Profile Core：
+少量固定高价值信息
+
+Semantic：
+Top 3-5
+
+Episodic：
+Top 2-3
+
+
+真正需要深入：
+
+Executive Agent
+→ memory.search
+
+
+==================================================
+34. Memory Embedding
+==================================================
+
+Embedding 主要用于：
+
+Semantic
+Episodic
+可检索 Profile Memory
+
+
+Embedding 不用于：
+
+所有数据库字段。
+
+
+Personal State 的结构化字段：
+
+优先 SQL / Filter / Search。
+
+不要：
+
+“找今天截止任务”
+→ 向量搜索
+
+
+应该：
+
+SQL:
+deadline <= today
+status != DONE
+
+
+==================================================
+35. Personal State Retrieval
+==================================================
+
+Personal State 查询优先结构化方式：
+
+state.search_things
+state.get_thing
+state.get_tasks
+state.get_deadlines
+state.get_history
+
+
+查询维度：
+
+- exact ID；
+- name；
+- type；
+- status；
+- deadline；
+- priority；
+- relation；
+- full-text / fuzzy name search。
+
+
+如果用户说：
+
+“之前那个鸿蒙比赛”
+
+可以：
+
+Text/Fuzzy Search
++
+Thread hints
++
+Recent Thing usage
+
+
+找候选 Thing。
+
+
+==================================================
+36. Active Thing Resolution
+==================================================
+
+Context Builder 可以维护：
+
+active_thing_refs
+
+
+来源：
+
+- Thread 最近讨论；
+- 用户明确名称；
+- 分享 Source 的历史关联；
+- 最近访问 Thing；
+- 搜索匹配。
+
+
+建议输出：
+
+ThingCandidate
+├── thing_id
+├── confidence
+└── reason
+
+
+高置信：
+
+可自动 prefetch。
+
+
+低置信：
+
+让 Agent 继续判断。
+
+
+多个高相似候选：
+
+不要随机修改。
+
+
+==================================================
+37. State Update Policy
+==================================================
+
+State Mutation 按风险划分。
+
+
+LOW RISK
+
+例如：
+
+用户明确：
+“Demo做完了。”
+
+且唯一定位 Task。
+
+可以直接更新。
+
+
+MEDIUM RISK
+
+例如：
+
+“我准备下周把报告做完。”
+
+这是计划，不是完成状态。
+
+可以：
+
+创建/更新 Task target date
+
+但不能：
+
+Task = DONE
+
+
+HIGHER UNCERTAINTY
+
+例如：
+
+“听说截止时间改了。”
+
+不能直接覆盖 verified deadline。
+
+应验证或询问。
+
+
+==================================================
+38. Fact Certainty
+==================================================
+
+建议对关键事实支持 certainty。
+
+
+适用：
+
+- deadline；
+- eligibility；
+- requirement；
+- external result；
+- important rule。
+
+
+certainty：
+
+CONFIRMED
+PROBABLE
+UNCONFIRMED
+DISPUTED
+
+
+正式 Personal State 的主要字段：
+
+优先使用 CONFIRMED。
+
+
+候选信息可以放：
+
+fact_candidates
+或
+ThingDate certainty
+
+
+V1 不需要所有字段都加 certainty。
+
+只对高风险动态事实使用。
+
+
+==================================================
+39. State Conflict
+==================================================
+
+可能出现：
+
+用户说 A
+官方 Source 说 B
+旧 State 是 C
+
+
+建议冲突处理优先级：
+
+1. 用户对“用户自身行为”的明确陈述；
+2. 官方可靠来源对外部事实的明确说明；
+3. 已确认 Personal State；
+4. 第三方来源；
+5. 推测 / Memory。
+
+
+例如：
+
+用户：
+“我已经提交了。”
+
+这是用户自身行为。
+
+可以把：
+
+submission task = DONE
+
+但如果：
+
+用户：
+“比赛截止应该是22号。”
+
+这是外部事实。
+
+如果已有官方 19 号：
+
+应验证。
+
+
+==================================================
+40. Optimistic Concurrency
+==================================================
+
+Thing / Task 重要写入支持 version。
+
+
+例：
+
+Thing version = 12
+
+Agent A：
+read version 12
+
+Agent B：
+read version 12
+
+Agent A：
+update
+→ version 13
+
+Agent B：
+update WHERE version=12
+→ conflict
+
+
+Agent B：
+
+重新读取
+→ 判断新状态
+→ 必要时重新执行。
+
+
+避免无条件 Last Write Wins。
+
+
+==================================================
+41. Idempotency
+==================================================
+
+State Mutation 使用：
+
+idempotency_key
+
+
+建议：
+
+run_id + action_id
+
+
+数据库记录：
+
+同一 idempotency_key 已执行成功
+
+再次调用：
+
+返回原 mutation result。
+
+
+避免：
+
+Agent resume
+网络重试
+客户端重复请求
+
+导致：
+
+重复创建 Task
+重复创建 Automation
+重复状态变化。
+
+
+==================================================
+42. Delete / Archive
+==================================================
+
+V1 对重要对象优先：
+
+soft delete / archive
+
+
+Thing：
+
+archived_at
+
+Memory：
+
+status = DELETED
+
+Automation：
+
+status = CANCELLED
+
+
+真正物理删除：
+
+后续根据隐私/账户删除需求执行。
+
+
+原因：
+
+- Agent误操作可恢复；
+- Timeline 可追踪；
+- Debug；
+- 用户撤销。
+
+
+==================================================
+43. Attention 所需数据
+==================================================
+
+Attention 不需要独立成为主数据源。
+
+可以从：
+
+Thing
+Task
+ThingDate
+Blocker
+Automation
+StateMutation
+
+派生。
+
+
+典型 SQL / Rule：
+
+Task:
+status != DONE
+AND due_at < now
+→ overdue
+
+
+Task:
+due_at today
+→ due_today
+
+
+Thing:
+priority = HIGH
+AND updated_at < threshold
+→ inactive_important
+
+
+Blocker:
+status = OPEN
+AND blocked_since < threshold
+→ blocked_too_long
+
+
+再结合：
+
+last_surfaced_at
+dismissed_until
+acknowledged
+
+决定是否进入 Attention Candidate。
+
+
+==================================================
+44. Attention Feedback
+==================================================
+
+为了避免反复提醒，需要记录反馈。
+
+AttentionFeedback
+├── user_id
+├── subject_type
+├── subject_id
+├── last_surfaced_at
+├── surface_count
+├── acknowledged_at
+├── dismissed_until
+└── updated_at
+
+
+subject 可以是：
+
+Thing
+Task
+Deadline
+Blocker
+
+
+V1 可以作为独立小表，
+也可以放入 projection/cache。
+
+
+==================================================
+45. Automation 与 State 的关联
+==================================================
+
+Automation 应可引用：
+
+thing_id
+task_id
+source_id
+thread_id
+
+
+例如：
+
+“9月18号提醒我提交技术报告。”
+
+Automation：
+
+thing_id = 比赛
+task_id = 技术报告
+trigger_at = 9/18
+action = notification
+
+
+如果 Task 提前完成：
+
+Automation Service 可以根据 Policy：
+
+- 自动取消；
+- 或触发时检查状态后静默结束。
+
+
+==================================================
+46. 数据库逻辑表建议
+==================================================
+
+V1 建议逻辑对象：
+
+users
+
+threads
+messages
+agent_runs
+tool_executions
+
+things
+tasks
+thing_dates
+blockers
+thing_relations
+thing_sources
+
+timeline_events
+state_mutations
+
+sources
+
+memory_profile
+long_term_memories
+
+automations
+attention_feedback
+
+
+LangGraph Checkpoint：
+
+使用框架自己的 checkpoint 表。
+
+
+不建议 V1：
+
+- 单独 Evidence Graph；
+- Neo4j；
+- 独立 Vector DB；
+- 事件溯源全量系统；
+- 每一种 Thing 一个表。
+
+
+==================================================
+47. 数据库关系示意
+==================================================
+
+User
+ │
+ ├── Thread
+ │     └── Message
+ │
+ ├── Thing
+ │     ├── Task
+ │     ├── ThingDate
+ │     ├── Blocker
+ │     ├── ThingRelation
+ │     ├── ThingSource ─── Source
+ │     ├── TimelineEvent
+ │     └── StateMutation
+ │
+ ├── MemoryProfile
+ │
+ ├── LongTermMemory
+ │     └── embedding
+ │
+ ├── Automation
+ │
+ └── AgentRun
+       └── ToolExecution
+
+
+==================================================
+48. 示例：用户完成任务
+==================================================
+
+用户：
+
+“演示视频做完了。”
+
+
+Context：
+
+active thing = 比赛 A
+Task:
+演示视频 = TODO
+
+
+Agent：
+
+state.update_task(
+  task_id=video,
+  status=DONE
+)
+
+
+事务内：
+
+Task
+TODO → DONE
+
+completed_at = now
+
+
+同时：
+
+StateMutation：
+
+before:
+status=TODO
+
+after:
+status=DONE
+
+
+TimelineEvent：
+
+“演示视频已完成”
+
+
+Thing：
+
+updated_at 更新
+
+progress 可重新计算
+
+next_action_summary 可更新
+
+
+Long-term Memory：
+
+通常不写。
+
+
+==================================================
+49. 示例：截止日期变化
+==================================================
+
+当前：
+
+ThingDate:
+Submission Deadline
+9/19
+CONFIRMED
+
+
+用户：
+
+“群里说好像延期22号。”
+
+
+第一步：
+
+新信息不直接覆盖。
+
+
+可以创建候选：
+
+ThingDate Candidate
+9/22
+UNCONFIRMED
+source = screenshot
+
+
+Agent：
+
+search.official
+
+
+验证成功：
+
+旧：
+9/19
+status = superseded / no longer primary
+
+新：
+9/22
+CONFIRMED
+is_primary = true
+
+
+Thing.deadline_at：
+
+9/22
+
+
+StateMutation：
+
+记录：
+
+9/19 → 9/22
+
+
+Timeline：
+
+“官方确认提交截止时间延期至 9/22。”
+
+
+Semantic Memory：
+
+如果这是一项未来有长期价值的关键事实，可由后台形成。
+
+但当前 Deadline 权威值仍来自 Personal State。
+
+
+==================================================
+50. 示例：长期技术决定
+==================================================
+
+用户与 Agent 讨论后确定：
+
+“客户端就用 ArkTS + ArkUI。”
+
+
+Personal State：
+
+如果存在：
+
+Thing = 老实人 App 开发
+
+可以：
+
+current technical decision / related note
+或 Timeline：
+“客户端技术路线确定。”
+
+
+Long-term Memory：
+
+Semantic:
+
+“老实人 HarmonyOS 客户端采用 ArkTS + ArkUI。”
+
+
+未来新 Thread：
+
+“我们客户端最后用什么？”
+
+Memory Retriever：
+
+返回该 Semantic Memory。
+
+
+==================================================
+51. 示例：历史经验
+==================================================
+
+某次开发发生：
+
+Automation 因重复执行创建了两条通知。
+
+修复后：
+
+使用 idempotency_key。
+
+
+Timeline：
+
+记录 Bug 修复。
+
+Episodic Memory：
+
+“老实人的副作用 Tool 曾因恢复重试导致重复执行；后续真实写操作需使用 idempotency key。”
+
+
+未来设计 Calendar Tool：
+
+Memory Retrieval 可以提供这段经验。
+
+
+==================================================
+52. Personal State API 视角
+==================================================
+
+未来 Service 层建议至少支持：
+
+create_thing
+get_thing
+search_things
+update_thing
+
+create_task
+get_tasks
+update_task
+
+create_date
+update_date
+list_dates
+
+create_blocker
+resolve_blocker
+
+add_source_relation
+
+get_timeline
+get_state_history
+
+
+Agent Tool 不一定暴露所有底层 Service 方法。
+
+Tool 应是：
+
+适合 LLM 使用的高层能力。
+
+
+==================================================
+53. Memory API 视角
+==================================================
+
+Memory Service：
+
+search_memory
+get_memory
+create_memory
+update_memory
+supersede_memory
+delete_memory
+
+
+Agent 默认只暴露：
+
+memory.search
+
+显式“记住/忘记”时：
+
+可以通过受控 Memory Tool。
+
+
+常规 Memory Formation：
+
+后台 Worker 调用 Service，
+不需要 Executive Agent 每轮主动 CRUD。
+
+
+==================================================
+54. 查询当前状态的原则
+==================================================
+
+用户问：
+
+“我今天还有什么？”
+
+优先：
+
+SQL / Personal State / Automation
+
+
+不是：
+
+Vector Memory Search。
+
+
+用户问：
+
+“我们之前为什么这么做？”
+
+优先：
+
+Semantic / Episodic Memory
+
+
+用户问：
+
+“这个事情现在到什么阶段？”
+
+优先：
+
+Thing.current_stage
+
+
+用户问：
+
+“上次类似情况我们怎么处理的？”
+
+优先：
+
+Episodic Memory
+
+
+==================================================
+55. 数据摘要与 Agent Context
+==================================================
+
+不要把数据库对象原样塞给 LLM。
+
+
+Personal State Service 可以生成：
+
+ThingContextView
+
+
+例如：
+
+Thing: 老实人
+Status: ACTIVE
+Stage: V1设计
+Deadline: 2026-09-30
+Priority: HIGH
+
+Pending Tasks:
+- 完成 Agent Architecture
+- 完成 HarmonyOS Client
+
+Next:
+- 设计 Personal State / Memory
+
+Blockers:
+- 无云服务器
+
+
+这是 Context View。
+
+数据库仍保存完整结构。
+
+
+==================================================
+56. State Projection
+==================================================
+
+为了 Context 与 UI 性能，
+可以建立轻量 projection。
+
+
+例如：
+
+thing_summary_view
+
+包含：
+
+id
+name
+status
+stage
+priority
+deadline
+progress
+next_action
+pending_task_count
+updated_at
+
+
+用于：
+
+- Things 首页；
+- Context Prefetch；
+- Attention；
+- Search Candidate。
+
+
+V1 可以先用 SQL View / Query 动态生成。
+
+无需上复杂 CQRS。
+
+
+==================================================
+57. Data Integrity
+==================================================
+
+关键约束：
+
+Task.thing_id 必须存在。
+
+Primary Deadline 一个 Thing 同一 kind 尽量最多一个 active confirmed primary。
+
+StateMutation 必须引用真实 target。
+
+ThingSource 不能重复无意义绑定。
+
+Memory user_id 必须与 Thing user_id 一致。
+
+Automation 跨用户引用禁止。
+
+
+==================================================
+58. Timestamp
+==================================================
+
+后端统一存：
+
+UTC timestamp
+
+
+用户展示：
+
+使用用户时区。
+
+
+Deadline 需要区分：
+
+date only
+datetime
+
+
+例如：
+
+“9月30日前提交”
+
+可能语义为：
+
+2026-09-30 local end-of-day
+
+不能无意识转换成：
+
+UTC 00:00。
+
+
+建议：
+
+保存：
+
+datetime
++
+timezone
++
+precision
+
+
+precision：
+
+DATE
+DATETIME
+
+
+==================================================
+59. Source Provenance
+==================================================
+
+关键状态变化尽量保留来源。
+
+例如：
+
+deadline 更新：
+
+source_type = WEB_OFFICIAL
+source_id = ...
+
+
+Task 完成：
+
+source_type = USER_ASSERTION
+source_message_id = ...
+
+
+Agent 推断：
+
+source_type = AGENT_INFERENCE
+
+
+重要事实：
+
+尽量可回溯：
+
+“为什么系统认为这是 9/22？”
+
+
+==================================================
+60. Confidence
+==================================================
+
+不要给所有数据都增加 AI confidence。
+
+只在真正有意义的位置保留：
+
+- extracted facts；
+- unverified external facts；
+- memory formation；
+- Thing resolution。
+
+
+例如：
+
+ThingCandidate:
+confidence = 0.91
+
+MemoryCandidate:
+confidence = 0.85
+
+
+用户明确陈述：
+
+不需要再给一个假的 0.97。
+
+
+==================================================
+61. 个人使用 V1 简化
+==================================================
+
+当前 V1 先只有本人使用。
+
+因此可以简化：
+
+- 复杂 RBAC；
+- 企业权限；
+- 多租户组织；
+- 团队共享；
+- 成员角色；
+- 多人冲突编辑。
+
+
+但数据库仍保留：
+
+user_id
+
+避免以后迁移困难。
+
+
+==================================================
+62. 数据隐私基线
+==================================================
+
+即使当前本人使用，也要从结构上支持：
+
+- 按 user_id 隔离；
+- 删除 Memory；
+- 删除/归档 Thing；
+- 删除 Source；
+- 删除 Automation；
+- 账户级数据清理。
+
+
+Source 原文件和数据库 metadata 要能关联删除。
+
+
+避免：
+
+数据库删了 Source，
+Object Storage 文件仍永久遗留。
+
+
+==================================================
+63. V1 不建议做的事情
+==================================================
+
+1. 不把每句话转成一条 Memory。
+2. 不把所有 State 同步复制到 Memory。
+3. 不用向量数据库查询结构化 Deadline。
+4. 不把聊天 Thread 当 Thing。
+5. 不把 Timeline 当完整聊天日志。
+6. 不为不同 Thing Type 建十几套数据库结构。
+7. 不允许 LLM 直接写 SQL。
+8. 不用最终一致性掩盖关键状态写冲突。
+9. 不做所有信息永久不可修改的 Memory。
+10. 不为了“知识图谱”提前引入复杂 Graph DB。
+
+
+==================================================
+64. 初始数据库落地建议
+==================================================
+
+V1 推荐：
+
+PostgreSQL
+
+Extension:
+pgvector
+
+
+逻辑对象：
+
+Core:
+- users
+- things
+- tasks
+- thing_dates
+
+State support:
+- blockers
+- thing_relations
+- thing_sources
+- timeline_events
+- state_mutations
+
+Conversation:
+- threads
+- messages
+- agent_runs
+- tool_executions
+
+Memory:
+- memory_profile
+- long_term_memories
+
+Source:
+- sources
+
+Proactive:
+- automations
+- attention_feedback
+
+
+Files:
+
+Object Storage
+
+
+LangGraph:
+
+PostgresSaver / PostgreSQL Checkpointer
+
+
+==================================================
+65. Personal State / Memory 验收 Case
+==================================================
+
+D01
+
+用户：
+“Demo做完了。”
+
+Expected：
+
+Task DONE
+StateMutation exists
+Timeline event exists
+不产生重复 Memory。
+
+
+D02
+
+用户：
+“这个项目还有什么没做？”
+
+Expected：
+
+答案来自 Tasks / State，
+不是从旧聊天猜。
+
+
+D03
+
+用户：
+“听说截止改22号。”
+
+Expected：
+
+9/19 confirmed deadline 不直接被覆盖。
+
+
+D04
+
+官方验证 9/22。
+
+Expected：
+
+9/22 成为 confirmed primary deadline；
+Thing.deadline_at 更新；
+Mutation / Timeline 有记录。
+
+
+D05
+
+用户新 Thread：
+
+“我们客户端最后定什么技术？”
+
+Expected：
+
+通过 Semantic Memory 找到 ArkTS + ArkUI。
+
+
+D06
+
+用户：
+
+“这个比赛当前 deadline 是多少？”
+
+Expected：
+
+优先 Personal State。
+
+
+D07
+
+Memory 与 State 冲突：
+
+Memory:
+报告 TODO
+
+State:
+报告 DONE
+
+Expected：
+
+回答 DONE。
+
+
+D08
+
+同一 Run 重复 update_task。
+
+Expected：
+
+idempotency 防止重复 Mutation。
+
+
+D09
+
+两个 Run 同时更新 Thing。
+
+Expected：
+
+version conflict 被检测。
+
+
+D10
+
+用户分享一个 PDF。
+
+Expected：
+
+Source 被保存；
+可关联 Thing；
+不自动无条件修改 State。
+
+
+D11
+
+Timeline：
+
+不包含全部 Chat Message。
+
+只包含现实意义 Event。
+
+
+D12
+
+一个 Source 可关联多个 Thing。
+
+
+D13
+
+用户明确修改提醒偏好。
+
+Expected：
+
+Profile Memory 更新。
+
+
+D14
+
+Task 完成属于当前状态。
+
+Expected：
+
+不作为 Profile / Semantic Memory 重复保存。
+
+
+D15
+
+历史失败经验具有长期价值。
+
+Expected：
+
+可以形成 Episodic Memory。
+
+
+D16
+
+用户问“今天截止的任务”。
+
+Expected：
+
+结构化 Deadline 查询，
+不用 vector retrieval。
+
+
+D17
+
+用户问“之前为什么这么决定”。
+
+Expected：
+
+Semantic / Episodic Retrieval。
+
+
+D18
+
+Attention：
+
+已完成 Task 不进入 due_today。
+
+
+D19
+
+Automation：
+
+关联 Task 完成后，触发时能重新检查真实状态。
+
+
+D20
+
+Source 删除：
+
+数据库引用和 Object Storage 能协调清理。
+
+
+==================================================
+66. 推荐实现顺序
+==================================================
+
+第一阶段：
+
+things
+tasks
+thing_dates
+state_mutations
+timeline_events
+
+
+先跑通：
+
+用户消息
+→ Agent
+→ Thing
+→ Task update
+→ Timeline
+
+
+第二阶段：
+
+sources
+thing_sources
+
+
+跑通：
+
+Share / Upload
+→ Source
+→ Agent
+→ Thing
+
+
+第三阶段：
+
+long_term_memories
+pgvector
+memory retrieval
+
+
+跑通：
+
+新 Thread
+→ Memory Retrieval
+→ 跨 Thread 继续
+
+
+第四阶段：
+
+memory formation worker
+
+
+第五阶段：
+
+Attention
+
+
+第六阶段：
+
+Automation
+
+
+这样即使某个高级模块暂未完成，
+Personal State 核心也不会因为 Memory 设计变化而推翻。
+
+
+==================================================
+67. 最终边界总结
+==================================================
+
+一句话：
+
+Personal State 管“现在”。
+
+Memory 管“过去值得继续记住的东西”。
+
+Thread 管“当前这段对话正在做什么”。
+
+Timeline 管“事情是怎么变化过来的”。
+
+Source 管“这些信息从哪里来”。
+
+Automation 管“未来什么时候继续行动”。
+
+
+更完整：
+
+现在：
+Personal State
+
+过去：
+Long-term Memory
+
+当前对话：
+Thread State
+
+变化过程：
+Timeline
+
+原始证据/资料：
+Source
+
+未来：
+Automation
+
+
+Executive Agent 不拥有这些数据。
+
+Executive Agent 通过 Context + Tool 使用这些数据。
+
+
+==================================================
+68. 当前数据架构定义
+==================================================
+
+老实人的个人数据系统最终形成：
+
+                     User
+                      │
+         ┌────────────┼────────────┐
+         ▼            ▼            ▼
+      Threads        Things      Memories
+                       │
+              ┌────────┼─────────┐
+              ▼        ▼         ▼
+            Tasks    Dates     Blockers
+              │        │
+              └────────┼─────────┐
+                       ▼         ▼
+                    Timeline   Sources
+                       │
+                       ▼
+                 State Mutations
+
+Future:
+Automations
+
+Attention:
+Derived from Current State
+
+
+其中：
+
+Thing 是现实事务中心。
+
+Task / Date / Blocker 描述其当前状态。
+
+Timeline / Mutation 描述其变化。
+
+Source 提供现实来源。
+
+Memory 保存跨对话长期价值。
+
+Automation 将未来行动从 Memory 中剥离。
+
+Attention 从当前状态中动态派生。
+
+
+本文件作为老实人 V1 Personal State + Memory 数据设计基线。
+
+后续数据库 Migration、ORM Model、Repository 和 Tool Schema
+应以本文件为基础继续细化。
+
+—— End ——

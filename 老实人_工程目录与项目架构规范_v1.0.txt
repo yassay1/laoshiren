@@ -1,0 +1,1394 @@
+《老实人｜工程目录与项目架构规范 v1.0》
+
+版本：v1.0
+项目名称：老实人
+文档类型：Repository / Project Architecture Specification
+当前阶段：正式开发前最终工程结构定版
+目标：
+1. 最大程度实现“老实人”Agent 产品能力；
+2. 服务于 2026 鸿蒙应用开发者激励计划；
+3. 建立成熟、工程化、可维护、可扩展的 Agent 项目结构。
+
+==================================================
+1. 总体架构结论
+==================================================
+
+老实人采用：
+
+Monorepo
++
+HarmonyOS Native Client
++
+Modular Monolith Backend
++
+Clean Architecture
++
+DDD-lite
++
+Agent Orchestration
+
+核心原则：
+
+1. HarmonyOS 客户端使用 ArkTS + ArkUI 原生开发；
+2. FastAPI 后端保持一个主部署单元，不做无必要微服务；
+3. 普通业务后端先成立，Agent 不是业务能力本身；
+4. Application + Domain 构成业务系统核心；
+5. Executive Agent 通过 Tool 调用 Application Use Case；
+6. UI、Agent、Worker 最终共享同一套 Application / Domain；
+7. Infrastructure 负责技术实现细节；
+8. LangGraph 只负责 Agent Runtime / Orchestration；
+9. 数据库、LLM、Search、Push 等不得反向污染 Domain；
+10. 架构保持成熟边界，但 Python 实现保持轻量，避免过度抽象。
+
+最终调用关系：
+
+普通结构化操作：
+
+HarmonyOS
+    ↓
+Presentation API
+    ↓
+Application
+    ↓
+Domain
+    ↓
+Infrastructure
+
+
+自然语言操作：
+
+HarmonyOS Chat
+    ↓
+FastAPI Run API
+    ↓
+Executive Agent
+    ↓
+Tool
+    ↓
+Application
+    ↓
+Domain
+    ↓
+Infrastructure
+
+
+后台任务：
+
+Worker
+    ↓
+Application
+    ↓
+Domain
+    ↓
+Infrastructure
+
+
+==================================================
+2. 仓库总体结构
+==================================================
+
+laoshiren/
+│
+├── apps/
+│   └── harmonyos/
+│
+├── backend/
+│
+├── contracts/
+│   ├── openapi.json
+│   └── agent-stream-events.schema.json
+│
+├── docs/
+│   ├── product/
+│   ├── architecture/
+│   └── adr/
+│
+├── deploy/
+│   ├── docker/
+│   └── compose/
+│
+├── scripts/
+│
+├── .github/
+│   └── workflows/
+│
+├── AGENTS.md
+├── CLAUDE.md
+├── README.md
+├── .gitignore
+└── .editorconfig
+
+
+说明：
+
+apps/
+- 所有客户端应用；
+- V1 只有 HarmonyOS。
+
+backend/
+- Python / FastAPI / Agent 后端。
+
+contracts/
+- 前后端通信契约。
+
+docs/
+- 产品、架构与 ADR。
+
+deploy/
+- Docker、Compose、部署配置。
+
+scripts/
+- 开发辅助、初始化、导出契约、数据库维护等脚本。
+
+AGENTS.md / CLAUDE.md
+- AI Coding Agent 项目级开发约束。
+
+
+==================================================
+3. HarmonyOS 客户端技术路线
+==================================================
+
+正式技术路线：
+
+Language:
+ArkTS
+
+UI:
+ArkUI
+
+IDE:
+DevEco Studio
+
+App Model:
+Stage Model + UIAbility
+
+Navigation:
+Navigation + NavDestination
+
+System Capabilities:
+- Ability Kit
+- ArkData
+- Core File Kit
+- Photo Picker
+- Push Kit
+- Notification
+- Calendar
+- Speech
+- Want / Share
+- App Linking
+- Background capability（按实际需要）
+
+
+选择原因：
+
+1. 最大程度使用 HarmonyOS 原生系统能力；
+2. 符合鸿蒙应用开发者激励计划方向；
+3. 老实人高度依赖文件、分享、通知、语音、日历、系统入口；
+4. 避免跨平台框架在系统能力适配上的额外复杂度；
+5. 为后续 HarmonyOS 产品体验留出最大空间。
+
+
+==================================================
+4. HarmonyOS 工程结构
+==================================================
+
+apps/harmonyos/
+│
+├── AppScope/
+│
+└── entry/
+    └── src/main/
+        │
+        ├── ets/
+        │   │
+        │   ├── entryability/
+        │   │   └── EntryAbility.ets
+        │   │
+        │   ├── app/
+        │   │   ├── AppRoot.ets
+        │   │   └── AppState.ets
+        │   │
+        │   ├── features/
+        │   │   ├── chat/
+        │   │   ├── today/
+        │   │   ├── things/
+        │   │   ├── timeline/
+        │   │   ├── sources/
+        │   │   ├── automation/
+        │   │   └── settings/
+        │   │
+        │   ├── common/
+        │   │   ├── network/
+        │   │   ├── streaming/
+        │   │   ├── navigation/
+        │   │   ├── storage/
+        │   │   ├── platform/
+        │   │   └── design_system/
+        │   │
+        │   └── shared/
+        │       ├── models/
+        │       └── utils/
+        │
+        └── resources/
+
+
+Feature 内部采用：
+
+Feature-first + MVVM
+
+例如：
+
+features/chat/
+├── pages/
+├── components/
+├── viewmodel/
+├── model/
+└── data/
+
+
+原则：
+
+1. 页面壳保持轻量；
+2. Feature 高内聚；
+3. 公共能力不能依赖具体 Feature；
+4. V1 物理上保持单 entry module；
+5. 后续确有需要时再拆 HAR / HSP；
+6. 不为“模块化”提前制造过多工程复杂度。
+
+
+==================================================
+5. 后端总体技术路线
+==================================================
+
+Python
+
+FastAPI
+
+LangGraph
+
+PostgreSQL
+
+pgvector
+
+Object Storage
+
+Background Worker / Scheduler
+
+SSE / Streaming
+
+uv
+
+Alembic
+
+Pydantic
+
+生产结构：
+
+Modular Monolith
++
+Clean Architecture
++
+DDD-lite
+
+
+==================================================
+6. 后端最终目录结构
+==================================================
+
+backend/
+│
+├── pyproject.toml
+├── uv.lock
+├── .python-version
+├── .env.example
+├── langgraph.json
+├── alembic.ini
+│
+├── migrations/
+│
+├── src/
+│   └── laoshiren/
+│       │
+│       ├── __init__.py
+│       ├── main.py
+│       ├── bootstrap.py
+│       │
+│       ├── config/
+│       │   ├── settings.py
+│       │   └── logging.py
+│       │
+│       ├── presentation/
+│       │   └── api/
+│       │       ├── dependencies.py
+│       │       ├── error_handlers.py
+│       │       ├── streaming.py
+│       │       │
+│       │       ├── routers/
+│       │       │   ├── health.py
+│       │       │   ├── threads.py
+│       │       │   ├── runs.py
+│       │       │   ├── things.py
+│       │       │   ├── tasks.py
+│       │       │   ├── sources.py
+│       │       │   ├── attention.py
+│       │       │   └── automations.py
+│       │       │
+│       │       └── schemas/
+│       │           ├── common.py
+│       │           ├── threads.py
+│       │           ├── runs.py
+│       │           ├── things.py
+│       │           ├── tasks.py
+│       │           ├── sources.py
+│       │           └── automations.py
+│       │
+│       ├── application/
+│       │   ├── personal_state/
+│       │   │   ├── service.py
+│       │   │   ├── dto.py
+│       │   │   └── ports.py
+│       │   │
+│       │   ├── memory/
+│       │   ├── sources/
+│       │   ├── automation/
+│       │   └── attention/
+│       │
+│       ├── domain/
+│       │   ├── personal_state/
+│       │   │   ├── entities.py
+│       │   │   ├── value_objects.py
+│       │   │   ├── rules.py
+│       │   │   ├── services.py
+│       │   │   ├── events.py
+│       │   │   └── exceptions.py
+│       │   │
+│       │   ├── memory/
+│       │   ├── sources/
+│       │   ├── automation/
+│       │   └── attention/
+│       │
+│       ├── agent/
+│       │   ├── graph.py
+│       │   ├── state.py
+│       │   ├── executive.py
+│       │   │
+│       │   ├── context/
+│       │   ├── tools/
+│       │   ├── prompts/
+│       │   ├── skills/
+│       │   └── specialists/
+│       │
+│       ├── infrastructure/
+│       │   ├── persistence/
+│       │   │   ├── database.py
+│       │   │   ├── orm/
+│       │   │   ├── repositories/
+│       │   │   ├── vector/
+│       │   │   └── checkpoint/
+│       │   │
+│       │   ├── llm/
+│       │   ├── embeddings/
+│       │   ├── storage/
+│       │   ├── search/
+│       │   ├── push/
+│       │   ├── calendar/
+│       │   ├── speech/
+│       │   ├── document/
+│       │   └── jobs/
+│       │
+│       ├── workers/
+│       │   ├── memory_formation.py
+│       │   ├── automation.py
+│       │   └── ingestion.py
+│       │
+│       └── observability/
+│           ├── tracing.py
+│           └── metrics.py
+│
+├── tests/
+│   ├── unit/
+│   ├── integration/
+│   └── e2e/
+│
+└── evals/
+    ├── datasets/
+    ├── scenarios/
+    └── evaluators/
+
+
+==================================================
+7. Presentation Layer
+==================================================
+
+位置：
+
+presentation/api/
+
+
+职责：
+
+- HTTP Request / Response；
+- FastAPI Router；
+- Authentication / Dependency；
+- Pydantic Validation；
+- SSE / Streaming；
+- HTTP Error Mapping；
+- API Versioning。
+
+
+禁止：
+
+- 核心业务规则；
+- SQL；
+- Agent 推理；
+- LLM 调用；
+- 业务状态直接修改。
+
+
+API Schema 位于：
+
+presentation/api/schemas/
+
+
+Schema 表示：
+
+HTTP Contract
+
+例如：
+
+CreateThingRequest
+UpdateThingRequest
+ThingResponse
+RunRequest
+RunResponse
+
+
+API Schema 不等于 Domain Entity。
+
+
+==================================================
+8. Application Layer
+==================================================
+
+Application 表示：
+
+“老实人可以执行哪些业务用例。”
+
+
+它是此前讨论的“原子能力”的正式工程实现层。
+
+
+例如：
+
+PersonalStateApplicationService
+
+create_thing()
+update_thing()
+create_task()
+complete_task()
+reopen_task()
+set_deadline()
+add_blocker()
+attach_source()
+
+
+Application 负责：
+
+- Use Case orchestration；
+- Repository / Port 调用；
+- Transaction boundary；
+- 调用 Domain 行为；
+- 组织多个 Domain 对象；
+- 返回 Application DTO；
+- 触发必要 Domain Event / Application Event。
+
+
+Application 不负责：
+
+- FastAPI；
+- UI；
+- LangGraph routing；
+- SQLAlchemy ORM 细节；
+- LLM provider 细节。
+
+
+==================================================
+9. Domain Layer
+==================================================
+
+Domain 是老实人的核心业务模型。
+
+
+V1 Domain：
+
+domain/
+├── personal_state/
+├── memory/
+├── sources/
+├── automation/
+└── attention/
+
+
+Personal State 领域内部：
+
+Thing
+Task
+Deadline
+Blocker
+Progress
+Status
+Timeline-related business event
+
+
+Domain 负责：
+
+- Entity；
+- Value Object；
+- Business Rule；
+- Domain Service；
+- Domain Event；
+- Domain Exception。
+
+
+Domain 原则：
+
+不得依赖：
+
+FastAPI
+LangGraph
+SQLAlchemy
+OpenAI SDK
+Anthropic SDK
+HTTP Client
+HarmonyOS
+具体数据库实现
+
+
+如果未来更换：
+
+FastAPI
+LangGraph
+PostgreSQL
+LLM Provider
+
+Domain 应基本无需重写。
+
+
+==================================================
+10. Infrastructure Layer
+==================================================
+
+Infrastructure 保留。
+
+原因：
+
+老实人拥有大量可替换的技术实现：
+
+- PostgreSQL；
+- pgvector；
+- LangGraph Checkpoint Store；
+- LLM；
+- Embedding；
+- Object Storage；
+- Web Search；
+- Push；
+- Calendar；
+- Speech；
+- Document Processing；
+- Job Runtime。
+
+
+Infrastructure 只负责：
+
+“这些抽象能力具体怎么实现。”
+
+
+例如：
+
+Application Port：
+
+TaskRepository
+
+
+Infrastructure：
+
+PostgresTaskRepository
+
+
+Application Port：
+
+ObjectStorage
+
+
+Infrastructure：
+
+OBSObjectStorage
+或
+MinIOObjectStorage
+
+
+Application Port：
+
+SearchProvider
+
+
+Infrastructure：
+
+WebSearchAdapter
+
+
+核心依赖：
+
+Application / Domain
+定义抽象
+
+Infrastructure
+实现抽象。
+
+
+==================================================
+11. Agent Layer
+==================================================
+
+Agent 是：
+
+Intelligent Orchestration Layer
+
+
+包含：
+
+Executive Agent
+LangGraph
+Context Builder
+Agent State
+Tool Adapter
+Skill
+Specialist Subgraph
+Prompt
+
+
+Agent 不实现：
+
+- Task 业务规则；
+- Deadline 规则；
+- SQL；
+- Push SDK；
+- 文件持久化。
+
+
+Agent Tool：
+
+只做：
+
+Model Tool Schema
++
+Runtime Context
++
+Policy
++
+Application Call
+
+
+例如：
+
+用户：
+“Demo做完了”
+
+Executive Agent
+↓
+state.complete_task Tool
+↓
+PersonalStateApplicationService.complete_task()
+↓
+Domain
+↓
+Infrastructure
+
+
+因此：
+
+Agent 可以删除，
+普通后端仍然成立。
+
+
+==================================================
+12. Worker Layer
+==================================================
+
+后台 Worker：
+
+memory_formation
+automation
+ingestion
+
+
+Worker 是：
+
+另一个 Application Consumer。
+
+
+正确：
+
+Worker
+↓
+Application
+↓
+Domain
+
+
+不要：
+
+Worker
+↓
+直接 SQL 更新业务表
+
+
+Automation Worker 可以：
+
+检查 trigger
+↓
+调用 Application Use Case
+↓
+创建 Agent Run
+↓
+Push
+
+
+==================================================
+13. Model 分类
+==================================================
+
+项目明确区分四类模型：
+
+1. Domain Entity
+2. API Schema
+3. Application DTO
+4. ORM Model
+
+
+禁止使用一个 Pydantic / ORM Class 同时承担所有职责。
+
+
+Domain：
+
+Thing
+Task
+
+
+API：
+
+ThingResponse
+
+
+Application：
+
+ThingDTO
+
+
+Infrastructure：
+
+ThingORM
+
+
+模型之间通过 Mapper / factory / conversion function 转换。
+
+
+==================================================
+14. Schemas 位置
+==================================================
+
+schemas/ 保留。
+
+位置：
+
+presentation/api/schemas/
+
+
+用于：
+
+Pydantic Request / Response Models
+
+
+不建立：
+
+backend/src/laoshiren/schemas/
+
+这种全局 Schema 垃圾桶。
+
+
+按接口领域拆：
+
+schemas/
+├── things.py
+├── tasks.py
+├── runs.py
+├── sources.py
+└── automations.py
+
+
+==================================================
+15. Repository / Port
+==================================================
+
+抽象接口建议放：
+
+application/<domain>/ports.py
+
+
+例如：
+
+TaskRepository
+ThingRepository
+MemoryStore
+SourceStorage
+PushGateway
+
+
+技术实现：
+
+infrastructure/
+
+
+示例：
+
+application/personal_state/ports.py
+
+class TaskRepository(Protocol):
+    ...
+
+
+infrastructure/persistence/repositories/task_repository.py
+
+class PostgresTaskRepository:
+    ...
+
+
+==================================================
+16. bootstrap.py
+==================================================
+
+bootstrap.py 作为 Composition Root。
+
+
+负责：
+
+- 创建 Settings；
+- 创建 Database Session；
+- 创建 Repository Implementations；
+- 创建 Application Services；
+- 创建 Infrastructure Adapters；
+- 创建 Agent Tools；
+- 创建 Executive Agent；
+- 创建 LangGraph；
+- 将依赖注入 FastAPI。
+
+
+所有依赖实际连接尽量集中在这里。
+
+避免：
+
+业务模块随意 new 外部 Service。
+
+
+==================================================
+17. main.py
+==================================================
+
+main.py 保持薄。
+
+
+职责：
+
+create FastAPI app
+register middleware
+register routers
+lifespan
+bootstrap dependencies
+
+
+禁止：
+
+main.py 中堆积大量业务实现。
+
+
+==================================================
+18. Agent Tool 与 Application 的关系
+==================================================
+
+这是项目最关键规则之一。
+
+
+错误：
+
+agent/tools/state.py
+↓
+SQLAlchemy
+↓
+Database
+
+
+正确：
+
+agent/tools/state.py
+↓
+application.personal_state
+↓
+domain.personal_state
+↓
+repository port
+↓
+infrastructure.persistence
+
+
+Agent Tool 是 Adapter。
+
+Application 才是业务能力。
+
+
+==================================================
+19. API 与 Application 的关系
+==================================================
+
+UI 手动操作：
+
+PATCH /tasks/{id}
+↓
+Presentation
+↓
+Application
+↓
+Domain
+
+
+Agent 操作：
+
+Agent
+↓
+Tool
+↓
+Application
+↓
+Domain
+
+
+Worker：
+
+Worker
+↓
+Application
+↓
+Domain
+
+
+所有路径共享业务规则。
+
+
+==================================================
+20. 测试结构
+==================================================
+
+tests/unit/
+
+测试：
+
+Domain Rule
+Application Use Case
+Pure Logic
+
+
+tests/integration/
+
+测试：
+
+Repository
+PostgreSQL
+FastAPI
+Infrastructure Adapter
+Tool → Application
+
+
+tests/e2e/
+
+测试：
+
+HarmonyOS / API 级别完整闭环
+或
+Backend Agent 完整链路
+
+
+evals/
+
+专门测试：
+
+Agent 行为质量
+
+
+例如：
+
+“Demo做完了”
+→ 是否正确 Tool Selection
+
+“听说Deadline改了”
+→ 是否先验证
+
+“这个事情还有什么没做”
+→ 是否从 Personal State 回答
+
+
+==================================================
+21. Contracts
+==================================================
+
+contracts/
+
+包含：
+
+openapi.json
+agent-stream-events.schema.json
+
+
+OpenAPI：
+
+由 FastAPI / Pydantic Schema 生成。
+
+不是人工维护多份。
+
+
+Agent Stream Protocol：
+
+定义：
+
+run.started
+assistant.delta
+assistant.message
+tool.started
+tool.completed
+tool.failed
+status.updated
+interrupt.required
+run.completed
+run.failed
+heartbeat
+
+
+客户端 Streaming Transport：
+
+SSE
+或未来 WebSocket
+
+不影响 Event Contract。
+
+
+==================================================
+22. 文档体系
+==================================================
+
+docs/
+
+product/
+- 项目定位
+- PRD
+
+architecture/
+- Agent Architecture
+- Personal State + Memory
+- Tool / API / Policy
+- HarmonyOS Client
+- Repository Architecture
+
+adr/
+- Architecture Decision Records
+
+
+建议 ADR：
+
+0001-monorepo
+0002-harmonyos-native-arkts
+0003-modular-monolith
+0004-clean-architecture-ddd-lite
+0005-single-executive-agent
+0006-personal-state-vs-memory
+0007-agent-tools-call-application
+
+
+==================================================
+23. AI Coding Agent 项目规范
+==================================================
+
+根目录保留：
+
+AGENTS.md
+CLAUDE.md
+
+
+主要写：
+
+- 架构边界；
+- 依赖方向；
+- 禁止事项；
+- 测试要求；
+- Tool 规则；
+- Personal State / Memory 边界。
+
+
+示例：
+
+- Domain must not import FastAPI or LangGraph.
+- Agent tools must call Application services.
+- LLM must never execute SQL directly.
+- Personal State is the current operational truth.
+- Memory must not override current Personal State.
+- External side effects require idempotency.
+- Do not create a new Agent unless independent multi-step autonomy is required.
+- HarmonyOS client must not contain provider secrets.
+
+
+==================================================
+24. Monorepo 原则
+==================================================
+
+当前使用单 Git Repository。
+
+
+原因：
+
+一个功能通常跨越：
+
+ArkTS
+FastAPI API
+Application
+Agent Tool
+DB
+Contract
+
+
+Monorepo 可以：
+
+- 一次 Commit 完成完整 Feature；
+- 同步管理接口；
+- 统一 CI；
+- 统一 Docs；
+- 统一版本；
+- 降低一个人开发维护成本。
+
+
+V1 不拆：
+
+backend repo
+client repo
+agent repo
+
+
+==================================================
+25. 不采用的架构
+==================================================
+
+V1 不采用：
+
+Microservices
+
+Kubernetes
+
+大量固定 Agent
+
+每种 Feature 一个独立 HarmonyOS HAR
+
+Neo4j
+
+独立 Vector Database
+
+Event Sourcing 全量系统
+
+复杂 CQRS
+
+全套 Java Enterprise DDD 仪式
+
+Repository + Manager + Factory + Handler 多层空壳
+
+
+成熟不等于复杂。
+
+
+==================================================
+26. 架构成功标准
+==================================================
+
+如果未来：
+
+更换 LLM
+
+应该主要改：
+
+infrastructure/llm/
+
+
+更换 PostgreSQL implementation
+
+应该主要改：
+
+infrastructure/persistence/
+
+
+更换 Agent Runtime
+
+应该主要改：
+
+agent/
+
+
+增加新的 HarmonyOS 页面
+
+应该主要改：
+
+apps/harmonyos/features/
+
+
+修改：
+
+“Deadline 如何验证”
+
+应该主要改：
+
+domain / application
+
+
+增加：
+
+新的 Agent Tool
+
+应该主要：
+
+agent/tools
++
+reuse existing Application
+
+
+如果一个普通业务改动需要：
+
+同时修改 Agent Graph、Router、ORM、UI、大量 unrelated module
+
+说明架构边界出现问题。
+
+
+==================================================
+27. 官方与成熟项目参考原则
+==================================================
+
+本架构主要吸收以下成熟方向：
+
+HarmonyOS 官方：
+- ArkTS / ArkUI 原生应用开发；
+- 分层架构；
+- 高内聚低耦合；
+- Feature 模块化；
+- MVVM；
+- 原生 Kit 能力。
+
+FastAPI 官方：
+- Bigger Applications；
+- APIRouter；
+- Pydantic Request / Response；
+- OpenAPI；
+- 多文件 Package。
+
+Python Packaging：
+- src layout；
+- pyproject.toml。
+
+uv：
+- uv.lock；
+- reproducible dependencies。
+
+Clean Architecture / DDD：
+- Domain 中心；
+- Application Use Case；
+- Infrastructure Adapter；
+- Dependency Inversion。
+
+LangGraph：
+- Agent runtime 与业务系统解耦；
+- State / Tool / Graph；
+- Durable Execution；
+- Interrupt / Resume；
+- Subgraph。
+
+OpenHands：
+- Agent、Tool、Runtime / Workspace / Server 之间的明确边界；
+- Agent 不等于整个应用。
+
+Dify：
+- Controller / Service / Domain / Worker 分工；
+- 异步副作用幂等；
+- Agent/Workflow 构建在稳定后端能力之上。
+
+
+==================================================
+28. 最终架构一句话
+==================================================
+
+老实人首先是一套完整、可靠、可被普通客户端直接使用的个人事务后端系统。
+
+Application + Domain 提供稳定业务能力。
+
+Infrastructure 提供数据库、模型、搜索、存储、Push 等技术实现。
+
+HarmonyOS UI、Executive Agent 和 Background Worker 都作为不同入口复用同一套业务能力。
+
+Executive Agent 的价值不是替代后端，而是在这些稳定能力之上，通过 Context、Tool Calling、自主规划、并行执行和长期记忆形成智能编排。
+
+这构成老实人的最终工程架构基线。
+
+
+==================================================
+28.1 V1 初始落地顺序
+==================================================
+
+第一阶段先建立普通业务后端与可独立测试的原子能力：
+
+Monorepo / 开发环境
+→ Personal State Domain
+→ Application Use Case
+→ PostgreSQL / Repository / Migration
+→ Product API
+→ HarmonyOS 结构化状态功能
+
+首批对象：
+
+Thing
+Task
+ThingDate
+StateMutation
+TimelineEvent
+
+第二阶段再建立：
+
+Agent Tool Runtime
+→ Policy
+→ Executive Agent
+→ Run / Thread / SSE
+→ HarmonyOS Chat
+
+Vertical Slice 用于尽早验证端到端集成，
+但不能绕过 Application / Domain，
+也不能让 Agent Tool 直接访问 ORM 或数据库。
+
+
+==================================================
+29. 文档状态
+==================================================
+
+状态：
+
+APPROVED / v1.0
+
+已由项目负责人确认，作为工程实现层最高优先级基线。
+
+当早期技术文档中的目录示例与本文件不一致时，以本文件为准；
+产品语义与领域规则仍以对应专项设计文档为准。
+
+
+后续除非遇到真实工程问题，
+不再因为目录命名或架构审美频繁调整。
+
+
+—— End ——

@@ -1,0 +1,24 @@
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.6-pg17
+    container_name: laoshiren-postgres
+    environment:
+      POSTGRES_DB: laoshiren
+      POSTGRES_USER: laoshiren
+      POSTGRES_PASSWORD: laoshiren
+      TZ: UTC
+    ports:
+      - "5432:5432"
+    volumes:
+      - laoshiren_postgres_data:/var/lib/postgresql/data
+      - ../docker/postgres-init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U laoshiren -d laoshiren"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  laoshiren_postgres_data:

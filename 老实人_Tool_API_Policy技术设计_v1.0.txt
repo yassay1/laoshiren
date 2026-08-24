@@ -1,0 +1,3444 @@
+《老实人｜Tool / API / Policy 技术设计 v1.0》
+
+版本：v1.0
+项目名称：老实人
+文档类型：Tool / API / Policy Technical Design
+当前阶段：V1 正式开发设计
+后端：Python + FastAPI
+Agent Runtime：LangGraph
+目标：定义 Executive Agent 可调用的 Tool、FastAPI 对客户端暴露的接口、Tool Policy、HITL、幂等、错误模型与流式事件规范
+
+==================================================
+0. 文档目的
+==================================================
+
+本文件用于把老实人 V1 的“执行层”正式固定下来。
+
+它重点回答：
+
+1. Executive Agent 可以调用哪些 Tool；
+2. Tool 如何命名、分组、返回结果；
+3. Tool 是否直接操作数据库；
+4. 哪些操作可以自动执行，哪些必须用户确认；
+5. FastAPI 如何承接 HarmonyOS 客户端；
+6. Chat / Run / Thread / Source / Thing / Automation API 如何设计；
+7. SSE 如何传输 Agent 流式结果；
+8. interrupt / resume 如何穿过 API 到达客户端；
+9. Tool 失败、冲突、重试如何统一表达；
+10. 如何避免重复创建提醒、日历事件或重复更新状态；
+11. 如何保留 Trace、Run 和 ToolExecution 记录。
+
+核心原则：
+
+Agent 负责“决定做什么”。
+
+Tool 负责“把动作标准化”。
+
+Domain Service 负责“按照业务规则真正执行”。
+
+Database / External API 负责“保存或产生真实世界结果”。
+
+正确层级：
+
+Executive Agent
+      ↓
+Tool
+      ↓
+Policy
+      ↓
+Domain Service
+      ↓
+Database / External API
+      ↓
+Tool Result
+      ↓
+Executive Agent
+
+
+==================================================
+1. Tool 不是业务数据库接口
+==================================================
+
+错误设计：
+
+Executive Agent
+→ update_sql(...)
+→ PostgreSQL
+
+
+不推荐原因：
+
+- LLM 不应直接理解数据库 schema；
+- SQL 参数难以安全约束；
+- 业务规则无法统一；
+- 并发控制容易遗漏；
+- 幂等难实现；
+- 后续数据库重构会影响 Agent Tool；
+- Tool Schema 对模型不友好。
+
+
+正确设计：
+
+Executive Agent
+→ state.update_task(...)
+→ Policy
+→ PersonalStateService
+→ Repository / Transaction
+→ PostgreSQL
+
+
+Tool 是“面向 Agent 的领域能力”。
+
+Service 是“面向代码的业务能力”。
+
+Repository 是“面向数据库的数据能力”。
+
+
+==================================================
+2. Tool 总体分类
+==================================================
+
+V1 Tool Namespace：
+
+state.*
+memory.*
+source.*
+document.*
+image.*
+audio.*
+search.*
+automation.*
+notification.*
+calendar.*
+system.*
+
+
+建议：
+
+读取能力和写入能力尽量从名字上可辨别。
+
+例如：
+
+state.get_thing
+state.search_things
+state.update_task
+
+而不要：
+
+state.execute
+state.process
+
+
+Tool 名称必须：
+
+- 语义明确；
+- 单一职责；
+- 参数稳定；
+- 对模型友好；
+- 不暴露底层实现。
+
+
+==================================================
+3. Tool Registry
+==================================================
+
+建议建立统一 Tool Registry。
+
+Tool Registry 负责：
+
+- Tool 注册；
+- Tool 描述；
+- JSON / Pydantic Schema；
+- Tool category；
+- risk level；
+- timeout；
+- retry policy；
+- approval policy；
+- execution handler；
+- observability metadata。
+
+
+概念结构：
+
+ToolDefinition
+├── name
+├── description
+├── input_schema
+├── category
+├── risk_level
+├── timeout_seconds
+├── retry_policy
+├── requires_confirmation
+├── idempotent
+├── handler
+└── enabled
+
+
+Executive Agent 不直接 import 所有 Service。
+
+而是通过 Tool Registry 获取当前可用能力。
+
+
+==================================================
+4. 动态 Tool 暴露
+==================================================
+
+随着 Tool 增多，不应每轮把所有 Tool Schema 全部发送给模型。
+
+V1 Tool 数量较少时：
+
+可以直接加载主要 Tool。
+
+后续可根据：
+
+- current input；
+- Thing type；
+- Skill；
+- current stage；
+
+动态选择 Tool Set。
+
+
+例如：
+
+用户讨论 PDF：
+
+优先暴露：
+
+document.interpret
+source.get
+state.*
+search.*
+
+
+不需要暴露：
+
+calendar.update
+notification.push
+automation.cancel
+
+
+目标：
+
+减少 Context 占用
++
+降低 Tool Selection 错误。
+
+
+==================================================
+5. Tool 通用输入字段
+==================================================
+
+所有 Mutation Tool 不必把运行字段暴露给模型。
+
+例如：
+
+run_id
+action_id
+user_id
+idempotency_key
+
+应由 Runtime 自动注入。
+
+
+模型只提供业务参数：
+
+state.update_task(
+  task_id,
+  status,
+  reason
+)
+
+
+Runtime 自动补：
+
+user_id
+run_id
+action_id
+idempotency_key
+
+
+这样可以减少：
+
+- 参数错误；
+- 越权；
+- Tool Prompt 冗余。
+
+
+==================================================
+6. Tool Result 统一结构
+==================================================
+
+建议所有 Tool 最终转化为统一结果：
+
+ToolResult
+├── status
+├── code
+├── message
+├── data
+├── error
+├── source_refs
+├── mutation_refs
+├── retryable
+├── requires_user_input
+└── metadata
+
+
+status：
+
+SUCCESS
+PARTIAL
+FAILED
+NOT_FOUND
+CONFLICT
+REQUIRES_CONFIRMATION
+REQUIRES_USER_INPUT
+
+
+code 示例：
+
+THING_NOT_FOUND
+TASK_NOT_FOUND
+AMBIGUOUS_THING
+VERSION_CONFLICT
+EXTERNAL_TIMEOUT
+INVALID_ARGUMENT
+PERMISSION_DENIED
+DUPLICATE_ACTION
+UNSUPPORTED_FILE
+RATE_LIMITED
+
+
+ToolResult.message：
+
+用于 Agent 理解执行结果。
+
+不是必须直接展示给用户。
+
+
+==================================================
+7. Tool Error 不抛给最终用户
+==================================================
+
+Service 可以抛内部异常。
+
+Tool Adapter 应转成标准 ToolResult。
+
+例如：
+
+ExternalCalendarTimeout
+↓
+Tool Adapter
+↓
+ToolResult(
+ status=FAILED,
+ code=EXTERNAL_TIMEOUT,
+ retryable=true
+)
+
+
+Executive Agent：
+
+根据 Tool Result 决定：
+
+- 自动重试；
+- 换方案；
+- 告知用户；
+- 暂停等待；
+- 放弃。
+
+
+用户不应该看到：
+
+Python traceback
+SQL error
+SDK internal error
+
+
+==================================================
+8. state.* Tools
+==================================================
+
+--------------------------------------------------
+8.1 state.search_things
+--------------------------------------------------
+
+用途：
+
+根据名称、状态、类型、最近活跃等查找候选 Thing。
+
+输入建议：
+
+query
+type?
+status?
+limit?
+
+
+输出：
+
+ThingSummary[]
+
+
+用于：
+
+“之前那个鸿蒙比赛”
+“我的论文项目”
+“现在有哪些事情”
+
+
+--------------------------------------------------
+8.2 state.get_thing
+--------------------------------------------------
+
+输入：
+
+thing_id
+
+可选：
+
+include_tasks
+include_dates
+include_blockers
+include_sources
+include_recent_timeline
+
+
+输出：
+
+ThingContextView
+
+
+--------------------------------------------------
+8.3 state.get_tasks
+--------------------------------------------------
+
+输入：
+
+thing_id
+status?
+due_before?
+due_after?
+
+
+输出：
+
+TaskSummary[]
+
+
+--------------------------------------------------
+8.4 state.get_deadlines
+--------------------------------------------------
+
+输入：
+
+thing_id?
+range?
+status?
+certainty?
+
+
+输出：
+
+ThingDate[]
+
+
+--------------------------------------------------
+8.5 state.create_thing
+--------------------------------------------------
+
+风险：
+
+LOW / MEDIUM
+
+输入：
+
+name
+type?
+description?
+status?
+deadline?
+source_refs?
+
+
+策略：
+
+如果用户明确要求新建：
+
+可直接执行。
+
+如果 Agent 仅推断：
+
+根据置信度决定自动创建或询问。
+
+
+--------------------------------------------------
+8.6 state.update_thing
+--------------------------------------------------
+
+输入：
+
+thing_id
+patch
+reason
+expected_version?
+
+
+patch 只能包含允许修改的业务字段。
+
+禁止模型自由提交任意 JSON 字段。
+
+
+--------------------------------------------------
+8.7 state.create_task
+--------------------------------------------------
+
+输入：
+
+thing_id
+title
+description?
+priority?
+due_at?
+source_refs?
+
+
+--------------------------------------------------
+8.8 state.update_task
+--------------------------------------------------
+
+输入：
+
+task_id
+status?
+priority?
+due_at?
+title?
+reason?
+expected_version?
+
+
+明确用户状态陈述：
+
+“Demo做完了”
+
+可直接：
+
+status = DONE
+
+
+--------------------------------------------------
+8.9 state.set_deadline
+--------------------------------------------------
+
+用途：
+
+创建或更新 Thing 的正式 Deadline / Important Date。
+
+输入：
+
+thing_id
+kind
+value
+timezone?
+precision
+certainty
+source_refs?
+reason
+expected_version?
+
+Runtime 自动注入：
+
+user_id
+run_id
+action_id
+idempotency_key
+
+该 Tool 必须通过专门的 Deadline Application Use Case，统一处理：
+
+- ThingDate；
+- primary date；
+- certainty；
+- source provenance；
+- supersede；
+- optimistic concurrency；
+- StateMutation；
+- Timeline。
+
+state.update_thing 的通用 patch 不允许直接覆盖正式 deadline_at。
+
+首次设置或用户明确、可验证的低风险更新可按 Policy 执行；
+覆盖已确认 Deadline 属于 SENSITIVE_WRITE，必须验证可靠来源或要求用户确认。
+
+
+--------------------------------------------------
+8.10 state.get_history
+--------------------------------------------------
+
+读取：
+
+Timeline
++
+State Mutation Summary
+
+
+主要用于：
+
+“这个截止时间之前为什么改过？”
+“这个任务什么时候完成的？”
+
+
+==================================================
+9. memory.* Tools
+==================================================
+
+--------------------------------------------------
+9.1 memory.search
+--------------------------------------------------
+
+用途：
+
+Agent 在 Initial Retrieval 不足时进行 JIT Recall。
+
+
+输入：
+
+query
+thing_id?
+memory_types?
+limit?
+
+
+memory_types：
+
+PROFILE
+SEMANTIC
+EPISODIC
+
+
+输出：
+
+MemorySnippet[]
+
+
+原则：
+
+当前状态问题不要优先调用 memory.search。
+
+
+--------------------------------------------------
+9.2 memory.remember
+--------------------------------------------------
+
+只有明确用户命令时考虑暴露：
+
+“记住这个。”
+
+
+输入：
+
+content
+memory_type?
+thing_id?
+source_refs?
+
+
+写入前：
+
+Memory Policy / Formation Logic
+
+判断：
+
+CREATE / UPDATE / MERGE
+
+
+--------------------------------------------------
+9.3 memory.forget
+--------------------------------------------------
+
+用户明确要求：
+
+“忘掉这个偏好。”
+
+属于用户数据控制操作。
+
+需要精确目标。
+
+模糊时：
+
+先 memory.search
+→ Ask User
+→ forget
+
+
+==================================================
+10. source.* Tools
+==================================================
+
+--------------------------------------------------
+10.1 source.get
+--------------------------------------------------
+
+输入：
+
+source_id
+
+返回：
+
+metadata
+basic extracted representation
+object reference
+
+
+Agent 不直接拿对象存储凭证。
+
+
+--------------------------------------------------
+10.2 source.list_related
+--------------------------------------------------
+
+输入：
+
+thing_id
+
+输出：
+
+Source Summary[]
+
+
+--------------------------------------------------
+10.3 source.attach_to_thing
+--------------------------------------------------
+
+Mutation Tool。
+
+用于建立：
+
+ThingSource relation
+
+
+==================================================
+11. document.* / image.* / audio.* Tools
+==================================================
+
+--------------------------------------------------
+11.1 document.interpret
+--------------------------------------------------
+
+输入：
+
+source_id
+task
+output_schema?
+
+
+task 示例：
+
+summarize
+extract_requirements
+extract_deadlines
+answer_question
+compare
+structured_extract
+
+
+不要设计成：
+
+document.do_everything
+
+
+输出：
+
+DocumentInterpretationResult
++
+source references
+
+
+--------------------------------------------------
+11.2 image.interpret
+--------------------------------------------------
+
+用于：
+
+截图
+照片
+海报
+界面
+通知图片
+
+
+输入：
+
+source_id
+task
+
+
+--------------------------------------------------
+11.3 audio.interpret
+--------------------------------------------------
+
+V1：
+
+speech-to-text
++
+optional semantic interpretation
+
+
+输入：
+
+source_id
+
+
+输出：
+
+transcript
+timestamps?
+summary?
+
+
+==================================================
+12. search.* Tools
+==================================================
+
+--------------------------------------------------
+12.1 search.web
+--------------------------------------------------
+
+一般公开 Web 信息。
+
+
+输入：
+
+query
+recency?
+domains?
+limit?
+
+
+--------------------------------------------------
+12.2 search.official
+--------------------------------------------------
+
+高可信外部事实优先使用。
+
+
+输入：
+
+query
+official_domains?
+entity?
+
+
+适用：
+
+- 比赛截止；
+- 官方规则；
+- 产品文档；
+- 政策；
+- 版本要求；
+- 官方公告。
+
+
+Tool 层不要求一定是不同搜索引擎。
+
+重点是：
+
+Policy / Ranking
+优先官方来源。
+
+
+==================================================
+13. automation.* Tools
+==================================================
+
+--------------------------------------------------
+13.1 automation.create
+--------------------------------------------------
+
+输入：
+
+title
+schedule / condition
+action
+thing_id?
+task_id?
+
+
+输出：
+
+automation_id
+normalized_schedule
+status
+
+
+风险：
+
+MEDIUM
+
+通常属于：
+
+可逆写操作。
+
+
+用户明确：
+
+“明天下午提醒我”
+
+可直接执行。
+
+
+--------------------------------------------------
+13.2 automation.update
+--------------------------------------------------
+
+输入：
+
+automation_id
+patch
+
+
+--------------------------------------------------
+13.3 automation.cancel
+--------------------------------------------------
+
+输入：
+
+automation_id
+
+
+--------------------------------------------------
+13.4 automation.list
+--------------------------------------------------
+
+读取用户当前自动任务。
+
+
+==================================================
+14. notification.* Tools
+==================================================
+
+--------------------------------------------------
+14.1 notification.push
+--------------------------------------------------
+
+原则：
+
+不建议给 Executive Agent 无限制自由 Push。
+
+
+Push 通常由：
+
+Automation
+Attention Policy
+System Event
+
+触发。
+
+
+如果 Agent 调用：
+
+notification.push
+
+Policy 必须检查：
+
+- 当前用户；
+- 推送权限；
+- cooldown；
+- notification preferences；
+- priority；
+- duplicate suppression。
+
+
+==================================================
+15. calendar.* Tools
+==================================================
+
+建议 V1 支持：
+
+calendar.list
+calendar.create
+calendar.update
+calendar.delete
+
+
+Calendar 属于真实外部副作用。
+
+
+calendar.create：
+
+MEDIUM RISK
+
+如果用户明确：
+
+“明天下午3点加一个答辩日程。”
+
+参数完整：
+
+可执行。
+
+
+如果：
+
+“下周帮我安排答辩。”
+
+时间不明确：
+
+Ask User。
+
+
+calendar.delete：
+
+风险高于 create。
+
+建议明确确认，
+特别是删除非 Agent 创建事件。
+
+
+==================================================
+16. system.* Tools
+==================================================
+
+可以保留少量内部 Tool：
+
+system.get_current_time
+system.get_runtime_context
+
+
+但：
+
+时间、user_id、thread_id 等通常应该由 Runtime 直接提供，
+不必浪费一次模型 Tool Call。
+
+
+==================================================
+17. Tool Risk Level
+==================================================
+
+建议四级：
+
+READ
+LOW_WRITE
+SENSITIVE_WRITE
+IRREVERSIBLE
+
+
+READ：
+
+- state.get_*
+- memory.search
+- source.get
+- search.*
+- document.interpret
+
+
+LOW_WRITE：
+
+- state.update_task
+- state.create_task
+- automation.create
+- source.attach_to_thing
+
+
+SENSITIVE_WRITE：
+
+- calendar.create/update
+- notification.push
+- memory.forget
+- important deadline overwrite
+
+
+IRREVERSIBLE：
+
+- physical delete
+- external send to third party
+- payment
+- irreversible submission
+
+
+V1 可以先不实现高风险工具，
+但 Policy 模型从第一天保留。
+
+
+==================================================
+18. Policy Layer
+==================================================
+
+Policy 不只是一段 System Prompt。
+
+正确：
+
+Prompt Rules
++
+Deterministic Policy Code
++
+Domain Validation
++
+Human Confirmation
+
+
+四层分工：
+
+Prompt
+→ 告诉 Agent 应遵守什么规则。
+
+Tool Policy
+→ 代码决定当前调用是否允许。
+
+Domain Service
+→ 业务规则验证。
+
+HITL
+→ 人确认高风险行为。
+
+
+模型不能通过“自己认为安全”绕过 Policy。
+
+
+==================================================
+19. Policy Decision
+==================================================
+
+PolicyResult：
+
+ALLOW
+DENY
+REQUIRE_CONFIRMATION
+REQUIRE_MORE_CONTEXT
+
+
+附带：
+
+reason
+confirmation_payload
+policy_code
+
+
+例：
+
+calendar.delete(event_id)
+
+如果：
+
+event.owner != agent
+且用户没有明确要求删除
+
+Policy：
+
+REQUIRE_CONFIRMATION
+
+
+==================================================
+20. 用户明确意图与确认
+==================================================
+
+不要所有写操作都弹确认。
+
+否则产品会非常烦。
+
+
+原则：
+
+明确用户指令
++
+低风险
++
+可逆
+→ 可直接执行
+
+
+例：
+
+“把Demo标记完成。”
+
+→ 直接 state.update_task
+
+
+模糊推断
++
+可能影响关键事实
+→ Verify / Ask
+
+
+例：
+
+“老师好像延期了。”
+
+→ 不直接修改 verified deadline
+
+
+高风险
+→ Confirm
+
+
+==================================================
+21. Human-in-the-loop API
+==================================================
+
+LangGraph interrupt 后，
+API 需要把中断状态传给 HarmonyOS 客户端。
+
+
+SSE：
+
+event: interrupt.required
+
+data:
+{
+  "run_id": "...",
+  "interrupt_id": "...",
+  "type": "confirmation",
+  "title": "确认删除日历事件",
+  "message": "...",
+  "options": [
+    {"id":"confirm","label":"确认"},
+    {"id":"cancel","label":"取消"}
+  ]
+}
+
+
+客户端提交：
+
+POST /v1/runs/{run_id}/resume
+
+
+Body：
+
+{
+  "interrupt_id": "...",
+  "response": {
+    "action": "confirm"
+  }
+}
+
+
+Backend：
+
+Command(resume=...)
+
+
+Graph 从 checkpoint 恢复。
+
+
+==================================================
+22. FastAPI API 总体原则
+==================================================
+
+客户端 API 和 Agent Tool API 是两套概念。
+
+
+HarmonyOS Client
+→ FastAPI Public API
+
+
+Executive Agent
+→ Internal Tool Runtime
+
+
+客户端不能直接调用：
+
+/tool/state.update_task
+
+
+客户端应调用：
+
+/things
+/threads
+/runs
+/sources
+/automations
+
+
+原因：
+
+客户端 API 是产品接口。
+
+Tool 是 Agent 内部能力。
+
+
+==================================================
+23. API Versioning
+==================================================
+
+V1 推荐：
+
+/api/v1/
+
+
+例如：
+
+/api/v1/threads
+/api/v1/runs
+/api/v1/things
+
+
+以后重大 breaking change：
+
+/api/v2/
+
+
+不要把版本放：
+
+query ?version=1
+
+
+==================================================
+24. Thread API
+==================================================
+
+POST /api/v1/threads
+
+创建新 Thread。
+
+
+Response：
+
+{
+  "thread_id": "...",
+  "title": "...",
+  "created_at": "..."
+}
+
+
+GET /api/v1/threads
+
+获取 Thread 列表。
+
+
+GET /api/v1/threads/{thread_id}
+
+获取 Thread 基础信息。
+
+
+GET /api/v1/threads/{thread_id}/messages
+
+获取消息历史。
+
+
+DELETE /api/v1/threads/{thread_id}
+
+V1 推荐：
+
+archive / soft delete。
+
+
+==================================================
+25. Run API
+==================================================
+
+核心入口：
+
+POST /api/v1/runs
+
+
+Request：
+
+{
+  "thread_id": "...",
+  "message": {
+    "type": "text",
+    "content": "Demo做完了"
+  },
+  "source_ids": []
+}
+
+
+Response：
+
+202 Accepted
+
+{
+  "run_id": "...",
+  "thread_id": "...",
+  "status": "queued_or_running",
+  "stream_url": "/api/v1/runs/{run_id}/events"
+}
+
+
+为什么不要求 HTTP 请求一直等 Agent 完成：
+
+复杂 Agent Run 可能：
+
+- 多次 Tool；
+- 搜索；
+- 并行；
+- interrupt；
+- 用户退出 App。
+
+
+Run 应作为独立资源。
+
+
+==================================================
+26. Run Status
+==================================================
+
+推荐：
+
+QUEUED
+RUNNING
+WAITING_USER
+COMPLETED
+FAILED
+CANCELLED
+
+
+GET /api/v1/runs/{run_id}
+
+返回：
+
+status
+started_at
+completed_at
+current_phase
+final_message?
+interrupt?
+
+
+==================================================
+27. SSE Event API
+==================================================
+
+GET /api/v1/runs/{run_id}/events
+
+
+Content-Type：
+
+text/event-stream
+
+
+建议 Event：
+
+run.started
+assistant.delta
+assistant.message
+tool.started
+tool.completed
+tool.failed
+status.updated
+interrupt.required
+run.completed
+run.failed
+heartbeat
+
+
+客户端主要关心：
+
+assistant.delta
+status.updated
+interrupt.required
+run.completed
+run.failed
+
+
+Tool 事件可以只展示简化 UI。
+
+
+==================================================
+28. SSE assistant.delta
+==================================================
+
+例：
+
+event: assistant.delta
+
+data:
+{
+  "run_id": "...",
+  "message_id": "...",
+  "delta": "已经确认"
+}
+
+
+客户端：
+
+逐段拼接。
+
+
+==================================================
+29. SSE status.updated
+==================================================
+
+例：
+
+{
+  "label": "正在查询官方信息",
+  "phase": "searching"
+}
+
+
+不要发送：
+
+“executing node 3”
+“calling state_get_thing_v2”
+“chain of thought...”
+
+
+产品层状态应该：
+
+简洁
+可理解
+稳定。
+
+
+==================================================
+30. Run Resume API
+==================================================
+
+POST /api/v1/runs/{run_id}/resume
+
+
+用于：
+
+- confirmation；
+- clarification；
+- form input；
+- selection。
+
+
+Request：
+
+{
+  "interrupt_id": "...",
+  "response": {...}
+}
+
+
+如果 Run 不在 WAITING_USER：
+
+返回 409。
+
+
+==================================================
+31. Run Cancel API
+==================================================
+
+POST /api/v1/runs/{run_id}/cancel
+
+
+用于：
+
+用户主动停止长任务。
+
+
+注意：
+
+Cancel 不能撤销已经发生的外部副作用。
+
+
+例如：
+
+日历已创建
+→ Cancel Run
+≠
+自动删除日历。
+
+
+==================================================
+32. Message API
+==================================================
+
+消息可以作为 Thread 下资源：
+
+GET /threads/{thread_id}/messages
+
+
+用户消息与 Agent 消息都保留。
+
+
+建议 message type：
+
+USER
+ASSISTANT
+SYSTEM_EVENT
+
+
+不要把：
+
+Raw Tool Result
+
+直接作为普通聊天消息展示。
+
+
+==================================================
+33. Source Upload API
+==================================================
+
+POST /api/v1/sources
+
+
+multipart/form-data
+
+
+使用 FastAPI UploadFile。
+
+
+Response：
+
+201 / 202
+
+
+{
+  "source_id": "...",
+  "filename": "...",
+  "type": "PDF",
+  "processing_status": "PENDING"
+}
+
+
+大文件：
+
+保存 Object Storage
+→ 创建 Source
+→ 后台基础处理
+
+
+不要整文件读入 Python memory。
+
+
+==================================================
+34. Share Intake
+==================================================
+
+HarmonyOS 分享进入 App 后：
+
+Client
+→ upload source
+→ obtain source_id
+→ create Run
+
+
+例如：
+
+POST /sources
+↓
+source_id=123
+
+POST /runs
+{
+  thread_id,
+  message: "看看这个比赛新通知",
+  source_ids:["123"]
+}
+
+
+==================================================
+35. Things API
+==================================================
+
+GET /api/v1/things
+
+支持：
+
+status
+type
+priority
+q
+limit
+cursor
+
+
+GET /api/v1/things/{thing_id}
+
+
+POST /api/v1/things
+
+用于客户端手动创建。
+
+
+PATCH /api/v1/things/{thing_id}
+
+
+注意：
+
+客户端直接编辑属于用户明确操作。
+
+不需要经过 Executive Agent。
+
+
+==================================================
+36. Task API
+==================================================
+
+GET /things/{thing_id}/tasks
+
+POST /things/{thing_id}/tasks
+
+PATCH /tasks/{task_id}
+
+
+UI 用户手动勾选 DONE：
+
+可以直接调用 Product API。
+
+
+Agent 更新：
+
+走 Internal Tool。
+
+
+二者最终都调用：
+
+PersonalStateService
+
+
+因此业务规则一致。
+
+
+--------------------------------------------------
+36.1 ThingDate / Deadline API
+--------------------------------------------------
+
+GET /things/{thing_id}/dates
+
+POST /things/{thing_id}/dates
+
+PATCH /thing-dates/{date_id}
+
+客户端结构化日期操作与 Agent 的 state.set_deadline Tool
+最终都调用专门的 Deadline Application Use Case。
+
+通用 PATCH /things/{thing_id} 不允许直接绕过该用例覆盖正式 deadline_at。
+
+
+==================================================
+37. Timeline API
+==================================================
+
+GET /things/{thing_id}/timeline
+
+
+支持：
+
+cursor
+event_type
+
+
+只返回用户可见 Timeline Event。
+
+内部 Trace 不混入 Timeline。
+
+
+==================================================
+38. Automation API
+==================================================
+
+GET /api/v1/automations
+
+GET /api/v1/automations/{id}
+
+POST /api/v1/automations
+
+PATCH /api/v1/automations/{id}
+
+DELETE /api/v1/automations/{id}
+
+
+DELETE 默认：
+
+cancel
+
+不是物理删除。
+
+
+==================================================
+39. Attention API
+==================================================
+
+Today 页面可以使用：
+
+GET /api/v1/attention
+
+
+Response：
+
+{
+  "items":[
+    {
+      "type":"due_today",
+      "thing_id":"...",
+      "task_id":"...",
+      "summary":"技术报告今天截止",
+      "severity":"high"
+    }
+  ]
+}
+
+
+Attention 是计算结果，
+不要求数据库存在一模一样的实体。
+
+
+==================================================
+40. Memory API
+==================================================
+
+V1 主要用于 Settings / Debug / 用户控制。
+
+
+GET /api/v1/memories
+
+DELETE /api/v1/memories/{id}
+
+PATCH /api/v1/memories/{id}
+
+
+后续可以增加：
+
+“我的记忆”页面。
+
+
+当前开发阶段至少保留 API，
+方便 Debug Memory Formation。
+
+
+==================================================
+41. Client API Error Model
+==================================================
+
+统一格式：
+
+{
+  "error": {
+    "code": "THING_NOT_FOUND",
+    "message": "Thing不存在",
+    "request_id": "...",
+    "details": {}
+  }
+}
+
+
+HTTP Status：
+
+400
+Invalid Request
+
+401
+Unauthenticated
+
+403
+Forbidden
+
+404
+Not Found
+
+409
+Conflict
+
+422
+Validation Error
+
+429
+Rate Limit
+
+500
+Internal Error
+
+502 / 503
+External dependency unavailable
+
+
+==================================================
+42. 409 Conflict 的重要用途
+==================================================
+
+例如：
+
+Thing version conflict
+
+返回：
+
+409
+
+
+{
+  "error":{
+    "code":"VERSION_CONFLICT",
+    "message":"该事务已被更新，请刷新后重试"
+  }
+}
+
+
+Run Resume：
+
+Run 已结束却再次 resume
+
+→ 409
+
+
+避免所有问题都返回 200 + success=false。
+
+
+==================================================
+43. Idempotency Header
+==================================================
+
+Public Mutation API 建议支持：
+
+Idempotency-Key
+
+
+例如：
+
+POST /automations
+
+Header：
+
+Idempotency-Key: uuid
+
+
+客户端网络超时后重试：
+
+Backend 返回原创建结果，
+而不是再创建一个 Automation。
+
+
+Agent Internal Tool：
+
+Runtime 自动生成：
+
+run_id + action_id
+
+
+==================================================
+44. Tool Execution Idempotency
+==================================================
+
+每次 Tool Call：
+
+tool_call_id
+action_id
+idempotency_key
+
+
+ToolExecution 表记录：
+
+PENDING
+RUNNING
+SUCCESS
+FAILED
+
+
+如果同 key：
+
+已有 SUCCESS
+
+→ 返回 cached result。
+
+
+适合：
+
+state.create_task
+automation.create
+calendar.create
+notification.push
+
+
+读取 Tool：
+
+通常天然幂等。
+
+
+==================================================
+45. Retry Policy
+==================================================
+
+Tool 不是所有错误都重试。
+
+
+可重试：
+
+- timeout；
+- temporary network；
+- 429；
+- 503；
+- transient DB connection。
+
+
+不可直接重试：
+
+- invalid argument；
+- permission denied；
+- version conflict；
+- user confirmation required；
+- not found（大部分情况下）。
+
+
+指数退避：
+
+可在 Tool Runtime 实现。
+
+
+==================================================
+46. Timeout
+==================================================
+
+每个 Tool 定义 timeout。
+
+
+示意：
+
+state read：
+3-5s
+
+DB mutation：
+5s
+
+web search：
+10-20s
+
+document interpretation：
+更长
+
+Specialist Agent：
+Run-level timeout
+
+
+不要让一次外部 Tool 无限挂起整个 Agent。
+
+
+==================================================
+47. Background Tasks
+==================================================
+
+FastAPI BackgroundTasks 适合：
+
+- 小型后处理；
+- 轻量通知；
+- 写日志等。
+
+
+但老实人的：
+
+- Memory Formation；
+- Heavy Document Processing；
+- Automation condition watch；
+- 长时间 Agent job；
+
+不应依赖单进程 BackgroundTasks 作为最终生产方案。
+
+
+V1 初期开发：
+
+可以先简化。
+
+
+一旦任务需要：
+
+跨进程
+持久执行
+重试
+定时
+失败恢复
+
+应使用独立 Worker / Job Queue / Scheduler。
+
+
+==================================================
+48. Tool Policy 示例：状态更新
+==================================================
+
+用户：
+
+“Demo做完了。”
+
+
+Agent：
+
+state.update_task(
+ task_id=demo,
+ status=DONE
+)
+
+
+Policy：
+
+目标唯一？
+YES
+
+用户明确陈述自身行为？
+YES
+
+可逆？
+YES
+
+→ ALLOW
+
+
+Service：
+
+version check
+transaction
+mutation
+timeline
+
+
+Result：
+
+SUCCESS
+
+
+==================================================
+49. Tool Policy 示例：截止时间
+==================================================
+
+用户：
+
+“听说截止改22号了。”
+
+
+Agent 如果试图：
+
+state.set_deadline(22)
+
+
+Policy 可以识别：
+
+source certainty = low
+current confirmed deadline exists
+
+
+→ REQUIRE_MORE_CONTEXT
+
+
+返回 Agent：
+
+“该操作涉及覆盖已确认截止时间，需要可靠来源或用户明确确认。”
+
+
+Agent：
+
+search.official
+
+
+之后再更新。
+
+
+==================================================
+50. Tool Policy 示例：删除日历
+==================================================
+
+用户：
+
+“把明天那个答辩取消掉。”
+
+
+如果只有唯一事件：
+
+且用户明确删除意图
+
+Policy：
+
+可 ALLOW 或 REQUIRE_CONFIRMATION，
+取决于产品设置。
+
+
+如果多个答辩事件：
+
+REQUIRE_USER_INPUT
+
+
+不能随机删除。
+
+
+==================================================
+51. Tool Policy 示例：Push
+==================================================
+
+Agent 想主动 Push：
+
+“提醒用户今天有报告截止。”
+
+
+Policy：
+
+check notification preference
+check task not DONE
+check due_today
+check last_surfaced
+check dismissed_until
+check duplicate
+
+
+满足：
+
+ALLOW
+
+
+否则：
+
+DENY silently
+
+
+==================================================
+52. Tool 与 Skill
+==================================================
+
+Skill 可以影响：
+
+- 推荐调用哪个 Tool；
+- Tool 参数如何解释；
+- 什么需要验证；
+- 什么信息权威。
+
+
+例如 Competition Skill：
+
+“截止日期变化优先 search.official”
+
+
+但 Skill：
+
+不能直接绕过 Tool Policy。
+
+
+层级：
+
+Skill = Guidance
+
+Policy = Enforcement
+
+
+==================================================
+53. Tool 与 Specialist Agent
+==================================================
+
+复杂能力可以表现为 Tool：
+
+research.competition(...)
+
+
+内部：
+
+Specialist Agent
+→ search
+→ source
+→ analysis
+→ result
+
+
+Executive Agent 看见的仍是：
+
+一个标准 Tool Result。
+
+
+Policy 对 Specialist：
+
+可以控制：
+
+- allowed tools；
+- max turns；
+- timeout；
+- token budget；
+- external write permission。
+
+
+默认 Specialist：
+
+Read-only 优先。
+
+
+==================================================
+54. 并行 Tool Call
+==================================================
+
+允许：
+
+state.get_thing
+search.official
+memory.search
+document.interpret
+
+并行执行。
+
+
+不建议：
+
+同时并行：
+
+state.set_deadline
+state.set_deadline
+
+
+如果可能修改同一字段：
+
+应：
+
+并行研究
+→ Executive Agent synthesis
+→ 单一 mutation
+
+
+==================================================
+55. Tool Execution Pipeline
+==================================================
+
+统一：
+
+1. Receive Tool Call
+2. Validate Schema
+3. Resolve Runtime Context
+4. Policy Pre-check
+5. Human Approval（如需要）
+6. Idempotency Check
+7. Execute Service
+8. Normalize Result
+9. Policy / Output Validation
+10. Persist ToolExecution
+11. Return ToolResult
+12. Emit Trace / Stream Event
+
+
+==================================================
+56. Input Guardrail
+==================================================
+
+输入 Guardrail 主要针对：
+
+- 明显非法输入；
+- 超大 payload；
+- 不支持文件；
+- 恶意参数；
+- 越权资源 ID。
+
+
+Agent Prompt 不替代：
+
+Pydantic
+API Validation
+Auth
+Ownership Check
+
+
+==================================================
+57. Output Guardrail
+==================================================
+
+Tool Result 返回 Agent 前可以检查：
+
+- 是否含敏感凭证；
+- 是否返回过大数据；
+- 是否暴露内部 SQL；
+- 是否需要截断；
+- 是否需要转换成 Context View。
+
+
+例如：
+
+source.get
+
+不返回：
+
+object storage secret key
+
+
+只返回：
+
+signed internal reference / metadata。
+
+
+==================================================
+58. Tracing
+==================================================
+
+建议每次 Run 建立完整 Trace。
+
+
+Trace 层级：
+
+Run
+├── Context Retrieval
+├── Model Turn
+├── Tool Call
+│    ├── Policy
+│    └── Service
+├── Specialist
+├── Interrupt
+└── Final Output
+
+
+至少记录：
+
+run_id
+thread_id
+model
+latency
+token usage
+tool calls
+tool latency
+tool outcome
+errors
+
+
+不能记录：
+
+不必要的敏感凭证。
+
+
+==================================================
+59. AgentRun 表
+==================================================
+
+建议：
+
+AgentRun
+├── id
+├── user_id
+├── thread_id
+├── trigger_type
+├── status
+├── model
+├── started_at
+├── completed_at
+├── error_code
+├── input_token_count
+├── output_token_count
+├── estimated_cost
+└── metadata
+
+
+trigger_type：
+
+USER_MESSAGE
+AUTOMATION
+SYSTEM_EVENT
+
+
+==================================================
+60. ToolExecution 表
+==================================================
+
+ToolExecution
+├── id
+├── run_id
+├── tool_call_id
+├── tool_name
+├── risk_level
+├── status
+├── started_at
+├── completed_at
+├── idempotency_key
+├── error_code
+├── retry_count
+├── input_summary
+├── output_summary
+└── metadata
+
+
+不要默认保存完整敏感 Tool 参数。
+
+
+==================================================
+61. Auth
+==================================================
+
+当前 V1 只有本人使用，
+仍建议保留 Auth Boundary。
+
+
+最简单可以：
+
+single-user authenticated account
+
+
+API 不应：
+
+裸奔到公网。
+
+
+后续用户体系变化时：
+
+Service 和 DB 已经有 user_id。
+
+
+==================================================
+62. Authorization
+==================================================
+
+所有资源必须校验：
+
+resource.user_id == current_user.id
+
+
+不能相信：
+
+客户端传来的 user_id
+
+
+user_id：
+
+从 auth token / session 获得。
+
+
+同样：
+
+Agent Tool Runtime 自动注入 user_id。
+
+
+==================================================
+63. 文件上传安全
+==================================================
+
+Source Upload：
+
+检查：
+
+- file size；
+- mime；
+- extension；
+- basic magic bytes；
+- allowed types。
+
+
+文件名：
+
+不能直接作为 Object Storage Path。
+
+
+使用：
+
+generated object key。
+
+
+后续解析：
+
+在受控环境完成。
+
+
+==================================================
+64. API Request ID
+==================================================
+
+所有 HTTP 请求建议有：
+
+request_id
+
+
+Response Header：
+
+X-Request-ID
+
+
+错误：
+
+带 request_id
+
+
+方便：
+
+Client bug
+→ Backend log
+→ Trace
+→ Run
+
+
+==================================================
+65. Correlation IDs
+==================================================
+
+主要 ID：
+
+request_id
+thread_id
+run_id
+message_id
+tool_call_id
+action_id
+mutation_id
+source_id
+
+
+避免一个 ID 承担所有含义。
+
+
+==================================================
+66. Streaming 与 Durable Run 分离
+==================================================
+
+非常重要：
+
+SSE connection
+≠
+Agent Run lifecycle
+
+
+用户关闭 App：
+
+SSE 断开
+
+但：
+
+Run 可能继续
+或
+等待 interrupt
+
+
+重新进入：
+
+GET /runs/{run_id}
+
+重新订阅：
+
+/runs/{run_id}/events
+
+
+不要把 Agent Run 绑死在一个 HTTP socket 上。
+
+
+==================================================
+67. 断线恢复
+==================================================
+
+SSE 可考虑：
+
+event id
++
+last event id
+
+
+客户端重连：
+
+携带 Last-Event-ID
+
+
+Backend：
+
+从 Event Store / Buffer 补发关键事件。
+
+
+V1 如果实现成本过高：
+
+至少保证：
+
+最终 Run 状态
+最终 Assistant Message
+
+可以重新读取。
+
+
+==================================================
+68. API 与 UI 的关系
+==================================================
+
+Today：
+
+GET /attention
+
+
+Things：
+
+GET /things
+
+
+Thing Detail：
+
+GET /things/{id}
+GET /things/{id}/tasks
+GET /things/{id}/timeline
+
+
+Chat：
+
+POST /runs
+GET /runs/{id}/events
+
+
+Files：
+
+POST /sources
+
+
+Automation：
+
+GET/POST/PATCH /automations
+
+
+Settings：
+
+Memory / notification preferences / account
+
+
+==================================================
+69. 初始 API 清单
+==================================================
+
+建议第一版：
+
+POST   /api/v1/threads
+GET    /api/v1/threads
+GET    /api/v1/threads/{id}
+GET    /api/v1/threads/{id}/messages
+
+POST   /api/v1/runs
+GET    /api/v1/runs/{id}
+GET    /api/v1/runs/{id}/events
+POST   /api/v1/runs/{id}/resume
+POST   /api/v1/runs/{id}/cancel
+
+POST   /api/v1/sources
+GET    /api/v1/sources/{id}
+
+GET    /api/v1/things
+POST   /api/v1/things
+GET    /api/v1/things/{id}
+PATCH  /api/v1/things/{id}
+
+GET    /api/v1/things/{id}/tasks
+POST   /api/v1/things/{id}/tasks
+PATCH  /api/v1/tasks/{id}
+
+GET    /api/v1/things/{id}/dates
+POST   /api/v1/things/{id}/dates
+PATCH  /api/v1/thing-dates/{id}
+
+GET    /api/v1/things/{id}/timeline
+
+GET    /api/v1/attention
+
+GET    /api/v1/automations
+POST   /api/v1/automations
+PATCH  /api/v1/automations/{id}
+DELETE /api/v1/automations/{id}
+
+GET    /api/v1/memories
+PATCH  /api/v1/memories/{id}
+DELETE /api/v1/memories/{id}
+
+
+==================================================
+70. Internal Tool 清单
+==================================================
+
+V1 初始建议：
+
+state.search_things
+state.get_thing
+state.get_tasks
+state.get_deadlines
+state.get_history
+state.create_thing
+state.update_thing
+state.create_task
+state.update_task
+state.set_deadline
+
+memory.search
+memory.remember
+memory.forget
+
+source.get
+source.list_related
+source.attach_to_thing
+
+document.interpret
+image.interpret
+audio.interpret
+
+search.web
+search.official
+
+automation.list
+automation.create
+automation.update
+automation.cancel
+
+notification.push
+
+calendar.list
+calendar.create
+calendar.update
+calendar.delete
+
+
+==================================================
+71. V1 优先实现 Tool
+==================================================
+
+第一批：
+
+state.search_things
+state.get_thing
+state.get_tasks
+state.create_thing
+state.create_task
+state.update_task
+state.set_deadline
+
+
+第二批：
+
+source.get
+document.interpret
+image.interpret
+search.web
+search.official
+
+
+第三批：
+
+memory.search
+
+
+第四批：
+
+automation.create
+automation.list
+automation.cancel
+notification.push
+
+
+第五批：
+
+calendar.*
+
+
+==================================================
+72. V1 优先实现 API
+==================================================
+
+第一批：
+
+threads
+runs
+SSE
+things
+tasks
+
+
+目标：
+
+HarmonyOS Chat
+→ FastAPI
+→ LangGraph
+→ state tool
+→ UI
+
+
+第二批：
+
+sources / upload
+
+
+第三批：
+
+attention
+
+
+第四批：
+
+automations / push
+
+
+第五批：
+
+memory debug / settings
+
+
+==================================================
+73. API 验收 Case
+==================================================
+
+API01
+
+POST /runs
+
+应返回 run_id，
+复杂 Run 不要求同步等待最终结果。
+
+
+API02
+
+SSE assistant.delta
+可以持续输出文本。
+
+
+API03
+
+SSE 断开后，
+Run 不应直接消失。
+
+
+API04
+
+interrupt 发生：
+
+run status = WAITING_USER
+
+
+API05
+
+resume 非 WAITING_USER Run：
+
+409。
+
+
+API06
+
+重复 POST mutation
+带相同 Idempotency-Key：
+
+不能创建重复资源。
+
+
+API07
+
+PATCH Thing version 冲突：
+
+409。
+
+
+API08
+
+文件上传使用 UploadFile，
+大文件不一次全部加载进 memory。
+
+
+API09
+
+所有资源按 user_id 鉴权。
+
+
+API10
+
+客户端不能直接调用 Internal Tool endpoint。
+
+
+==================================================
+74. Tool 验收 Case
+==================================================
+
+T01
+
+state.update_task 成功：
+
+ToolResult.status = SUCCESS
+
+
+T02
+
+Task 不存在：
+
+NOT_FOUND
+
+
+T03
+
+版本冲突：
+
+CONFLICT
+
+
+T04
+
+Tool timeout：
+
+FAILED + retryable=true
+
+
+T05
+
+Tool 参数非法：
+
+FAILED + INVALID_ARGUMENT
+
+
+T06
+
+重复 Tool Action：
+
+返回第一次成功结果。
+
+
+T07
+
+Tool failed：
+
+Executive Agent 不得回复“已完成”。
+
+
+T08
+
+Tool 输出不包含内部凭证。
+
+
+T09
+
+高风险 Tool 可触发 confirmation。
+
+
+T10
+
+Read-only Tool 不产生 Mutation。
+
+
+==================================================
+75. Policy 验收 Case
+==================================================
+
+P01
+
+“Demo做完了。”
+
+唯一目标：
+
+ALLOW update_task。
+
+
+P02
+
+“好像延期到22号。”
+
+覆盖 confirmed deadline：
+
+REQUIRE_MORE_CONTEXT。
+
+
+P03
+
+“把这个提醒取消。”
+
+唯一、可逆：
+
+ALLOW。
+
+
+P04
+
+删除重要外部日历：
+
+按规则 REQUIRE_CONFIRMATION。
+
+
+P05
+
+同一 Push 刚发送过：
+
+DENY / suppress。
+
+
+P06
+
+Specialist Agent 默认不能执行敏感写 Tool。
+
+
+P07
+
+User A 不得访问 User B resource。
+
+
+P08
+
+用户明确选择取消：
+
+Graph resume 后不得继续执行原敏感操作。
+
+
+==================================================
+76. FastAPI 代码分层建议
+==================================================
+
+app/
+
+api/
+├── dependencies.py
+├── errors.py
+├── threads.py
+├── runs.py
+├── sources.py
+├── things.py
+├── tasks.py
+├── attention.py
+└── automations.py
+
+
+agent/
+├── graph.py
+├── executive.py
+├── runtime.py
+└── context_builder.py
+
+
+tools/
+├── registry.py
+├── base.py
+├── result.py
+├── state.py
+├── memory.py
+├── source.py
+├── perception.py
+├── search.py
+├── automation.py
+├── notification.py
+└── calendar.py
+
+
+policy/
+├── engine.py
+├── rules.py
+├── risk.py
+└── approval.py
+
+
+services/
+├── personal_state.py
+├── memory.py
+├── source.py
+├── automation.py
+├── notification.py
+└── calendar.py
+
+
+repositories/
+...
+
+
+==================================================
+77. Tool 基类建议
+==================================================
+
+概念：
+
+class ToolSpec:
+    name
+    description
+    input_model
+    risk_level
+    timeout
+    retry_policy
+    requires_confirmation
+
+
+class ToolContext:
+    user_id
+    thread_id
+    run_id
+    action_id
+    request_id
+
+
+async execute(
+    args,
+    context
+) -> ToolResult
+
+
+实现细节可以根据 LangChain / LangGraph Tool API 调整。
+
+核心是不把：
+
+user_id
+run_id
+policy
+
+交给模型填写。
+
+
+==================================================
+78. Pydantic
+==================================================
+
+Tool Input / API Request / Service DTO
+
+建议统一使用：
+
+Pydantic Models
+
+
+价值：
+
+- 参数校验；
+- JSON Schema；
+- FastAPI OpenAPI；
+- Tool Schema；
+- Structured Output；
+- 类型一致性。
+
+
+但不要让：
+
+Database ORM Model
+=
+API Model
+=
+Tool Model
+
+
+三个层应允许不同 Schema。
+
+
+==================================================
+79. FastAPI OpenAPI
+==================================================
+
+Public API：
+
+保留 OpenAPI 文档。
+
+开发阶段非常适合：
+
+- HarmonyOS 对接；
+- 手工测试；
+- 自动生成接口文档；
+- API 回归。
+
+
+Internal Tool：
+
+不需要暴露为公网 REST Endpoint。
+
+
+==================================================
+80. Background Worker 过渡策略
+==================================================
+
+开发最初：
+
+FastAPI
++
+in-process dev worker
+
+可以接受。
+
+
+但架构接口提前抽象：
+
+JobService.enqueue(...)
+
+
+这样后续替换：
+
+Celery
+RQ
+Arq
+Dramatiq
+其他队列
+
+不需要重写 Agent 业务逻辑。
+
+
+==================================================
+81. 最终执行闭环
+==================================================
+
+用户：
+
+“把演示视频标完成，明天下午提醒我写报告。”
+
+
+Run：
+
+Executive Agent
+
+
+并行/顺序判断：
+
+A:
+state.update_task(video, DONE)
+
+B:
+automation.create(report reminder)
+
+
+Tool Runtime：
+
+分别：
+
+Schema Validation
+Policy
+Idempotency
+Service
+Persistence
+
+
+Results：
+
+A SUCCESS
+B SUCCESS
+
+
+Executive Agent：
+
+综合：
+
+“演示视频已标记完成，也已经设置了明天下午的报告提醒。”
+
+
+如果：
+
+B FAILED
+
+最终必须是：
+
+“演示视频已经标记完成；提醒创建失败，我没有把它当成成功。”
+
+
+==================================================
+82. 当前设计结论
+==================================================
+
+老实人的执行接口层最终遵循：
+
+Client API
+≠
+Agent Tool
+
+
+HarmonyOS Client
+通过 FastAPI Product API 使用产品。
+
+Executive Agent
+通过 Internal Tool Runtime 操作系统。
+
+
+所有真实写操作：
+
+Tool
+→ Policy
+→ Domain Service
+→ Persistence / External API
+
+
+所有 Tool：
+
+统一 Result
+统一 Trace
+统一错误模型
+统一幂等策略
+
+
+所有高风险动作：
+
+不能只依赖 Prompt，
+必须有代码级 Policy / Approval。
+
+
+Run：
+
+是独立、可持久、可恢复的执行资源。
+
+SSE：
+
+只是客户端观察 Run 的流式通道，
+不是 Run 生命周期本身。
+
+
+最终形成：
+
+HarmonyOS
+     ↓
+FastAPI Product API
+     ↓
+Run / Thread
+     ↓
+LangGraph Executive Agent
+     ↓
+Internal Tools
+     ↓
+Policy
+     ↓
+Domain Services
+     ↓
+PostgreSQL / Search / Calendar / Push / External Services
+
+
+==================================================
+83. 官方设计依据（截至 2026-08）
+==================================================
+
+1. OpenAI Agents SDK
+https://openai.github.io/openai-agents-python/
+
+关键参考：
+- Agent 由 instructions + tools 构成；
+- 支持 Agents as Tools；
+- Guardrails；
+- Human-in-the-loop；
+- Tracing。
+
+
+2. OpenAI Agents SDK - Tools
+https://openai.github.io/openai-agents-python/tools/
+
+关键参考：
+- Function Tool；
+- Agents as Tools；
+- Tool timeout；
+- Tool error handling；
+- Tool schema 与参数约束。
+
+
+3. OpenAI Agents SDK - Guardrails
+https://openai.github.io/openai-agents-js/guides/guardrails/
+
+关键参考：
+- Input / Output / Tool Guardrails；
+- Tool 调用前后可以执行校验；
+- Guardrail 不能替代已经发生的外部副作用回滚。
+
+
+4. OpenAI Agents SDK - Tracing
+https://openai.github.io/openai-agents-python/tracing/
+
+关键参考：
+- Agent Run；
+- Model generation；
+- Tool call；
+- Guardrail；
+- Handoff；
+都可以纳入 Trace。
+
+
+5. LangGraph - Interrupts
+https://docs.langchain.com/oss/python/langgraph/interrupts
+
+关键参考：
+- interrupt 暂停；
+- Checkpoint 保存；
+- Command(resume) 恢复；
+- 副作用操作需考虑 idempotency。
+
+
+6. FastAPI - Request Files
+https://fastapi.tiangolo.com/tutorial/request-files/
+
+关键参考：
+- UploadFile 适用于文件上传；
+- 大文件相比直接读取 bytes 更适合使用 UploadFile。
+
+
+7. FastAPI - Background Tasks
+https://fastapi.tiangolo.com/tutorial/background-tasks/
+
+关键参考：
+- BackgroundTasks 适合响应后执行较轻任务；
+- 重型、多进程、跨服务器后台任务应考虑更完整的任务队列系统。
+
+
+==================================================
+84. 文档状态
+==================================================
+
+本文件状态：
+
+APPROVED / v1.0
+
+已由项目负责人确认，作为老实人 V1 Tool / API / Policy 基线。
+
+
+后续：
+
+数据库 Migration
+Tool Function Schema
+Pydantic Models
+FastAPI Routes
+Policy Rules
+LangGraph Tool Runtime
+
+都应基于本文件继续落地。
+
+
+下一份：
+
+《老实人｜HarmonyOS 客户端开发设计 v1.0》
+
+
+—— End ——

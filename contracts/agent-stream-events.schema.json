@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laoshiren.local/schemas/agent-stream-events.schema.json",
+  "title": "Laoshiren Agent Stream Event",
+  "type": "object",
+  "required": ["event_id", "event", "run_id", "occurred_at", "data"],
+  "properties": {
+    "event_id": { "type": "string", "minLength": 1 },
+    "event": {
+      "enum": [
+        "run.started",
+        "assistant.delta",
+        "assistant.message",
+        "tool.started",
+        "tool.completed",
+        "tool.failed",
+        "status.updated",
+        "interrupt.required",
+        "run.completed",
+        "run.failed",
+        "heartbeat"
+      ]
+    },
+    "run_id": { "type": "string", "minLength": 1 },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "data": { "type": "object" }
+  },
+  "additionalProperties": false
+}

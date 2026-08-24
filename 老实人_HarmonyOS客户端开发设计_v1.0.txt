@@ -1,0 +1,3971 @@
+《老实人｜HarmonyOS 客户端开发设计 v1.0》
+
+版本：v1.0
+项目名称：老实人
+文档类型：HarmonyOS Client Technical Design
+当前阶段：V1 正式开发设计
+目标平台：HarmonyOS
+客户端语言：ArkTS
+UI 框架：ArkUI
+IDE：DevEco Studio
+后端：Python + FastAPI + LangGraph
+
+==================================================
+0. 文档目的
+==================================================
+
+本文件用于确定“老实人”V1 HarmonyOS 客户端的技术边界、页面结构、交互模型、网络层、本地状态、文件/语音/分享、流式 Agent 交互、Push 和与 FastAPI 的联调方式。
+
+本文件重点回答：
+
+1. HarmonyOS 客户端负责什么；
+2. ArkTS / ArkUI 如何组织代码；
+3. App 有哪些主要页面；
+4. Chat 如何与 Agent Run 对接；
+5. 如何处理流式回复；
+6. 如何上传图片、PDF、Word、PPT；
+7. 如何接收其他 App 分享；
+8. 如何接入语音输入；
+9. Today / Things / Timeline 如何展示；
+10. 如何实现 Push；
+11. 本地缓存什么、不缓存什么；
+12. 如何处理断网、重连、Agent interrupt；
+13. 如何保证客户端不复制后端业务逻辑；
+14. V1 应按什么顺序实现。
+
+核心原则：
+
+HarmonyOS Client
+=
+用户体验层
++
+系统能力入口
++
+后端 Agent 的客户端
+
+而不是：
+
+第二套 Agent Backend。
+
+
+==================================================
+1. 客户端总体定位
+==================================================
+
+老实人的“智能核心”继续在后端：
+
+Python
++
+FastAPI
++
+LangGraph
++
+Executive Agent
++
+Personal State
++
+Memory
++
+Automation
++
+Tools
+
+
+HarmonyOS 客户端主要负责：
+
+- 界面；
+- 用户输入；
+- 消息展示；
+- 文件选择；
+- 图片选择；
+- 语音输入；
+- 其他 App 分享接收；
+- Today / Things / Timeline 浏览；
+- 本地轻量缓存；
+- 网络状态；
+- Agent Run 状态展示；
+- interrupt / confirmation；
+- Push；
+- Deep Link；
+- 系统权限；
+- 客户端生命周期。
+
+
+禁止：
+
+把 Agent 决策逻辑复制到 ArkTS。
+
+例如：
+
+不要在客户端自己判断：
+
+“这句话是不是要更新 deadline？”
+
+正确：
+
+ArkTS
+→ FastAPI
+→ Executive Agent
+→ Tool / Policy
+→ Result
+→ ArkTS 展示
+
+
+==================================================
+2. HarmonyOS 官方技术栈
+==================================================
+
+V1 客户端采用：
+
+ArkTS
++
+ArkUI
++
+Ability Kit
++
+Network Kit / Remote Communication Kit
++
+Core File Kit
++
+ArkData
++
+Push Kit / Notification
++
+系统分享能力
+
+
+官方技术关系：
+
+ArkTS
+= HarmonyOS 应用开发语言
+
+ArkUI
+= 声明式 UI 框架
+
+Ability Kit
+= 应用模型、UIAbility、Context、Want 等
+
+ArkData
+= 本地数据持久化
+
+Core File Kit
+= 文件选择和文件能力
+
+Network Kit / Remote Communication Kit
+= HTTP / WebSocket / 网络通信
+
+Push Kit
+= 云端到设备消息推送
+
+
+==================================================
+3. App 技术分层
+==================================================
+
+建议客户端分为：
+
+Presentation
+Application
+Data
+Platform
+
+
+结构：
+
+┌───────────────────────────────┐
+│        Presentation           │
+│ ArkUI Pages / Components      │
+└───────────────┬───────────────┘
+                │
+┌───────────────▼───────────────┐
+│        Application            │
+│ ViewModel / Store / UseCase   │
+└───────────────┬───────────────┘
+                │
+┌───────────────▼───────────────┐
+│             Data              │
+│ API / Repository / Cache      │
+└───────────────┬───────────────┘
+                │
+┌───────────────▼───────────────┐
+│           Platform            │
+│ File / Share / Push / Voice   │
+└───────────────────────────────┘
+
+
+不要：
+
+Page
+→ 直接散落几十个 http.request()
+
+
+所有网络调用统一经过：
+
+ApiClient / Repository
+
+
+==================================================
+4. 推荐目录结构
+==================================================
+
+本节用于表达客户端分层职责。
+
+最终物理目录统一采用《老实人｜工程目录与项目架构规范 v1.0》定版的：
+
+Feature-first + MVVM
+
+即：
+
+entry/src/main/ets/
+├── entryability/
+├── app/
+├── features/
+├── common/
+└── shared/
+
+下方 layer-first 目录仅作为组件职责示例，不作为初始化时的最终目录模板。
+
+entry/src/main/ets/
+
+├── entryability/
+│   └── EntryAbility.ets
+│
+├── pages/
+│   ├── MainPage.ets
+│   ├── TodayPage.ets
+│   ├── ChatPage.ets
+│   ├── ThingsPage.ets
+│   ├── ThingDetailPage.ets
+│   ├── TimelinePage.ets
+│   ├── SourcePreviewPage.ets
+│   ├── AutomationPage.ets
+│   └── SettingsPage.ets
+│
+├── components/
+│   ├── chat/
+│   │   ├── MessageBubble.ets
+│   │   ├── AgentStatusBar.ets
+│   │   ├── ComposerBar.ets
+│   │   ├── AttachmentChip.ets
+│   │   └── InterruptCard.ets
+│   │
+│   ├── thing/
+│   │   ├── ThingCard.ets
+│   │   ├── TaskItem.ets
+│   │   ├── DeadlineItem.ets
+│   │   └── ProgressView.ets
+│   │
+│   ├── attention/
+│   │   └── AttentionCard.ets
+│   │
+│   └── common/
+│       ├── LoadingView.ets
+│       ├── ErrorView.ets
+│       ├── EmptyView.ets
+│       └── AppTopBar.ets
+│
+├── viewmodel/
+│   ├── ChatViewModel.ets
+│   ├── ThingsViewModel.ets
+│   ├── TodayViewModel.ets
+│   └── AutomationViewModel.ets
+│
+├── model/
+│   ├── Thread.ets
+│   ├── Message.ets
+│   ├── Run.ets
+│   ├── Thing.ets
+│   ├── Task.ets
+│   ├── Attention.ets
+│   └── Source.ets
+│
+├── data/
+│   ├── api/
+│   │   ├── ApiClient.ets
+│   │   ├── AgentApi.ets
+│   │   ├── ThingApi.ets
+│   │   ├── SourceApi.ets
+│   │   └── AutomationApi.ets
+│   │
+│   ├── repository/
+│   │   ├── ChatRepository.ets
+│   │   ├── ThingRepository.ets
+│   │   └── SourceRepository.ets
+│   │
+│   └── cache/
+│       ├── PreferencesStore.ets
+│       └── LocalCache.ets
+│
+├── platform/
+│   ├── FilePickerService.ets
+│   ├── PhotoPickerService.ets
+│   ├── ShareReceiver.ets
+│   ├── VoiceService.ets
+│   ├── PushService.ets
+│   └── NetworkMonitor.ets
+│
+├── navigation/
+│   ├── Routes.ets
+│   └── AppNavigation.ets
+│
+└── utils/
+    ├── Logger.ets
+    ├── DateTime.ets
+    └── Result.ets
+
+
+这是逻辑建议。
+
+V1 初期可以适当简化，
+但不要把所有代码写进一个 Index.ets。
+
+
+==================================================
+5. UIAbility
+==================================================
+
+V1 采用 Stage 模型。
+
+主要入口：
+
+EntryAbility
+
+
+EntryAbility 负责：
+
+- App 启动；
+- Window 创建；
+- 初始化应用级依赖；
+- 处理 Want；
+- 接收可能的分享 / Deep Link；
+- 恢复客户端轻量状态；
+- 注册必要系统能力。
+
+
+EntryAbility 不负责：
+
+- Agent 推理；
+- 业务状态判断；
+- 直接操作 Personal State 数据库。
+
+
+==================================================
+6. Navigation
+==================================================
+
+页面导航采用 ArkUI Navigation 体系。
+
+推荐：
+
+Navigation
++
+NavDestination
+
+
+原因：
+
+- 适合声明式页面导航；
+- 支持页面栈；
+- 页面生命周期明确；
+- 后续适配 Phone / Tablet 更方便。
+
+
+导航结构初步：
+
+Main
+├── Today
+├── Things
+├── Chat
+└── Settings
+
+
+二级：
+
+ThingDetail
+Timeline
+SourcePreview
+Automation
+MemoryDebug（开发期）
+RunDetail（开发期）
+
+
+最终底部导航样式后续 UI 设计阶段再定。
+
+
+==================================================
+7. V1 主页面结构
+==================================================
+
+当前先不锁最终视觉布局，
+只锁“产品入口”。
+
+
+建议四个一级入口：
+
+1. Today
+2. Things
+3. Chat
+4. Me / Settings
+
+
+Timeline 不一定必须作为独立底部 Tab。
+
+可以：
+
+Thing Detail
+→ Timeline
+
+以及：
+
+Today
+→ Recent Activity
+
+
+Chat 是 Agent 主入口，
+但 App 不应打开后只有一个聊天窗口。
+
+
+==================================================
+8. Today 页面
+==================================================
+
+Today 是“主动性”的主要视觉入口。
+
+核心内容：
+
+- 今日需要关注；
+- 已逾期；
+- 即将截止；
+- 当前高优先级；
+- Blocked；
+- Agent 推荐 Next Action。
+
+
+数据：
+
+GET /api/v1/attention
+
+
+页面示例：
+
+早上好
+
+今天最需要关注
+┌───────────────────────┐
+│ 技术报告              │
+│ 今天 23:59 截止       │
+│ [继续处理]            │
+└───────────────────────┘
+
+接下来
+- 演示视频
+- ArkTS 页面联调
+
+最近进展
+- Agent Architecture 完成
+- Personal State 设计完成
+
+
+点击 Attention Card：
+
+进入：
+
+Thing Detail
+或
+Chat with thing context
+
+
+==================================================
+9. Things 页面
+==================================================
+
+Things 是当前事务总览。
+
+默认展示：
+
+ACTIVE
+BLOCKED
+WAITING
+PLANNING
+
+
+卡片内容：
+
+Thing Name
+Status
+Current Stage
+Deadline
+Progress
+Next Action
+Priority
+
+
+支持：
+
+- 搜索；
+- 状态筛选；
+- 类型筛选；
+- 最近活跃排序；
+- 手动新建 Thing。
+
+
+Thing 不应表现成纯 Todo Folder。
+
+它应该有：
+
+“一个现实事务当前处于什么状态”的感觉。
+
+
+==================================================
+10. Thing Detail
+==================================================
+
+Thing Detail V1 至少展示：
+
+Header
+- Name
+- Status
+- Stage
+- Priority
+- Deadline
+- Progress
+
+Tasks
+- TODO
+- IN_PROGRESS
+- WAITING
+- DONE
+
+Next Action
+
+Blockers
+
+Important Dates
+
+Related Sources
+
+Recent Timeline
+
+
+底部 / 顶部提供：
+
+“继续和老实人聊这个事情”
+
+
+点击后：
+
+ChatPage
++
+active_thing_id
+
+
+这样用户不必重新解释上下文。
+
+
+==================================================
+11. Chat 页面
+==================================================
+
+Chat 是最复杂的客户端页面。
+
+主要区域：
+
+Header
+Message List
+Agent Runtime Status
+Attachment Preview
+Composer
+Interrupt / Confirmation UI
+
+
+基本布局：
+
+┌────────────────────────────┐
+│ 老实人              ···    │
+├────────────────────────────┤
+│                            │
+│ User Message               │
+│                            │
+│ Agent Message              │
+│                            │
+│ [正在查询官方信息...]      │
+│                            │
+├────────────────────────────┤
+│ [附件]                     │
+│ +   输入消息...    🎤  发送 │
+└────────────────────────────┘
+
+
+==================================================
+12. Chat Thread
+==================================================
+
+用户可以：
+
+- 新建 Thread；
+- 切换 Thread；
+- 删除 / 归档 Thread；
+- 从 Thing 进入 Chat；
+- 从 Push 进入对应 Chat。
+
+
+一个 Thread：
+
+thread_id
+
+可以绑定：
+
+active thing hint
+
+但不等于 Thing。
+
+
+客户端可缓存：
+
+最近 Thread ID
+Thread title
+last message preview
+
+
+真实 Thread 数据：
+
+后端为准。
+
+
+==================================================
+13. Agent Run 客户端模型
+==================================================
+
+每次用户发送消息：
+
+Message
+↓
+POST /api/v1/runs
+↓
+run_id
+↓
+连接 stream
+↓
+接收：
+assistant.delta
+status.updated
+interrupt.required
+run.completed
+run.failed
+
+
+客户端必须把：
+
+Message
+和
+Run
+
+分开。
+
+
+例如：
+
+用户消息已发送成功，
+Run 后续可能：
+
+RUNNING
+WAITING_USER
+FAILED
+COMPLETED
+
+
+==================================================
+14. Chat 消息模型
+==================================================
+
+客户端建议：
+
+ChatMessage
+├── id
+├── threadId
+├── role
+├── content
+├── createdAt
+├── deliveryStatus
+├── runId?
+├── attachments?
+└── metadata
+
+
+role：
+
+USER
+ASSISTANT
+SYSTEM_EVENT
+
+
+deliveryStatus：
+
+SENDING
+SENT
+FAILED
+
+
+Assistant streaming：
+
+可以先创建 placeholder message，
+逐步追加 delta。
+
+
+==================================================
+15. Agent 流式输出
+==================================================
+
+客户端抽象：
+
+AgentStreamClient
+
+
+而不是：
+
+ChatPage 直接解析 SSE。
+
+
+接口概念：
+
+connect(runId, listener)
+disconnect(runId)
+
+
+listener：
+
+onRunStarted
+onAssistantDelta
+onStatusUpdate
+onInterrupt
+onCompleted
+onFailed
+
+
+这样底层未来可以：
+
+SSE
+→ WebSocket
+
+而不改 Chat UI。
+
+
+==================================================
+16. V1 Streaming 方案
+==================================================
+
+优先：
+
+FastAPI
+→ HTTP Streaming / SSE
+→ HarmonyOS Client
+
+
+但正式真机联调时必须验证：
+
+- 长连接稳定性；
+- 网络切换；
+- 后台/前台；
+- 连接断开；
+- chunk 读取；
+- 代理环境；
+- 服务端 timeout。
+
+
+如果 SSE 在当前 SDK / 网络链路下实现复杂：
+
+切换：
+
+WebSocket
+
+
+后端 Run 模型保持不变。
+
+
+核心原则：
+
+Transport
+≠
+Agent Runtime。
+
+
+==================================================
+17. SSE / Stream Event 映射
+==================================================
+
+Server：
+
+assistant.delta
+
+Client：
+
+appendAssistantText(delta)
+
+
+Server：
+
+status.updated
+
+Client：
+
+showRuntimeStatus(label)
+
+
+Server：
+
+interrupt.required
+
+Client：
+
+showInterruptCard(payload)
+
+
+Server：
+
+run.completed
+
+Client：
+
+finalizeMessage()
+hideRuntimeStatus()
+
+
+Server：
+
+run.failed
+
+Client：
+
+showRunError()
+allowRetry()
+
+
+==================================================
+18. Agent 状态展示
+==================================================
+
+不要展示：
+
+“调用 tool state.get_thing”
+“节点 planner 完成”
+“执行 graph superstep 3”
+
+
+用户看到：
+
+“正在查看当前进度”
+“正在分析文件”
+“正在查询官方信息”
+“正在更新事项”
+“正在创建提醒”
+
+
+状态应该：
+
+- 简洁；
+- 人类可理解；
+- 不暴露内部架构；
+- 不伪装思考过程。
+
+
+==================================================
+19. Interrupt UI
+==================================================
+
+当 Backend：
+
+WAITING_USER
+
+
+客户端显示：
+
+InterruptCard
+
+
+类型：
+
+CONFIRMATION
+CLARIFICATION
+SELECTION
+FORM
+
+
+例：
+
+“发现两个叫 Demo 的任务，你指的是哪一个？”
+
+[比赛 Demo]
+[论文 Demo]
+
+
+点击：
+
+POST /runs/{id}/resume
+
+
+客户端不创建新 Run。
+
+而是：
+
+恢复旧 Run。
+
+
+==================================================
+20. App 退出与 Run
+==================================================
+
+用户退出 Chat：
+
+不能理解为：
+
+Cancel Agent Run。
+
+
+客户端：
+
+- 断开 stream；
+- 记录 run_id；
+- 页面可销毁。
+
+
+Backend Run：
+
+继续执行。
+
+
+用户返回：
+
+GET /runs/{id}
+
+如果：
+
+RUNNING
+→ reconnect stream
+
+WAITING_USER
+→ 恢复 Interrupt UI
+
+COMPLETED
+→ 加载最终消息
+
+FAILED
+→ 展示失败状态
+
+
+==================================================
+21. 文件输入
+==================================================
+
+V1 支持：
+
+- PDF
+- Word
+- PPT
+- 常见文本文件
+- 图片
+- 音频
+
+
+文件流程：
+
+Composer
+→ “+”
+→ File Picker
+→ URI
+→ Client Upload
+→ POST /sources
+→ source_id
+→ Attachment Chip
+→ POST /runs with source_ids
+
+
+客户端不自行理解文档内容。
+
+
+==================================================
+22. 文档选择
+==================================================
+
+使用 HarmonyOS 官方 File Picker / Core File Kit。
+
+DocumentViewPicker：
+
+用于用户主动选择文档。
+
+
+注意：
+
+系统 Picker 返回 URI。
+
+不要假设：
+
+一定是普通 filesystem path。
+
+
+上传层需要：
+
+根据系统 URI 能力读取文件并上传，
+并遵守 URI 授权。
+
+
+==================================================
+23. 图片选择
+==================================================
+
+图片/视频选择：
+
+优先使用当前官方推荐的 photoAccessHelper.PhotoViewPicker。
+
+
+不要使用：
+
+已被官方 deprecated 的旧 PhotoViewPicker。
+
+
+V1 主要需要：
+
+images
+
+
+后续可以：
+
+camera capture。
+
+
+==================================================
+24. 图片上传体验
+==================================================
+
+选图后：
+
+Composer 显示：
+
+thumbnail
+filename / type
+remove button
+
+
+发送前：
+
+可以先上传 Source，
+也可以发送时统一上传。
+
+
+推荐：
+
+先 upload
+→ obtain source_id
+→ user sends run
+
+
+原因：
+
+Agent Run 不需要等待整个文件上传流程后才创建不稳定状态。
+
+
+==================================================
+25. Upload 状态
+==================================================
+
+Attachment：
+
+PENDING
+UPLOADING
+READY
+FAILED
+
+
+如果附件：
+
+FAILED
+
+发送按钮应：
+
+- 阻止把不存在的 source_id 发给 Run；
+- 或允许用户删除失败附件后继续。
+
+
+==================================================
+26. 其他 App 分享到老实人
+==================================================
+
+这是老实人的核心入口之一。
+
+目标体验：
+
+用户在：
+
+浏览器
+文件管理
+图库
+其他支持分享的应用
+
+点击：
+
+分享
+→ 老实人
+
+
+老实人收到：
+
+- text；
+- URI；
+- file；
+- image；
+- webpage information。
+
+
+客户端：
+
+EntryAbility / Share Receiver
+↓
+解析 Want / Share payload
+↓
+创建 IncomingShare
+↓
+进入 Share Intake UI
+↓
+上传 Source
+↓
+进入 Chat
+
+
+==================================================
+27. Share Intake UI
+==================================================
+
+分享进来后不要立刻：
+
+自动修改 Personal State。
+
+
+推荐页面：
+
+“已收到这个内容”
+
+[附件预览]
+
+输入框：
+“想让我怎么处理？”
+
+快捷建议：
+
+[帮我看看]
+[保存到某件事]
+[看看有没有新要求]
+[提取任务]
+
+
+用户也可以：
+
+直接发送。
+
+
+最终：
+
+Source
++
+User Intent
+→ Agent Run
+
+
+==================================================
+28. Share 与 Thing
+==================================================
+
+如果用户是从：
+
+Thing Detail
+→ 添加资料
+
+则可以附：
+
+thing_id hint
+
+
+如果是系统外分享：
+
+不强制用户选择 Thing。
+
+
+Executive Agent：
+
+负责关联。
+
+
+当存在歧义：
+
+Agent Ask。
+
+
+==================================================
+29. 语音输入
+==================================================
+
+V1 产品目标：
+
+用户点击麦克风
+→ 说话
+→ 转成文本
+→ 放入 Composer
+→ 用户发送
+
+
+这是第一阶段最稳妥的方式。
+
+
+即：
+
+Voice
+→ STT
+→ Editable Text
+→ Agent
+
+
+用户可以发送前修改识别错误。
+
+
+==================================================
+30. 语音高级模式
+==================================================
+
+后续可支持：
+
+长按说话
+语音消息
+会议录音
+原始 Audio Source
+会议纪要
+
+
+但 V1 不应因为实时全双工语音 Agent
+拖慢整个 App 上架。
+
+
+==================================================
+31. 本地状态管理
+==================================================
+
+客户端状态分三类：
+
+A. UI State
+
+例如：
+
+当前 Tab
+输入框内容
+弹窗状态
+loading
+
+
+B. Session State
+
+例如：
+
+currentThreadId
+currentRunId
+lastVisitedThing
+
+
+C. Cached Server Data
+
+例如：
+
+Thing summaries
+recent messages
+attention items
+
+
+不要把：
+
+Personal State 的唯一权威版本
+
+只放客户端。
+
+
+==================================================
+32. ArkUI 状态
+==================================================
+
+页面 UI 状态：
+
+使用 ArkUI 状态管理能力。
+
+
+原则：
+
+页面状态就近管理。
+
+跨多个页面真正共享：
+
+再提升到应用级 Store。
+
+
+不要一开始：
+
+创建一个巨大 GlobalStore
+把所有对象都塞进去。
+
+
+==================================================
+33. Preferences
+==================================================
+
+HarmonyOS Preferences 适合：
+
+轻量 Key-Value。
+
+
+V1 用于：
+
+- API environment；
+- user preferences；
+- notification preference；
+- last thread id；
+- theme；
+- onboarding flag；
+- small client settings。
+
+
+不用于：
+
+- 完整消息历史；
+- 所有 Thing；
+- 大文件；
+- 大型 JSON 数据库。
+
+
+==================================================
+34. Local Cache
+==================================================
+
+如果 V1 需要离线浏览：
+
+可以使用 ArkData 本地数据库。
+
+
+但第一阶段：
+
+不急于把服务器所有表复制到手机。
+
+
+推荐最小缓存：
+
+- 最近 Thread；
+- 最近消息；
+- Thing summary；
+- Attention summary；
+- pending upload metadata。
+
+
+先做：
+
+online-first
++
+graceful cache
+
+
+不是：
+
+full offline-first sync system。
+
+
+==================================================
+35. Server Source of Truth
+==================================================
+
+以下数据以 Backend 为准：
+
+Thing
+Task
+Deadline
+Timeline
+Memory
+Automation
+Run State
+
+
+客户端：
+
+可以乐观显示，
+但最终必须接受 Server Result。
+
+
+例：
+
+用户勾选 Task DONE：
+
+UI：
+立即显示完成（optional optimistic）
+
+Backend：
+PATCH task
+
+如果：
+
+409 VERSION_CONFLICT
+
+Client：
+
+回滚 / refresh
++
+提示当前数据已变化。
+
+
+==================================================
+36. 网络层
+==================================================
+
+统一：
+
+ApiClient
+
+
+负责：
+
+- base URL；
+- request headers；
+- auth；
+- timeout；
+- JSON decode；
+- error normalization；
+- request ID；
+- retry for safe reads；
+- network logging（开发环境）。
+
+
+Feature API：
+
+ThingApi
+RunApi
+SourceApi
+
+不要重复实现这些通用逻辑。
+
+
+==================================================
+37. Network API 选择
+==================================================
+
+HarmonyOS 官方提供：
+
+@ohos.net.http
+WebSocket
+Remote Communication Kit
+
+
+V1 普通 REST：
+
+优先稳定官方 HTTP 能力。
+
+
+流式：
+
+通过 AgentStreamClient 抽象。
+
+
+未来若使用新的 Remote Communication Kit：
+
+只替换 Data layer。
+
+
+==================================================
+38. Auth
+==================================================
+
+当前 V1 只有本人使用，
+仍不能：
+
+把 API 全裸开放。
+
+
+开发期可以：
+
+simple account/token
+
+
+Client 保存 token：
+
+必须使用适合敏感凭证的安全存储方式，
+不要把 production token：
+
+硬编码在 ArkTS source。
+
+
+最终账号体系：
+
+后续再定。
+
+
+==================================================
+39. Base URL
+==================================================
+
+开发环境：
+
+Dev
+Staging
+Production
+
+
+不要在多个文件写死：
+
+http://192.168...
+
+
+统一：
+
+EnvironmentConfig
+
+
+例如：
+
+DEV_BASE_URL
+PROD_BASE_URL
+
+
+生产：
+
+HTTPS only。
+
+
+==================================================
+40. Local Development
+==================================================
+
+本地联调可能：
+
+HarmonyOS Emulator / Device
+        ↓
+LAN / Tunnel
+        ↓
+PC FastAPI
+
+
+开发阶段：
+
+FastAPI：
+uvicorn
+
+
+正式：
+
+Cloud Server
++
+Domain
++
+HTTPS
+
+
+手机客户端不应依赖：
+
+电脑固定局域网地址。
+
+
+==================================================
+41. Today 数据加载
+==================================================
+
+进入 Today：
+
+ViewModel
+↓
+GET /attention
+↓
+render
+
+
+同时可加载：
+
+recent Things
+recent Timeline
+
+
+避免：
+
+一个页面发 10 个无组织请求。
+
+
+后端可根据后续性能：
+
+增加 Dashboard API。
+
+
+V1 先保持接口简单。
+
+
+==================================================
+42. Things 数据加载
+==================================================
+
+GET /things
+
+
+分页：
+
+cursor-based preferred
+
+
+页面：
+
+initial load
+pull refresh
+pagination
+
+
+搜索：
+
+debounce。
+
+
+==================================================
+43. Thing Detail 数据
+==================================================
+
+可以选择：
+
+GET /things/{id}
+
+一次返回：
+
+summary
+tasks
+dates
+blockers
+sources
+recent timeline
+
+
+避免首次进入详情页连续调用：
+
+6 个接口。
+
+
+详细历史再按需：
+
+GET timeline。
+
+
+具体 API 聚合程度可在实现阶段根据性能调整。
+
+
+==================================================
+44. Timeline UI
+==================================================
+
+Timeline 按日期分组。
+
+
+事件示例：
+
+今天 21:30
+✓ 演示视频完成
+
+昨天
+截止日期从 9/19 更新为 9/22
+来源：官方通知
+
+
+支持点击：
+
+Source
+Mutation detail
+Related Task
+
+
+Timeline 不显示：
+
+Agent 内部每个 Tool Call。
+
+
+==================================================
+45. Source Preview
+==================================================
+
+Source Preview 根据类型：
+
+Image
+→ image preview
+
+PDF
+→ Preview Kit / system file preview capability（根据实际 SDK 接入）
+
+Word/PPT
+→ 系统/Preview capability or file metadata
+
+Audio
+→ player / transcript
+
+Web
+→ title / source / open
+
+
+V1 不需要自己造一套完整 Office Reader。
+
+
+==================================================
+46. Push
+==================================================
+
+老实人需要真正支持：
+
+用户没打开 App
+→ Backend 主动通知。
+
+
+架构：
+
+Automation Worker
+      ↓
+Push Service Backend
+      ↓
+Huawei Push Kit
+      ↓
+HarmonyOS Device
+
+
+客户端负责：
+
+- 初始化 Push；
+- 获取 / 更新设备标识；
+- 上报后端；
+- 接收通知；
+- 处理点击；
+- Deep Link。
+
+
+==================================================
+47. Push Registration
+==================================================
+
+客户端首次成功获取 Push 标识后：
+
+POST /devices / push-token endpoint
+或用户设备注册接口
+
+
+Backend 保存：
+
+user_id
+device_id
+push_token / push identifier
+platform
+last_seen_at
+
+
+Push identifier 发生变化：
+
+更新后端。
+
+
+不要把：
+
+Push credential
+
+存进 Agent Context。
+
+
+==================================================
+48. Notification 点击
+==================================================
+
+Push Payload：
+
+type
+thing_id?
+thread_id?
+automation_id?
+route
+
+
+点击：
+
+EntryAbility
+↓
+Parse Want
+↓
+Navigation
+
+
+例：
+
+DEADLINE_ALERT
+thing_id=123
+
+
+→ ThingDetail(123)
+
+
+例：
+
+AUTOMATION_RESULT
+thread_id=abc
+run_id=xyz
+
+
+→ Chat / Run Result
+
+
+==================================================
+49. Push 内容
+==================================================
+
+Push 不应该塞完整 Agent Response。
+
+
+通知：
+
+标题：
+“技术报告今天截止”
+
+正文：
+“目前仍未记录完成，点此继续处理。”
+
+
+点击后：
+
+App 拉取真实最新数据。
+
+
+避免 Push Payload 变成：
+
+业务状态权威来源。
+
+
+==================================================
+50. 本地 Notification 与远程 Push
+==================================================
+
+需要区分：
+
+Local Notification
+和
+Remote Push。
+
+
+老实人核心未来触发在后端：
+
+因此主要依赖：
+
+Remote Push。
+
+
+本地 notification：
+
+可用于纯设备端体验，
+但不要和 Backend Automation 形成两套重复提醒系统。
+
+
+==================================================
+51. Deep Link
+==================================================
+
+统一路由概念：
+
+laoshiren://thing/{id}
+laoshiren://thread/{id}
+laoshiren://run/{id}
+
+
+实际 Scheme / App Linking：
+
+后续按 HarmonyOS 官方规范配置。
+
+
+所有 Push / Share 完成后：
+
+尽量通过同一 Navigation Router 进入目标页面。
+
+
+==================================================
+52. 网络断开
+==================================================
+
+Chat 发送前：
+
+检测网络状态。
+
+
+如果离线：
+
+用户消息可以：
+
+LOCAL_PENDING
+
+
+但 V1 为避免复杂 offline queue，
+推荐明确显示：
+
+“当前无网络，连接恢复后重试。”
+
+
+不要假装 Agent 已收到。
+
+
+==================================================
+53. Request Retry
+==================================================
+
+安全 GET：
+
+可自动 retry。
+
+
+POST /runs：
+
+必须使用 Idempotency-Key。
+
+
+防止：
+
+客户端超时
+→ 用户重试
+→ 后端创建两个 Run。
+
+
+Upload：
+
+也需要上传请求唯一标识 / hash
+避免重复 Source（后续可优化）。
+
+
+==================================================
+54. Chat Retry
+==================================================
+
+用户消息发送失败：
+
+Message Bubble：
+
+[发送失败，点击重试]
+
+
+重试：
+
+复用 client message id
++
+Idempotency-Key
+
+
+不能：
+
+生成完全新消息导致重复 Agent Run。
+
+
+==================================================
+55. Run Failure UI
+==================================================
+
+如果 Agent Run 失败：
+
+不要只显示：
+
+“发生错误”。
+
+
+推荐：
+
+“这次处理没有完成。”
+
+根据类型显示：
+
+[重试]
+[查看已完成部分]
+[重新发送]
+
+
+如果部分 Tool 成功：
+
+例如：
+
+Task 已更新
+但 Automation 创建失败
+
+
+Final message / UI：
+
+必须反映 partial result。
+
+
+==================================================
+56. Loading Skeleton
+==================================================
+
+Today
+Things
+Thing Detail
+
+优先使用：
+
+Skeleton / placeholder
+
+
+避免全屏：
+
+“加载中……”
+
+
+Chat：
+
+即时插入 User Bubble，
+然后显示 Agent Runtime Status。
+
+
+==================================================
+57. Empty State
+==================================================
+
+首次使用 Things：
+
+不是：
+
+“暂无数据。”
+
+
+应该引导：
+
+“告诉老实人你最近在做什么。”
+
+[开始聊]
+
+
+Today 无任务：
+
+“今天暂时没有需要你处理的重要事项。”
+
+
+产品语气后续统一设计。
+
+
+==================================================
+58. Settings
+==================================================
+
+V1 Settings 至少：
+
+- API / account basic info；
+- Notification switch；
+- proactive reminder preference；
+- Memory controls（可先开发模式）；
+- app version；
+- privacy / permissions；
+- clear local cache；
+- logout / reset（后续）。
+
+
+==================================================
+59. Developer Settings
+==================================================
+
+开发阶段强烈建议隐藏开发页：
+
+Developer Settings
+
+
+包含：
+
+- Backend environment；
+- current user id；
+- current thread id；
+- active run；
+- API health；
+- Push token；
+- clear local cache；
+- view raw API error；
+- Memory debug；
+- Agent trace id。
+
+
+Release build：
+
+关闭或隐藏。
+
+
+==================================================
+60. API DTO
+==================================================
+
+客户端 model 不直接照抄：
+
+后端 ORM。
+
+
+创建：
+
+DTO
+→ Domain Model
+
+
+例如：
+
+ThingResponseDTO
+
+转换：
+
+ThingViewData
+
+
+优点：
+
+后端增加字段
+不会直接破坏 UI。
+
+
+==================================================
+61. JSON Naming
+==================================================
+
+建议 API：
+
+snake_case
+或
+camelCase
+
+二选一固定。
+
+
+因为 FastAPI / Python 默认习惯：
+
+snake_case
+
+
+ArkTS 客户端：
+
+可以通过 DTO mapping 转 camelCase。
+
+
+不要：
+
+同一个接口同时混合。
+
+
+==================================================
+62. Date / Time
+==================================================
+
+后端：
+
+UTC ISO 8601
++
+timezone metadata（必要时）
+
+
+客户端：
+
+转为本地时间显示。
+
+
+不要客户端猜：
+
+“2026-09-30”到底是 UTC 还是 local deadline。
+
+
+Date-only：
+
+保留 date precision。
+
+
+==================================================
+63. Theme
+==================================================
+
+UI 需要：
+
+Light / Dark
+
+
+颜色、尺寸、字体：
+
+不要散落 magic values。
+
+
+建议：
+
+resources/
++
+design tokens
+
+
+例如：
+
+AppSpacing
+AppRadius
+SemanticColor
+Typography
+
+
+后续 UI 视觉设计统一改。
+
+
+==================================================
+64. 组件化原则
+==================================================
+
+不要过度组件化。
+
+适合独立组件：
+
+MessageBubble
+ThingCard
+TaskItem
+AttentionCard
+InterruptCard
+AttachmentChip
+
+
+不需要：
+
+每一行 Text 都单独组件。
+
+
+==================================================
+65. 响应式布局
+==================================================
+
+V1 主要目标：
+
+Phone
+
+
+但 ArkUI 设计时：
+
+避免死写只适合单一屏宽的绝对像素。
+
+
+后续可适配：
+
+Tablet / PC
+
+
+对于激励计划第一版：
+
+先把 Phone 体验做精致。
+
+
+==================================================
+66. 动画
+==================================================
+
+动画用于：
+
+- message arrival；
+- card expansion；
+- task completion；
+- navigation；
+- loading state。
+
+
+不要：
+
+为了“高级感”使用大量耗性能动画。
+
+
+Agent 产品最重要：
+
+速度感
+状态感
+连续感。
+
+
+==================================================
+67. Chat Composer
+==================================================
+
+Composer V1：
+
+[ + ] [文本输入................] [语音] [发送]
+
+
+“+”：
+
+- 图片
+- 文件
+- 其他后续能力
+
+
+输入框支持：
+
+多行。
+
+
+有附件：
+
+上方显示 attachment chips。
+
+
+发送时：
+
+text 可为空，
+只发送附件也允许。
+
+
+==================================================
+68. Chat Context Chip
+==================================================
+
+如果从 Thing 进入 Chat：
+
+顶部可以显示：
+
+[正在讨论：老实人 App]
+
+
+用户可以：
+
+清除 Context Chip。
+
+
+这只是：
+
+context hint
+
+不是限制 Agent 只能讨论这个 Thing。
+
+
+==================================================
+69. 新 Thread
+==================================================
+
+用户应当容易创建：
+
+“干净的新对话”。
+
+
+新 Thread：
+
+messages 为空
+
+
+但 Backend Context Builder：
+
+仍可按需：
+
+Memory
+Personal State
+
+跨 Thread 检索。
+
+
+客户端无需复制旧聊天。
+
+
+==================================================
+70. Thread List
+==================================================
+
+Thread 列表：
+
+title
+last message
+updated time
+
+
+可以支持：
+
+pin
+archive
+
+后续再做。
+
+
+不要把：
+
+Thing List
+和
+Thread List
+
+混为一体。
+
+
+==================================================
+71. Personal State 的可见性
+==================================================
+
+非常重要：
+
+Agent 维护的状态不能完全隐藏。
+
+
+用户应该通过：
+
+Things
+Thing Detail
+Tasks
+Timeline
+
+看到：
+
+系统认为“现在是什么状态”。
+
+
+这对：
+
+纠错
+信任
+长期使用
+
+非常关键。
+
+
+==================================================
+72. 用户直接编辑
+==================================================
+
+用户在 Thing UI：
+
+手动修改 status / task / deadline
+
+可以：
+
+Client API
+→ PersonalStateService
+
+
+不必：
+
+Client
+→ Agent
+→ Tool
+
+
+因为这是明确的结构化用户动作。
+
+
+但：
+
+需要产生：
+
+StateMutation
+Timeline
+
+
+和 Agent Tool 走同一 Service。
+
+
+==================================================
+73. Agent 生成建议与真实状态
+==================================================
+
+UI 需要区分：
+
+Suggestion
+
+和
+
+Committed State
+
+
+例如 Agent：
+
+“我建议下一步先完成技术报告。”
+
+
+这不是自动等于：
+
+Task 已创建。
+
+
+只有 Tool Success：
+
+才显示成真实 Task。
+
+
+==================================================
+74. Optimistic UI
+==================================================
+
+适合：
+
+Task checkbox
+简单 priority 修改
+
+
+可以 optimistic。
+
+
+不适合：
+
+重要 deadline
+Automation
+Calendar external action
+
+
+这些等待服务器确认更稳妥。
+
+
+==================================================
+75. Attention UI
+==================================================
+
+Attention Card 需要展示：
+
+why now
+
+
+例如：
+
+“今天截止”
+“已逾期2天”
+“高优先级 · 3天无进展”
+
+
+用户应该理解：
+
+为什么系统现在提醒我。
+
+
+操作：
+
+[处理]
+[稍后提醒]
+[忽略]
+
+
+“稍后提醒”：
+
+可以：
+
+Attention feedback
++
+Automation
+
+
+具体逻辑后端决定。
+
+
+==================================================
+76. Attention Dismiss
+==================================================
+
+用户点击：
+
+“先别提醒”
+
+
+客户端：
+
+POST attention feedback / automation update
+
+
+后端更新：
+
+dismissed_until
+
+
+客户端不要只把卡片本地隐藏。
+
+否则下一台设备 / 下一轮 Agent：
+
+仍可能继续提醒。
+
+
+==================================================
+77. Timeline 与 Source
+==================================================
+
+如果 Timeline Event 有 source_id：
+
+显示：
+
+“来源”
+
+
+点击：
+
+SourcePreview
+
+
+例：
+
+“截止日期更新至 9/22”
+来源：
+“2026 竞赛官方通知.pdf”
+
+
+提升可解释性。
+
+
+==================================================
+78. 图片 / 文件权限
+==================================================
+
+原则：
+
+使用系统 Picker：
+
+尽量减少不必要的广泛存储权限。
+
+
+只申请：
+
+真实功能所必需的权限。
+
+
+权限请求时：
+
+说明用途。
+
+
+不要在 App 首次启动：
+
+一次性请求所有权限。
+
+
+==================================================
+79. 麦克风权限
+==================================================
+
+只有用户第一次主动使用语音功能时：
+
+请求 Microphone。
+
+
+拒绝：
+
+文本聊天仍完全可用。
+
+
+Settings：
+
+可引导用户打开权限。
+
+
+==================================================
+80. Push 权限
+==================================================
+
+通知权限 / Push 能力：
+
+在合适时机解释价值。
+
+
+例如用户创建第一个提醒时：
+
+“开启通知后，即使你没打开老实人，也能收到提醒。”
+
+
+比首次打开 App 就弹权限：
+
+更自然。
+
+
+==================================================
+81. Privacy-by-Design
+==================================================
+
+客户端要知道：
+
+用户可能上传：
+
+私人 PDF
+截图
+语音
+工作文档
+
+
+UI 必须：
+
+明确哪些内容将上传云端。
+
+
+后续正式上架：
+
+隐私政策与权限说明必须和实际行为一致。
+
+
+V1 开发阶段：
+
+不要先接一堆不必要第三方统计 SDK。
+
+
+==================================================
+82. 日志
+==================================================
+
+Release：
+
+不要输出：
+
+token
+完整用户消息
+文件正文
+敏感 Source URL
+
+
+开发 Debug：
+
+可以有受控 network log。
+
+
+==================================================
+83. Performance
+==================================================
+
+优先优化：
+
+1. App 首屏；
+2. Chat 输入响应；
+3. Message List 滚动；
+4. Streaming append；
+5. 图片 thumbnail；
+6. Things 列表；
+7. 大文件上传。
+
+
+不要在 UI Thread：
+
+做大文件 hash
+大 JSON parse
+图片重处理
+复杂计算。
+
+
+必要时：
+
+TaskPool / Worker。
+
+
+==================================================
+84. Streaming 性能
+==================================================
+
+LLM delta 可能非常频繁。
+
+
+不要：
+
+每个字符一次强制昂贵全页面刷新。
+
+
+可以：
+
+buffer delta
+每几十毫秒 flush UI
+
+
+具体根据真机 Profile 调整。
+
+
+==================================================
+85. Message List
+==================================================
+
+长 Chat：
+
+使用适合长列表的懒加载组件 / LazyForEach 等机制。
+
+
+不要：
+
+几千条消息一次构建所有 UI。
+
+
+历史消息：
+
+分页加载。
+
+
+==================================================
+86. Image Cache
+==================================================
+
+Source thumbnail：
+
+允许客户端缓存。
+
+
+缓存：
+
+可清除。
+
+
+原始 Source：
+
+不默认永久下载到本地。
+
+
+==================================================
+87. Source Upload Progress
+==================================================
+
+V1 最好支持：
+
+0-100% 上传进度
+
+
+特别是：
+
+PPT / PDF / Audio。
+
+
+如果官方网络 API 当前实现上传进度复杂：
+
+第一版至少：
+
+Uploading...
+Success / Failed
+
+
+不能：
+
+用户不知道文件是否已经上传。
+
+
+==================================================
+88. App 生命周期
+==================================================
+
+Foreground：
+
+- refresh active Run；
+- refresh attention if stale；
+- reconnect necessary stream。
+
+
+Background：
+
+- 不依赖 UI 进程持续跑 Agent；
+- Backend 继续运行；
+- Push 负责未来触达。
+
+
+Resume：
+
+检查：
+
+pending run
+push deep link
+incoming share
+
+
+==================================================
+89. Incoming Share 生命周期
+==================================================
+
+App 未启动时被 Share 拉起：
+
+EntryAbility
+↓
+parse incoming Want
+↓
+保存 temporary intake state
+↓
+Window ready
+↓
+navigate ShareIntake
+
+
+App 已启动时：
+
+新的 Want
+↓
+handle
+↓
+navigate / update state
+
+
+不要只实现：
+
+Cold Start Share。
+
+
+==================================================
+90. Push Cold Start
+==================================================
+
+App 完全关闭：
+
+用户点击 Push
+
+→ App 启动
+→ EntryAbility 获取 launch information
+→ Router 解析 deep link
+→ 加载目标资源
+→ 导航
+
+
+必须真机测试。
+
+
+==================================================
+91. Backend Health
+==================================================
+
+开发期：
+
+GET /health
+
+
+Developer Settings：
+
+显示：
+
+Backend reachable
+API version
+build version
+
+
+方便 ArkTS 学习阶段排查：
+
+到底是：
+
+客户端 Bug
+网络 Bug
+后端没启动
+
+
+==================================================
+92. 客户端错误分类
+==================================================
+
+NetworkError
+AuthError
+ValidationError
+ConflictError
+ServerError
+RunError
+UploadError
+PermissionError
+
+
+UI 不直接显示：
+
+HTTP 502
+BusinessError code xxx
+
+
+转为：
+
+用户可理解提示。
+
+
+开发模式：
+
+允许展开技术详情。
+
+
+==================================================
+93. 409 Conflict UI
+==================================================
+
+例：
+
+用户打开 Thing 很久。
+
+后台 Agent 更新 Deadline。
+
+用户又手动编辑旧版本。
+
+
+Backend：
+
+409 VERSION_CONFLICT
+
+
+Client：
+
+“这个事项刚刚已经更新，我已刷新最新状态。”
+
+
+Reload
+→ 用户重新决定。
+
+
+==================================================
+94. API Contract
+==================================================
+
+FastAPI OpenAPI：
+
+作为客户端接口契约。
+
+
+开发时：
+
+后端先固定：
+
+/runs
+/things
+/sources
+/attention
+
+
+客户端按 Contract 对接。
+
+
+避免：
+
+ArkTS 根据聊天猜 JSON。
+
+
+==================================================
+95. Mock Strategy
+==================================================
+
+虽然最终必须真实 Agent，
+
+客户端开发初期可以使用：
+
+Mock API Responses
+
+做 UI。
+
+
+但：
+
+正式功能验证必须：
+
+真实 FastAPI
++
+真实 LangGraph
++
+真实 Tool。
+
+
+Mock 只能用于：
+
+页面搭建。
+
+
+==================================================
+96. UI Preview
+==================================================
+
+ArkUI Preview：
+
+用于：
+
+组件
+页面
+不同状态
+
+
+例如：
+
+ThingCard:
+ACTIVE
+BLOCKED
+COMPLETED
+
+
+MessageBubble:
+user
+assistant
+streaming
+failed
+
+
+提高前端迭代速度。
+
+
+==================================================
+97. Client Test
+==================================================
+
+至少包含：
+
+Unit:
+- DTO mapping
+- date formatting
+- stream parser
+- retry decision
+
+Component/UI:
+- MessageBubble
+- ThingCard
+- InterruptCard
+
+Integration:
+- FastAPI real server
+
+Device:
+- file picker
+- photo picker
+- share
+- microphone
+- push
+- deep link
+- background/foreground
+
+
+==================================================
+98. 真机优先的能力
+==================================================
+
+以下不能只相信 Preview / Emulator：
+
+- Push；
+- Share；
+- 文件 URI；
+- Photo Picker；
+- 麦克风；
+- 网络切换；
+- App 后台恢复；
+- Deep Link；
+- 权限；
+- 大文件上传。
+
+
+必须尽早真机验证。
+
+
+==================================================
+99. V1 客户端开发阶段
+==================================================
+
+Phase 1：
+ArkTS / ArkUI 基础
+
+目标：
+
+能启动 App
+能写页面
+能导航
+
+
+Phase 2：
+Chat 静态 UI
+
+目标：
+
+消息列表
+Composer
+Thread UI
+
+
+Phase 3：
+FastAPI 联调
+
+目标：
+
+POST /runs
+展示真实 Agent Response
+
+
+Phase 4：
+Streaming
+
+目标：
+
+Agent delta
+status
+run completed
+
+
+Phase 5：
+Things
+
+目标：
+
+Things List
+Thing Detail
+Task update
+
+
+Phase 6：
+Sources
+
+目标：
+
+图片
+PDF
+Word
+PPT
+上传
+
+
+Phase 7：
+Share
+
+目标：
+
+其他 App
+→ 老实人
+
+
+Phase 8：
+Voice
+
+目标：
+
+speech
+→ text
+→ Chat
+
+
+Phase 9：
+Today / Attention
+
+Phase 10：
+Automation / Push
+
+Phase 11：
+Timeline
+
+Phase 12：
+UI Polish
+
+Phase 13：
+真机回归
+上架准备
+
+
+==================================================
+100. 前后端并行开发方式
+==================================================
+
+因为当前一个人开发，
+
+不要：
+
+“先把完整后端做完，再开始 ArkTS。”
+
+
+推荐：
+
+Vertical Slice。
+
+但 Vertical Slice 不代表由 Agent 直接跨过业务底座。
+
+正式顺序为：
+
+Personal State Domain
+→ Application 原子用例
+→ PostgreSQL / Repository
+→ Product API
+→ HarmonyOS 结构化功能
+→ Agent Tool Adapter
+→ Executive Agent
+
+客户端工程壳可以尽早初始化；
+Agent 接入必须建立在可独立测试的 Application / Domain 能力之上。
+
+
+Slice 1：
+
+ArkTS Chat
+↓
+FastAPI /runs
+↓
+LangGraph
+↓
+简单 Agent Reply
+
+
+Slice 2：
+
+Chat
+↓
+state.update_task
+↓
+Thing UI
+
+
+Slice 3：
+
+Share PDF
+↓
+Source
+↓
+document Tool
+↓
+Agent
+
+
+Slice 4：
+
+Automation
+↓
+Push
+
+
+每一条都是：
+
+手机
+→ 后端
+→ Agent
+→ 数据
+→ 手机
+
+
+这样更早发现：
+
+产品和平台集成问题。
+
+
+==================================================
+101. 第一个可运行版本
+==================================================
+
+第一个版本不需要：
+
+Memory
+Attention
+Push
+PPT
+Voice
+
+全部完成。
+
+
+第一个可运行闭环只要求：
+
+HarmonyOS App
+↓
+Chat Input
+↓
+FastAPI
+↓
+LangGraph Agent
+↓
+Response
+↓
+Chat Display
+
+
+然后第二个闭环：
+
+“Demo做完了”
+↓
+Agent
+↓
+state.update_task
+↓
+Thing Detail 更新
+
+
+做到这里：
+
+核心产品架构已经真正跑起来。
+
+
+==================================================
+102. 第一批 ArkTS 学习内容
+==================================================
+
+只学开发当前产品需要的：
+
+1. ArkTS 基础类型 / class / interface
+2. async / await / Promise
+3. ArkUI 声明式 UI
+4. Component
+5. State Management
+6. List / Lazy Rendering
+7. Navigation / NavDestination
+8. UIAbility / Context
+9. HTTP 请求
+10. JSON / DTO
+11. File Picker
+12. Photo Picker
+13. Want
+14. Preferences
+15. Permission
+16. Push
+
+
+暂时不必优先学：
+
+- NDK C++
+- 图形底层
+- 游戏能力
+- 分布式复杂多设备
+- Native 性能优化
+
+
+==================================================
+103. 第一批页面开发顺序
+==================================================
+
+推荐：
+
+1. Main shell
+2. Chat
+3. Things
+4. Thing Detail
+5. Today
+6. Timeline
+7. Share Intake
+8. Source Preview
+9. Settings
+10. Automation
+
+
+Chat 和 Things：
+
+优先级最高。
+
+
+==================================================
+104. 产品视觉方向（暂不定稿）
+==================================================
+
+老实人不应做成：
+
+企业后台管理系统
+或
+普通 Todo App。
+
+
+视觉需要体现：
+
+个人
+持续
+智能
+安静
+高信息密度但不压迫
+
+
+建议后续专门做：
+
+UI / UX Design Brief
+
+
+届时再确定：
+
+- Logo；
+- 主色；
+- Typography；
+- Card；
+- Chat Bubble；
+- Motion；
+- Today 信息层级；
+- Dark Mode。
+
+
+本文件不提前锁死视觉。
+
+
+==================================================
+105. 客户端验收 Case
+==================================================
+
+C01
+
+App 可正常启动进入主界面。
+
+
+C02
+
+用户新建 Thread，
+发送文本。
+
+
+C03
+
+POST /runs 成功，
+客户端获得 run_id。
+
+
+C04
+
+Agent 文本可流式显示。
+
+
+C05
+
+App 离开 Chat，
+Run 不自动取消。
+
+
+C06
+
+返回后可恢复 Run 状态。
+
+
+C07
+
+Backend interrupt：
+
+客户端正确显示选择/确认 UI。
+
+
+C08
+
+resume：
+
+恢复原 Run，
+不创建新 Thread。
+
+
+C09
+
+Things 能读取后端真实状态。
+
+
+C10
+
+用户手动勾选 Task：
+
+后端状态同步更新。
+
+
+C11
+
+Agent Tool 更新 Task：
+
+Things UI 刷新后可见。
+
+
+C12
+
+选择 PDF：
+
+成功上传 Source。
+
+
+C13
+
+选择图片：
+
+使用当前官方推荐 Picker。
+
+
+C14
+
+Source 上传失败：
+
+不能创建无效 attachment。
+
+
+C15
+
+其他 App 分享文件：
+
+Cold Start 可接收。
+
+
+C16
+
+App 已运行时：
+
+再次 Share 也能接收。
+
+
+C17
+
+Voice：
+
+语音可转换为可编辑文本。
+
+
+C18
+
+Today：
+
+展示 Backend Attention Result。
+
+
+C19
+
+Attention Dismiss：
+
+后端生效，
+不是只隐藏 UI。
+
+
+C20
+
+Push 到达：
+
+点击进入正确 Thing / Chat。
+
+
+C21
+
+App 关闭状态下点击 Push：
+
+Cold Start Deep Link 正常。
+
+
+C22
+
+Token 不硬编码在源码。
+
+
+C23
+
+生产 API 使用 HTTPS。
+
+
+C24
+
+409 State Conflict：
+
+客户端刷新而非覆盖。
+
+
+C25
+
+SSE / Streaming 断开：
+
+至少能重新获得最终 Run Result。
+
+
+C26
+
+长消息列表：
+
+滚动性能正常。
+
+
+C27
+
+大文件：
+
+不一次性读入导致明显内存问题。
+
+
+C28
+
+拒绝麦克风权限：
+
+文字功能正常。
+
+
+C29
+
+拒绝通知：
+
+App 主功能正常。
+
+
+C30
+
+Dark Mode：
+
+关键页面可正常阅读。
+
+
+==================================================
+106. 推荐首个真实联调任务
+==================================================
+
+不要第一个就做：
+
+PDF + Memory + Automation + Push。
+
+
+推荐第一条：
+
+用户在 HarmonyOS Chat 输入：
+
+“你好”
+
+
+链路：
+
+ArkUI
+→ POST /runs
+→ FastAPI
+→ LangGraph
+→ cheap model
+→ text response
+→ ArkUI
+
+
+第二条：
+
+数据库预置：
+
+Thing A
+Task Demo = TODO
+
+
+用户：
+
+“Demo做完了。”
+
+
+链路：
+
+ArkUI
+→ FastAPI
+→ Executive Agent
+→ state.update_task
+→ PostgreSQL
+→ Tool Result
+→ Agent
+→ ArkUI
+
+
+然后：
+
+ThingsPage
+→ GET /things/A
+→ Demo = DONE
+
+
+这条跑通之后：
+
+前端、API、Agent、Tool、State、DB
+
+已经第一次全部串起来。
+
+
+==================================================
+107. HarmonyOS 与后端职责最终划分
+==================================================
+
+HarmonyOS：
+
+负责“用户看到和触摸到的世界”。
+
+包括：
+
+UI
+Input
+Files
+Voice
+Share
+Push
+Navigation
+Local Cache
+Permissions
+Device Integration
+
+
+FastAPI：
+
+负责：
+
+Client API
+Auth
+Run
+Source Upload
+Streaming Gateway
+
+
+LangGraph：
+
+负责：
+
+Agent Runtime
+Tool Loop
+Interrupt
+Resume
+Parallel Execution
+
+
+Domain Services：
+
+负责：
+
+Personal State
+Memory
+Automation
+Source
+Policy
+
+
+PostgreSQL / Object Storage：
+
+负责：
+
+真实持久化。
+
+
+==================================================
+108. 不应出现在客户端的内容
+==================================================
+
+- LLM API Secret
+- Database Password
+- Push Server Secret
+- Object Storage Secret
+- LangGraph Internal State
+- Private Prompt
+- Tool Policy secret rules
+- Direct PostgreSQL Access
+- Model provider master key
+
+
+所有敏感能力：
+
+Server side。
+
+
+==================================================
+109. 客户端当前最终架构
+==================================================
+
+┌────────────────────────────────────┐
+│          HarmonyOS App             │
+│                                    │
+│ ArkTS + ArkUI                      │
+│                                    │
+│ Today                              │
+│ Things                             │
+│ Chat                               │
+│ Thing Detail                       │
+│ Timeline                           │
+│ Sources                            │
+│ Settings                           │
+└───────────────┬────────────────────┘
+                │
+        HTTPS / Stream
+                │
+┌───────────────▼────────────────────┐
+│            Data Layer              │
+│ ApiClient / Repositories           │
+└───────────────┬────────────────────┘
+                │
+         FastAPI Backend
+                │
+          LangGraph Agent
+
+
+HarmonyOS 系统侧：
+
+File Picker
+Photo Picker
+Share
+Voice
+Push
+Notification
+Preferences
+Navigation
+Ability Lifecycle
+
+
+核心理念：
+
+App 不是 Agent 的“大脑副本”。
+
+App 是 Agent 与用户现实手机环境之间的主要接口。
+
+
+==================================================
+110. 官方设计依据（截至 2026-08）
+==================================================
+
+1. HarmonyOS 应用开发导读
+https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/application-dev-guide
+
+依据：
+HarmonyOS SDK 以 Kit 提供应用框架、系统、媒体、应用服务等能力；
+Ability Kit 与 ArkUI 属于应用框架核心能力。
+
+
+2. ArkTS 官方介绍
+https://developer.huawei.com/consumer/en/arkts/
+
+依据：
+ArkTS 是 HarmonyOS 生态应用开发语言；
+保持 TypeScript 基础语法风格并强化静态检查；
+支持声明式 UI、状态管理和并发能力。
+
+
+3. HarmonyOS SDK / Develop
+https://developer.huawei.com/consumer/en/harmonyos/develop/
+
+依据：
+官方列出 Ability Kit、ArkData、ArkTS、ArkUI、Core File Kit、Push Kit、Calendar Kit 等能力。
+
+
+4. ArkUI Navigation / NavDestination
+https://developer.huawei.com/consumer/en/doc/harmonyos-guides/arkts-navigation-navdestination
+
+依据：
+Navigation / NavDestination 用于声明式页面导航及子页面管理。
+
+
+5. File Picker
+https://developer.huawei.com/consumer/en/doc/harmonyos-references/js-apis-file-picker
+
+依据：
+Core File Kit 提供 DocumentViewPicker、AudioViewPicker；
+官方已标明旧 PhotoViewPicker deprecated，并推荐 photoAccessHelper.PhotoViewPicker。
+
+
+6. HarmonyOS 应用数据持久化 / Preferences
+https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/data-persistence-by-preferences
+
+依据：
+Preferences 面向轻量 Key-Value 持久化，适合用户个性化设置等小数据场景。
+
+
+7. HarmonyOS 数据存储方案选择
+https://developer.huawei.com/consumer/cn/doc/doccenter-dev-faq/faqs-local-database-management-38
+
+依据：
+HarmonyOS 提供 LocalStorage、AppStorage、PersistentStorage 及 ArkData 多种存储方案，应按数据类型和访问模式选择。
+
+
+8. Network APIs
+HarmonyOS API Reference:
+@ohos.net.http
+@ohos.net.webSocket
+Remote Communication Kit
+
+https://developer.huawei.com/consumer/en/doc/harmonyos-references/arkts-api
+
+依据：
+HarmonyOS 官方提供 HTTP、WebSocket 和 Remote Communication Kit 数据请求能力。
+
+
+9. Push Kit
+https://developer.huawei.com/consumer/cn/hms/huawei-pushkit
+
+依据：
+Push Kit 提供云端到 HarmonyOS 终端的消息推送能力。
+
+
+10. HarmonyOS SDK Push Kit
+https://developer.huawei.com/consumer/cn/sdk/push-kit/
+
+依据：
+Push Kit 是当前 HarmonyOS SDK 应用服务能力之一。
+
+
+11. Share Kit / 系统分享
+HarmonyOS 文档中心：
+https://developer.huawei.com/consumer/cn/doc/
+
+依据：
+Share Kit 提供文本、图片、视频等跨应用分享能力；
+Ability Kit 的 Want 同时是应用组件间信息传递载体。
+
+
+==================================================
+111. 文档状态
+==================================================
+
+本文件状态：
+
+APPROVED / v1.0
+
+
+本文件完成后：
+
+“老实人”V1 已经具备以下核心设计文档：
+
+00 项目定位与项目章程
+01 产品需求 PRD
+02 Agent 系统架构
+03 Personal State + Memory 数据设计
+04 Tool / API / Policy 技术设计
+05 HarmonyOS 客户端开发设计
+
+
+下一阶段不再继续无限写宏观文档。
+
+推荐进入：
+
+“开发启动包”
+
+内容包括：
+
+1. Repository / 项目目录最终初始化方案
+2. Python Backend dependency 清单
+3. HarmonyOS 项目初始化步骤
+4. PostgreSQL schema 第一版
+5. 环境变量模板
+6. 第一条 Vertical Slice 开发任务
+7. Codex / Claude 开发约束文件
+8. 第一个端到端验收 Case
+
+
+然后正式开始写代码。
+
+
+—— End ——

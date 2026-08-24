@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "老实人个人智能助理"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "老实人主界面"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "老实人"
+    }
+  ]
+}

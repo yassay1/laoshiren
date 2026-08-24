@@ -1,0 +1,854 @@
+《老实人｜项目定位与项目章程 v1.0》
+
+版本：v1.0
+项目名称：老实人
+当前阶段：正式立项 / V1 开发准备
+目标平台：HarmonyOS
+后端技术方向：Python + FastAPI + LangGraph
+客户端技术方向：ArkTS + ArkUI
+
+
+==================================================
+1. 项目名称与一句话定位
+==================================================
+
+项目名称：老实人
+
+一句话定位：
+
+老实人是一个持续理解用户现实生活变化、维护个人事务状态、记住长期上下文，并能够主动提醒和调用工具推进事情的个人智能体应用。
+
+老实人围绕“用户正在经历和推进的事情”持续工作。
+
+它需要知道：
+
+- 用户最近在做什么；
+- 某件事情现在进展到哪里；
+- 之前发生过什么；
+- 已经做过哪些决定；
+- 当前有什么事情值得关注；
+- 接下来可以采取什么行动；
+- 哪些事情可以由系统直接执行或自动触发。
+
+用户可以持续向老实人表达：
+
+“今天把 Demo 做完了。”
+“老师又改要求了。”
+“这个通知你帮我看看。”
+“明天下午提醒我。”
+“之前这个比赛最后怎么定的？”
+“这个项目现在还有什么没完成？”
+
+系统需要在持续交流中维护用户事务、长期记忆、当前状态和后续行动。
+
+
+==================================================
+2. 项目背景与问题来源
+==================================================
+
+现实中的个人事务通常分散在聊天记录、截图、通知、PDF、Word、PPT、语音以及不同 App 中。
+
+同时，用户还需要自己记住进度、截止时间、历史决定和下一步计划。
+
+老实人希望把这些零散信息重新组织成一个能够持续理解、持续维护和持续推进个人事务的智能系统。
+
+
+==================================================
+3. 目标用户与典型使用场景
+==================================================
+
+老实人不限定特定职业或群体。
+
+只要用户存在多任务并行、长期事项、截止日期、资料分散、持续跟进和提醒需求，就可以使用。
+
+典型场景包括：
+
+- 学习与课程；
+- 比赛；
+- 项目；
+- 论文；
+- 工作事项；
+- 申请；
+- 日程；
+- 个人计划；
+- 其他长期事务。
+
+
+==================================================
+4. 核心产品理念
+==================================================
+
+1. 用户自然表达，系统负责理解和整理。
+2. 当前事务状态与长期历史记忆分开维护。
+3. 只把当前真正相关的信息加载进 Agent Context。
+4. Agent 自主决定回答、查询、执行、追问或继续规划。
+5. 尽可能把建议转化为真实行动。
+6. 系统可以主动，但不能频繁打扰用户。
+
+
+==================================================
+5. 核心能力
+==================================================
+
+5.1 多模态现实输入
+
+用户可以通过多种方式向老实人输入现实世界信息：
+
+- 文字；
+- 图片；
+- 截图；
+- PDF；
+- Word；
+- PPT；
+- 语音；
+- 其他 App 分享内容。
+
+这些内容在系统内部统一视为用户现实世界中的 Source / Event。
+
+系统不仅需要“读取”这些内容，还需要理解：
+
+- 它与哪个事务有关；
+- 是否产生新的任务；
+- 是否改变已有状态；
+- 是否包含新的截止时间；
+- 是否值得长期记忆；
+- 是否需要立即执行某些行动。
+
+
+5.2 Executive Agent
+
+老实人使用一个主要的 Executive Agent 作为交互和决策核心。
+
+Executive Agent 负责：
+
+- 理解用户当前输入；
+- 判断用户当前在处理什么事情；
+- 获取必要上下文；
+- 自主形成执行计划；
+- 决定调用哪些工具；
+- 判断任务是否可以并行；
+- 处理工具返回结果；
+- 综合多路结果；
+- 更新 Personal State；
+- 与用户继续交流；
+- 必要时暂停并等待用户确认。
+
+Agent 根据任务复杂度动态选择：
+
+简单任务：
+→ 直接回答或调用单个 Tool
+
+多信息源任务：
+→ 并行调用多个 Tool
+
+复杂独立子任务：
+→ 调用 Specialist Agent / Subgraph
+
+存在依赖关系：
+→ 顺序执行或形成 DAG
+
+最终由 Executive Agent 统一融合结果并继续决策。
+
+
+5.3 Personal State
+
+Personal State 保存用户现实事务的“当前真实状态”。
+
+它不是聊天记录，也不是长期记忆，而是当前事务状态的权威数据源。
+
+V1 以 Thing 作为核心事务对象。
+
+Thing 可以表示：
+
+- 一个比赛；
+- 一个项目；
+- 一篇论文；
+- 一门课程；
+- 一项工作；
+- 一次申请；
+- 一个个人计划；
+- 其他持续事项。
+
+建议核心结构包括：
+
+【基础信息】
+
+- id
+- name
+- type
+- description
+- status
+- priority
+
+【时间信息】
+
+- start_time
+- deadline
+- important_dates
+
+【进度信息】
+
+- progress
+- current_stage
+- completed_items
+- pending_items
+
+【行动信息】
+
+- tasks
+- next_actions
+- blockers
+
+【关系信息】
+
+- related_people
+- related_sources
+- related_things
+
+【变更信息】
+
+- last_updated_at
+- update_source
+- update_reason
+
+不同类型的 Thing 可以拥有额外扩展字段。
+
+原则是：
+
+统一核心模型
++
+按事务类型扩展
+
+而不是强迫所有现实事务使用完全相同的数据结构。
+
+
+5.4 Thread Context
+
+每一个对话 Thread 保持自己的短期上下文。
+
+主要保存：
+
+- 当前消息；
+- 当前工作计划；
+- 最近 Tool Result；
+- pending action；
+- interrupt 状态；
+- 必要的 Thread Summary。
+
+用户可以开启新的独立对话。
+
+新的 Thread 不需要复制旧聊天记录，但仍可以通过 Personal State 和 Long-term Memory 继续访问同一个现实事务。
+
+
+5.5 Long-term Memory
+
+长期记忆负责保存跨对话仍然有价值的信息。
+
+分为：
+
+Profile Memory
+- 用户长期偏好；
+- 稳定习惯；
+- 交互方式。
+
+Semantic Memory
+- 重要事实；
+- 关键决定；
+- 长期有效的背景知识；
+- 事务之间的关系。
+
+Episodic Memory
+- 过去发生的重要事件；
+- 某件事情以前怎么处理；
+- 类似问题曾采用什么方案；
+- 历史行动及其结果。
+
+边界原则：
+
+“这件事现在是什么状态？”
+→ Personal State
+
+“这件事以前为什么这么决定？”
+→ Semantic Memory
+
+“以前遇到类似事情是怎么处理的？”
+→ Episodic Memory
+
+
+5.6 Context Builder
+
+Executive Agent 不会在每次运行时读取全部 Personal State 和全部 Memory。
+
+系统使用：
+
+Relevant Prefetch
++
+Just-in-Time Retrieval
+
+每次运行前构造最小但高价值的 Initial Context。
+
+可能包括：
+
+- Current Input；
+- Thread Context；
+- Relevant Long-term Memory；
+- Optional Relevant Personal State；
+- Attention Context；
+- Relevant Skill；
+- Source References。
+
+如果 Agent 后续发现信息不足，再主动调用 Tool 深入读取。
+
+
+5.7 Attention
+
+Attention 负责发现当前值得用户关注的事务。
+
+例如：
+
+- 今天截止；
+- 已逾期；
+- 即将截止；
+- 高优先级任务；
+- 长时间阻塞；
+- 长时间没有进展的重要事项。
+
+当用户正在聊天时，系统可以把少量 Attention Candidate 放进 Agent Context。
+
+由程序规则决定：
+
+“哪些事情值得成为候选。”
+
+由 Executive Agent 决定：
+
+“现在这个聊天时机是否适合提醒，以及怎么提醒。”
+
+例如：
+
+用户：
+“今天食堂太难吃了。”
+
+Agent 可以正常回应当前话题，然后在确有必要时自然补充：
+
+“对了，你今天还有一项报告截止，目前还没记录完成。”
+
+Attention 需要具备：
+
+- priority；
+- severity；
+- last_surfaced_at；
+- cooldown；
+- acknowledged；
+- dismissed_until；
+- surface_count；
+
+避免同一个事项反复打扰用户。
+
+
+5.8 Automation 与 Push
+
+Automation 负责未来时间或未来条件触发。
+
+例如：
+
+- 明天下午提醒我；
+- 截止前一天提醒；
+- 每天检查一次某项信息；
+- 官网发生变化后通知我。
+
+典型执行路径：
+
+Automation Trigger
+        ↓
+Backend Event
+        ↓
+Agent / Rule Processing
+        ↓
+Push
+        ↓
+HarmonyOS Notification
+
+Attention 与 Automation 的区别：
+
+Attention：
+用户当前正在使用系统时，发现值得顺带提醒的事项。
+
+Automation：
+即使用户没有打开 App，也可以在未来重新触发系统并 Push。
+
+
+5.9 Tool System
+
+Executive Agent 通过 Tool 操作真实系统。
+
+第一版预计包含：
+
+Personal State Tools：
+- state.search_things
+- state.get_thing
+- state.get_tasks
+- state.get_deadlines
+- state.create
+- state.update
+
+Memory Tools：
+- memory.search
+- memory.get
+
+Source / Perception Tools：
+- source.get
+- image.interpret
+- document.interpret
+- audio.interpret
+
+Search Tools：
+- web.search
+- official_source.search
+
+Action Tools：
+- automation.create
+- automation.update
+- notification.push
+- calendar.*
+
+核心原则：
+
+Agent 负责判断“该不该做”。
+
+Tool / Service 负责“真正执行”。
+
+LLM 不直接操作数据库。
+
+
+5.10 多线并行
+
+当多个工作之间没有强依赖时，Executive Agent 可以并行执行。
+
+例如用户说：
+
+“帮我完整看看这个比赛现在什么情况。”
+
+Agent 可以同时：
+
+- 查询当前 Personal State；
+- 读取比赛通知文件；
+- 查询官网最新信息；
+- 检索相关长期记忆。
+
+结果返回后：
+
+Parallel Results
+        ↓
+Executive Agent
+        ↓
+融合
+        ↓
+验证
+        ↓
+继续规划 / 更新状态 / 回复
+
+并行能力属于 Agent Execution Strategy，不改变整个系统的顶层架构。
+
+
+==================================================
+6. 产品运行闭环
+==================================================
+
+老实人的核心执行闭环：
+
+Current Context
+      ↓
+User Input / System Event
+      ↓
+Executive Agent
+      ↓
+Understand
+      ↓
+Reason
+      ↓
+Plan / Decision
+      ↓
+┌──────────────┬──────────────┬──────────────┐
+│              │              │              │
+▼              ▼              ▼              ▼
+Respond      Ask User       Tool Call     Delegation
+                              │              │
+                              ▼              ▼
+                           Tool Result    Agent Result
+                              │              │
+                              └──────┬───────┘
+                                     ▼
+                              Executive Agent
+                                     ↓
+                           Synthesis / Replan
+                                     ↓
+                    Respond / Update / Continue
+
+
+主 Agent Graph 可以保持：
+
+START
+  ↓
+restore_runtime
+  ↓
+build_initial_context
+  ↓
+Executive Agent
+  ↓
+Decision
+  ├─ Respond → END
+  ├─ Ask User → interrupt
+  └─ Tool / Subgraph
+          ↓
+        Result
+          ↓
+    Executive Agent
+          ↓
+        Loop
+
+
+系统外围运行：
+
+1. Memory Formation Pipeline
+2. Automation Scheduler
+3. Ingestion / Heavy Processing
+4. Push Service
+
+
+==================================================
+7. V1 产品目标
+==================================================
+
+老实人 V1 不以“做一个只能演示的 Demo”为最终目标。
+
+目标是完成一个能够真实安装、真实使用、能够持续运行的 HarmonyOS 个人 Agent 产品。
+
+V1 目标：
+
+1. 完成可运行的 HarmonyOS App。
+
+2. 用户可以通过 Chat 与 Executive Agent 持续交流。
+
+3. 支持：
+   - 文字；
+   - 图片；
+   - PDF；
+   - Word；
+   - PPT；
+   - 语音；
+   - 其他 App 分享。
+
+4. Agent 能够判断输入对应的现实事务。
+
+5. 系统能够管理多个 Thing。
+
+6. 系统能够持续维护 Thing 当前状态。
+
+7. 支持 Thread 级短期上下文。
+
+8. 支持跨 Thread Long-term Memory。
+
+9. Agent 能够通过 Tool 执行真实操作。
+
+10. Agent 能够自主规划任务。
+
+11. 支持多个独立任务并行执行。
+
+12. 支持 Attention 主动关注重要事项。
+
+13. 支持 Automation。
+
+14. 支持用户未打开 App 时 Push。
+
+15. 支持文件、图片、文档和语音理解。
+
+16. 支持必要的 Human-in-the-loop / interrupt / resume。
+
+17. Tool 执行失败时具备基本恢复机制。
+
+18. HarmonyOS 客户端不能只是工程 Demo，需要具备完整、统一、具有产品感的 UI。
+
+
+==================================================
+8. V1 功能范围
+==================================================
+
+A. HarmonyOS Client
+
+建议包含：
+
+- Chat
+- Today
+- Things
+- Thing Detail
+- Timeline
+- Settings
+- 文件选择
+- 图片选择
+- 分享入口
+- 语音输入
+- Push Notification
+- 流式 Agent Response
+- 基础本地缓存
+
+具体页面结构和视觉设计后续单独确定。
+
+
+B. Agent Backend
+
+技术方向：
+
+Python
++
+FastAPI
++
+LangGraph
+
+核心模块：
+
+- Agent Runtime
+- Executive Agent
+- Context Builder
+- Tool Runtime
+- Parallel Execution
+- Interrupt / Resume
+- Agent Run Tracking
+
+
+C. Personal State
+
+- Things
+- Tasks
+- Deadlines
+- Progress
+- Status
+- Next Actions
+- Blockers
+- State Change History
+
+
+D. Memory
+
+- Thread Memory
+- Profile Memory
+- Semantic Memory
+- Episodic Memory
+- Memory Retrieval
+- Memory Formation
+
+
+E. Multimodal / Source
+
+- Text
+- Image
+- PDF
+- Word
+- PPT
+- Audio
+- Other App Share
+
+
+F. Proactive System
+
+- Attention
+- Automation
+- Push
+
+
+G. Tools
+
+- State
+- Memory
+- Web Search
+- Official Search
+- Perception
+- Automation
+- Notification
+- Calendar
+
+
+==================================================
+9. 暂不纳入 V1
+==================================================
+
+第一版暂不优先做：
+
+- 多人团队协作；
+- 企业组织和复杂权限；
+- 社交功能；
+- 插件市场；
+- 为了架构形式而拆出大量固定 Agent；
+- 复杂 Evidence Graph；
+- 大规模分布式基础设施。
+
+这些能力等真实需求出现后再扩展。
+
+
+==================================================
+10. 项目成功标准
+==================================================
+
+10.1 能持续使用
+
+用户连续多天、多周使用老实人后，系统仍然能够理解正在推进的主要事务。
+
+
+10.2 能知道当前状态
+
+当用户问：
+
+“这个比赛现在还有什么没做？”
+
+系统能够根据当前 Personal State 给出可靠答案。
+
+
+10.3 能理解状态变化
+
+例如：
+
+“Demo 做完了。”
+
+Agent 能正确识别对应事务和 Task，并更新当前状态。
+
+
+10.4 能跨对话继续
+
+用户更换 Thread 后，不需要重新从头解释一个长期项目。
+
+系统能够通过相关 Personal State 和 Memory 恢复必要背景。
+
+
+10.5 能利用历史经验
+
+遇到类似问题时，系统可以找到相关 Semantic / Episodic Memory，而不是只依赖当前聊天。
+
+
+10.6 能真正执行
+
+Agent 能调用真实 Tool 完成：
+
+- 状态修改；
+- 文档解析；
+- Web Search；
+- Automation；
+- Push；
+- Calendar；
+- 其他动作。
+
+
+10.7 能主动发现问题
+
+如果某个重要 Task：
+
+- 今天截止；
+- 已逾期；
+- 即将截止；
+- 长时间阻塞；
+
+系统能够主动发现。
+
+
+10.8 主动但不过度打扰
+
+系统能够根据优先级、上下文和冷却策略控制主动提醒。
+
+
+10.9 多模态输入进入事务闭环
+
+用户分享截图、PDF、PPT、Word 或语音后，内容不仅能被总结，还能继续进入：
+
+理解
+→ 事务关联
+→ 判断
+→ 状态变化
+→ 行动
+→ 后续追踪
+
+
+10.10 Agent 能自主选择执行策略
+
+简单问题不滥用复杂 Agent。
+
+复杂任务可以：
+
+- 顺序执行；
+- 并行 Tool；
+- 并行 Specialist Agent；
+- Fan-out / Fan-in；
+- 动态重新规划。
+
+
+10.11 产品能够真实运行
+
+HarmonyOS App、FastAPI Backend、数据库、Agent、Memory、Automation、Push 可以形成完整端到端闭环。
+
+系统最终不是一个架构图，而是一个用户可以真实长期使用的产品。
+
+
+==================================================
+11. 当前技术方向
+==================================================
+
+HarmonyOS Client
+- ArkTS
+- ArkUI
+- DevEco Studio
+
+Backend
+- Python
+- FastAPI
+
+Agent Runtime
+- LangGraph
+
+Persistence
+- PostgreSQL
+- pgvector
+
+Files
+- Object Storage
+
+Background
+- Memory Formation Worker
+- Automation Worker
+- Heavy Document Processing Worker
+
+Communication
+- HTTPS API
+- SSE / Streaming
+- 必要时 WebSocket
+
+Notification
+- HarmonyOS Push / Notification Capability
+
+Development Principle
+- 先保证核心闭环真实成立；
+- 再持续增加高级能力；
+- 避免为了“看起来复杂”而过度设计。
+
+
+==================================================
+12. 当前项目结论
+==================================================
+
+老实人当前正式定位为：
+
+一个以 Executive Agent 为决策核心，以 Personal State 表达用户现实事务当前状态，以 Long-term Memory 保存跨对话知识与经历，以 Attention 和 Automation 提供主动能力，并通过 Tools 对真实世界执行行动的 HarmonyOS 个人智能体应用。
+
+核心产品闭环：
+
+现实输入
+→ 理解
+→ Context
+→ Agent Decision
+→ Tool / Action
+→ State Update
+→ Memory
+→ Proactive Attention
+→ Future Action
+
+后续开发过程中，本文件作为项目定位层基线。
+
+如果产品方向发生重大变化，应先修改本文件，再同步调整 PRD、系统架构和实现。
+
+—— End ——
