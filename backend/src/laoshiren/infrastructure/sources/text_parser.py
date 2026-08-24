@@ -1,11 +1,67 @@
 import asyncio
 from io import BytesIO
+from multiprocessing import get_context
+from multiprocessing.connection import Connection
 from pathlib import PurePath
+from typing import cast
 
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
 from laoshiren.application.sources.ports import SourceParsingError
+
+type PdfWorkerResult = tuple[bool, str]
+
+
+def _extract_pdf_text(
+    content: bytes,
+    *,
+    max_pages: int,
+    max_page_characters: int,
+    max_characters: int,
+) -> str:
+    reader = PdfReader(BytesIO(content))
+    if reader.is_encrypted:
+        raise SourceParsingError("Encrypted PDF Sources are not supported.")
+    if len(reader.pages) > max_pages:
+        raise SourceParsingError("PDF exceeds the configured page limit.")
+    parts: list[str] = []
+    remaining = max_characters
+    for page in reader.pages:
+        if remaining <= 0:
+            break
+        page_text = (page.extract_text() or "")[:max_page_characters]
+        parts.append(page_text[:remaining])
+        remaining -= len(parts[-1])
+    return "\n\n".join(parts)
+
+
+def _pdf_worker(
+    connection: Connection,
+    content: bytes,
+    max_pages: int,
+    max_page_characters: int,
+    max_characters: int,
+) -> None:
+    """Process entry point: return sanitized data and never propagate child exceptions."""
+    try:
+        text = _extract_pdf_text(
+            content,
+            max_pages=max_pages,
+            max_page_characters=max_page_characters,
+            max_characters=max_characters,
+        )
+        result: PdfWorkerResult = (True, text)
+    except SourceParsingError as exception:
+        result = (False, str(exception))
+    except (PdfReadError, UnicodeError):
+        result = (False, "Source text extraction failed.")
+    except BaseException:
+        result = (False, "PDF parser process failed.")
+    try:
+        connection.send(result)
+    finally:
+        connection.close()
 
 
 class TextSourceParser:
@@ -33,7 +89,7 @@ class TextSourceParser:
             if extension in {".txt", ".md"}:
                 text = content.decode("utf-8-sig")
             elif extension == ".pdf":
-                text = await asyncio.to_thread(self._parse_pdf, content)
+                text = await self._parse_pdf_isolated(content)
             else:
                 raise SourceParsingError("No parser is available for this Source type.")
         except (UnicodeError, PdfReadError) as exception:
@@ -43,18 +99,38 @@ class TextSourceParser:
             raise SourceParsingError("Source contains no extractable text.")
         return normalized[: self._max_extracted_characters]
 
-    def _parse_pdf(self, content: bytes) -> str:
-        reader = PdfReader(BytesIO(content))
-        if reader.is_encrypted:
-            raise SourceParsingError("Encrypted PDF Sources are not supported.")
-        if len(reader.pages) > self._max_pdf_pages:
-            raise SourceParsingError("PDF exceeds the configured page limit.")
-        parts: list[str] = []
-        remaining = self._max_extracted_characters
-        for page in reader.pages:
-            if remaining <= 0:
-                break
-            page_text = (page.extract_text() or "")[: self._max_pdf_page_characters]
-            parts.append(page_text[:remaining])
-            remaining -= len(parts[-1])
-        return "\n\n".join(parts)
+    async def _parse_pdf_isolated(self, content: bytes) -> str:
+        context = get_context("spawn")
+        receiver, sender = context.Pipe(duplex=False)
+        process = context.Process(
+            target=_pdf_worker,
+            args=(
+                sender,
+                content,
+                self._max_pdf_pages,
+                self._max_pdf_page_characters,
+                self._max_extracted_characters,
+            ),
+            name="source-pdf-parser",
+            daemon=True,
+        )
+        process.start()
+        sender.close()
+        try:
+            while True:
+                if receiver.poll():
+                    succeeded, payload = cast(PdfWorkerResult, receiver.recv())
+                    if not succeeded:
+                        raise SourceParsingError(payload)
+                    return payload
+                if not process.is_alive():
+                    raise SourceParsingError("PDF parser process exited without a result.")
+                await asyncio.sleep(0.01)
+        finally:
+            receiver.close()
+            if process.is_alive():
+                process.terminate()
+            await asyncio.to_thread(process.join, 1.0)
+            if process.is_alive():
+                process.kill()
+                await asyncio.to_thread(process.join, 1.0)

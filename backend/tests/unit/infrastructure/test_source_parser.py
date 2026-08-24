@@ -1,4 +1,6 @@
+import asyncio
 from io import BytesIO
+from multiprocessing import active_children
 
 import pytest
 from pypdf import PdfWriter
@@ -52,3 +54,29 @@ async def test_text_extraction_character_limit_is_enforced() -> None:
     )
 
     assert text == "12345"
+
+
+async def test_cancelled_pdf_parse_terminates_child_process() -> None:
+    writer = PdfWriter()
+    for _ in range(100):
+        writer.add_blank_page(width=100, height=100)
+    content = BytesIO()
+    writer.write(content)
+    parser = TextSourceParser(max_pdf_pages=200)
+
+    task = asyncio.create_task(
+        parser.parse(
+            filename="cancel.pdf",
+            mime_type="application/pdf",
+            content=content.getvalue(),
+        )
+    )
+    for _ in range(100):
+        if any(child.name == "source-pdf-parser" for child in active_children()):
+            break
+        await asyncio.sleep(0.001)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert not any(child.name == "source-pdf-parser" for child in active_children())
