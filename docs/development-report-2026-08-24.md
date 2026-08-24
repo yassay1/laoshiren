@@ -195,7 +195,7 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。FAILED outbox �
 13. interrupt/resume：触发 deadline confirmation 后关闭客户端，再打开并通过 `GET /runs/{id}` + event reconnect 恢复；确认 WAITING_USER 不丢失。
 14. SSE reconnect：运行中断网，重连时发送最后一个 `Last-Event-ID`；确认事件只补发缺失部分，最终 Message 只有一条。
 15. duplicate dispatch：发送消息后立即模拟客户端超时，用同一 Idempotency-Key 重试；确认返回同一 Run，只有一条 USER Message。
-16. 服务重启恢复：在 Run 为 QUEUED 或 RUNNING 时重启后端；确认出现 `reason=service_restart` 的 status event，并继续到终态。
+16. 服务重启恢复：在 Run 为 QUEUED 或 RUNNING 时重启后端；RUNNING lease 到期后确认出现 `reason=lease_expired` 的 status event，并继续到终态。
 17. Tool replay：创建 Thing 的 Run 在 Tool 完成后、Graph 完成前重启；确认 deterministic action id/Application idempotency 使 Thing 不重复。
 18. Automation：通过 API 创建 1 分钟内到期的一次性 Automation，等待 scheduler；确认只有一个 occurrence/outbox，状态进入 submitted。
 19. Automation retry：让 notification adapter 返回失败，等待 3 个 scheduler tick；确认 attempt_count 到 3 后停止自动重试。

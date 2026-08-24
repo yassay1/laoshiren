@@ -254,7 +254,7 @@ class RuntimeApplicationService:
                             "status": RunStatus.QUEUED.value,
                             "phase": run.current_phase,
                             "label": run.status_label,
-                            "reason": "service_restart",
+                            "reason": "lease_expired",
                         },
                     )
                 dispatches.append((run.user_id, run.id))

@@ -48,7 +48,7 @@ async def test_running_run_is_requeued_after_service_restart_recovery() -> None:
 
         assert recovered >= 1
         assert current.status is RunStatus.QUEUED
-        assert events[-1].data["reason"] == "service_restart"
+        assert events[-1].data["reason"] == "lease_expired"
     finally:
         async with app.state.container.database.engine.begin() as connection:
             if run_id is not None:
