@@ -64,6 +64,7 @@ class RunResponse(BaseModel):
     interrupt_id: UUID | None
     interrupt: dict[str, Any] | None
     error_code: str | None
+    attempt_count: int
     version: int
     created_at: datetime
     started_at: datetime | None

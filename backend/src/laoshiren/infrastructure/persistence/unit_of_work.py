@@ -1,6 +1,8 @@
 from types import TracebackType
 from typing import Self
+from uuid import UUID
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from laoshiren.infrastructure.persistence.repositories.automations import (
@@ -22,6 +24,7 @@ from laoshiren.infrastructure.persistence.repositories.runtime import (
     SqlAlchemyMessageRepository,
     SqlAlchemyRunRepository,
     SqlAlchemyThreadRepository,
+    SqlAlchemyToolExecutionRepository,
 )
 from laoshiren.infrastructure.persistence.repositories.sources import SqlAlchemySourceRepository
 
@@ -42,6 +45,7 @@ class SqlAlchemyPersonalStateUnitOfWork:
     threads: SqlAlchemyThreadRepository
     messages: SqlAlchemyMessageRepository
     runs: SqlAlchemyRunRepository
+    tool_executions: SqlAlchemyToolExecutionRepository
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
@@ -63,6 +67,7 @@ class SqlAlchemyPersonalStateUnitOfWork:
         self.threads = SqlAlchemyThreadRepository(self._session)
         self.messages = SqlAlchemyMessageRepository(self._session)
         self.runs = SqlAlchemyRunRepository(self._session)
+        self.tool_executions = SqlAlchemyToolExecutionRepository(self._session)
         return self
 
     async def __aexit__(
@@ -83,3 +88,10 @@ class SqlAlchemyPersonalStateUnitOfWork:
 
     async def rollback(self) -> None:
         await self._session.rollback()
+
+    async def lock_idempotency(self, *, user_id: UUID, key: str) -> None:
+        lock_key = f"{user_id}:{key}"
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": lock_key},
+        )

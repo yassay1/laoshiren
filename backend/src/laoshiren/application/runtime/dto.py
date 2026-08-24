@@ -48,6 +48,10 @@ class RunDTO:
     interrupt: dict[str, Any] | None
     resume_payload: dict[str, Any] | None
     error_code: str | None
+    claim_owner: str | None
+    lease_expires_at: datetime | None
+    heartbeat_at: datetime | None
+    attempt_count: int
     version: int
     created_at: datetime
     started_at: datetime | None
@@ -65,3 +69,9 @@ class RunEventDTO:
     event: RunEventType
     occurred_at: datetime
     data: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class ToolExecutionClaimDTO:
+    acquired: bool
+    cached_result: dict[str, Any] | None = None

@@ -44,6 +44,12 @@ class RunEventType(StrEnum):
     HEARTBEAT = "heartbeat"
 
 
+class ToolExecutionStatus(StrEnum):
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+
+
 TERMINAL_RUN_STATUSES = {
     RunStatus.COMPLETED,
     RunStatus.FAILED,
@@ -97,6 +103,10 @@ class AgentRun:
     interrupt: dict[str, Any] | None = None
     resume_payload: dict[str, Any] | None = None
     error_code: str | None = None
+    claim_owner: str | None = None
+    lease_expires_at: datetime | None = None
+    heartbeat_at: datetime | None = None
+    attempt_count: int = 0
     version: int = 1
     event_sequence: int = 0
     created_at: datetime = field(default_factory=utc_now)
@@ -122,6 +132,7 @@ class AgentRun:
         self.status = RunStatus.QUEUED
         self.current_phase = "recovering"
         self.status_label = "Recovering after service restart"
+        self._release_claim()
         self.updated_at = utc_now()
         self.version += 1
 
@@ -131,6 +142,7 @@ class AgentRun:
         self.status = RunStatus.WAITING_USER
         self.interrupt_id = interrupt_id
         self.interrupt = payload
+        self._release_claim()
         self.updated_at = utc_now()
         self.version += 1
 
@@ -155,6 +167,7 @@ class AgentRun:
         self.status = RunStatus.COMPLETED
         self.final_message_id = final_message_id
         self.completed_at = now
+        self._release_claim()
         self.updated_at = now
         self.version += 1
 
@@ -165,6 +178,7 @@ class AgentRun:
         self.status = RunStatus.FAILED
         self.error_code = error_code
         self.completed_at = now
+        self._release_claim()
         self.updated_at = now
         self.version += 1
 
@@ -174,8 +188,14 @@ class AgentRun:
         now = utc_now()
         self.status = RunStatus.CANCELLED
         self.completed_at = now
+        self._release_claim()
         self.updated_at = now
         self.version += 1
+
+    def _release_claim(self) -> None:
+        self.claim_owner = None
+        self.lease_expires_at = None
+        self.heartbeat_at = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,3 +206,19 @@ class RunEvent:
     data: dict[str, Any]
     id: UUID = field(default_factory=uuid4)
     occurred_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass(slots=True)
+class ToolExecution:
+    run_id: UUID
+    action_id: str
+    tool_name: str
+    arguments_hash: str
+    status: ToolExecutionStatus
+    claim_owner: str
+    lease_expires_at: datetime
+    id: UUID = field(default_factory=uuid4)
+    result: dict[str, Any] | None = None
+    attempt_count: int = 1
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)

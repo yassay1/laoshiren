@@ -4649,6 +4649,10 @@
             ],
             "title": "Error Code"
           },
+          "attempt_count": {
+            "type": "integer",
+            "title": "Attempt Count"
+          },
           "version": {
             "type": "integer",
             "title": "Version"
@@ -4709,6 +4713,7 @@
           "interrupt_id",
           "interrupt",
           "error_code",
+          "attempt_count",
           "version",
           "created_at",
           "started_at",

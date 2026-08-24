@@ -37,6 +37,32 @@ class AgentEventSink(Protocol):
     ) -> None: ...
 
 
+class ToolExecutionLedger(Protocol):
+    async def claim(
+        self,
+        *,
+        user_id: UUID,
+        run_id: UUID,
+        action_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> tuple[bool, dict[str, Any] | None]: ...
+
+    async def complete(
+        self,
+        *,
+        user_id: UUID,
+        run_id: UUID,
+        action_id: str,
+        result: dict[str, Any],
+        succeeded: bool,
+    ) -> None: ...
+
+
+class ToolExecutionBusy(RuntimeError):
+    """Another worker still owns this durable Tool action."""
+
+
 class NullAgentEventSink:
     async def tool_started(
         self, *, user_id: UUID, run_id: UUID, action_id: str, tool_name: str
@@ -75,6 +101,7 @@ def build_executive_graph(
     policy_matrix: ToolPolicy | None = None,
     max_decisions: int = 12,
     max_tool_calls: int = 8,
+    tool_ledger: ToolExecutionLedger | None = None,
 ) -> CompiledStateGraph[GraphState, None, GraphState, GraphState]:
     """Build the deliberately small V1 Executive Graph."""
 
@@ -191,6 +218,22 @@ def build_executive_graph(
         run_id = UUID(state["run_id"])
         action_id = str(action["action_id"])
         tool_name = str(action["tool_name"])
+        if tool_ledger is not None:
+            acquired, cached = await tool_ledger.claim(
+                user_id=user_id,
+                run_id=run_id,
+                action_id=action_id,
+                tool_name=tool_name,
+                arguments=arguments,
+            )
+            if cached is not None:
+                return {
+                    "tool_results": [*state.get("tool_results", []), cached],
+                    "route": "executive",
+                    "tool_call_count": tool_call_count + 1,
+                }
+            if not acquired:
+                raise ToolExecutionBusy("Tool execution is owned by another worker.")
         await sink.tool_started(
             user_id=user_id,
             run_id=run_id,
@@ -206,6 +249,15 @@ def build_executive_graph(
             ),
             arguments=arguments,
         )
+        result_data = result.as_dict()
+        if tool_ledger is not None:
+            await tool_ledger.complete(
+                user_id=user_id,
+                run_id=run_id,
+                action_id=action_id,
+                result=result_data,
+                succeeded=result.status is ToolStatus.SUCCESS,
+            )
         await sink.tool_finished(
             user_id=user_id,
             run_id=run_id,
@@ -215,7 +267,7 @@ def build_executive_graph(
             code=result.code,
         )
         return {
-            "tool_results": [*state.get("tool_results", []), result.as_dict()],
+            "tool_results": [*state.get("tool_results", []), result_data],
             "route": "executive",
             "tool_call_count": tool_call_count + 1,
         }

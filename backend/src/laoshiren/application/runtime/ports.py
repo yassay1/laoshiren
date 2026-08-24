@@ -1,3 +1,4 @@
+from datetime import datetime
 from types import TracebackType
 from typing import Any, Protocol, Self
 from uuid import UUID
@@ -10,6 +11,7 @@ from laoshiren.domain.runtime.entities import (
     RunEvent,
     RunEventType,
     Thread,
+    ToolExecution,
 )
 
 
@@ -35,7 +37,25 @@ class RunRepository(Protocol):
     async def add(self, run: AgentRun) -> None: ...
     async def get(self, *, user_id: UUID, run_id: UUID) -> AgentRun | None: ...
     async def get_by_idempotency(self, *, user_id: UUID, key: str) -> AgentRun | None: ...
-    async def list_recoverable(self, *, limit: int) -> list[AgentRun]: ...
+    async def list_recoverable(self, *, now: datetime, limit: int) -> list[AgentRun]: ...
+    async def claim(
+        self,
+        *,
+        user_id: UUID,
+        run_id: UUID,
+        owner: str,
+        now: datetime,
+        lease_expires_at: datetime,
+    ) -> AgentRun | None: ...
+    async def renew_lease(
+        self,
+        *,
+        user_id: UUID,
+        run_id: UUID,
+        owner: str,
+        now: datetime,
+        lease_expires_at: datetime,
+    ) -> bool: ...
     async def update(self, run: AgentRun, *, expected_version: int) -> bool: ...
     async def get_operation(
         self, *, user_id: UUID, key: str
@@ -57,6 +77,29 @@ class RunRepository(Protocol):
     ) -> list[RunEvent]: ...
 
 
+class ToolExecutionRepository(Protocol):
+    async def get(self, *, run_id: UUID, action_id: str) -> ToolExecution | None: ...
+    async def add_if_absent(self, execution: ToolExecution) -> bool: ...
+    async def takeover_if_expired(
+        self,
+        execution: ToolExecution,
+        *,
+        now: datetime,
+        owner: str,
+        lease_expires_at: datetime,
+    ) -> bool: ...
+    async def complete(
+        self,
+        *,
+        run_id: UUID,
+        action_id: str,
+        owner: str,
+        result: dict[str, Any],
+        succeeded: bool,
+        now: datetime,
+    ) -> bool: ...
+
+
 class RunDispatcher(Protocol):
     async def dispatch(self, *, user_id: UUID, run_id: UUID) -> None: ...
 
@@ -68,6 +111,9 @@ class RuntimeUnitOfWork(Protocol):
     threads: ThreadRepository
     messages: MessageRepository
     runs: RunRepository
+    tool_executions: ToolExecutionRepository
+
+    async def lock_idempotency(self, *, user_id: UUID, key: str) -> None: ...
 
     async def __aenter__(self) -> Self: ...
     async def __aexit__(

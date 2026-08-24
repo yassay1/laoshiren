@@ -134,3 +134,68 @@ async def test_graph_stops_repeated_decisions_at_budget() -> None:
 
     with pytest.raises(AgentBudgetExceeded):
         await graph.ainvoke(state, config)
+
+
+async def test_graph_reuses_durable_cached_tool_result_without_handler_replay() -> None:
+    handler_calls = 0
+
+    async def handler(
+        context: ToolExecutionContext, arguments: dict[str, Any]
+    ) -> ToolResult:
+        nonlocal handler_calls
+        del context, arguments
+        handler_calls += 1
+        return ToolResult(ToolStatus.SUCCESS, "UNEXPECTED", "should not execute")
+
+    class Gateway:
+        async def decide(
+            self, *, state: GraphState, available_tools: tuple[str, ...]
+        ) -> ExecutiveDecision:
+            del available_tools
+            if state.get("tool_results"):
+                return ExecutiveDecision(
+                    DecisionKind.RESPOND,
+                    content=state["tool_results"][-1]["code"],
+                )
+            return ExecutiveDecision(
+                DecisionKind.CALL_TOOL,
+                tool_name="test.cached",
+                tool_arguments={"value": 1},
+            )
+
+    class CachedLedger:
+        async def claim(self, **values: Any) -> tuple[bool, dict[str, Any] | None]:
+            del values
+            return False, {
+                "status": "SUCCESS",
+                "code": "CACHED",
+                "message": "cached result",
+                "data": {},
+            }
+
+        async def complete(self, **values: Any) -> None:
+            raise AssertionError(f"cached execution completed again: {values}")
+
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            "test.cached",
+            "cached tool",
+            ToolRisk.REVERSIBLE_WRITE,
+            handler,
+        )
+    )
+    state = initial_state()
+    graph = build_executive_graph(
+        model_gateway=Gateway(),
+        tools=registry,
+        checkpointer=InMemorySaver(),
+        tool_ledger=CachedLedger(),
+    )
+
+    output: dict[str, Any] = await graph.ainvoke(
+        state, {"configurable": {"thread_id": state["run_id"]}}
+    )
+
+    assert output["final_response"] == "CACHED"
+    assert handler_calls == 0

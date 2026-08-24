@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
 from laoshiren.agent.graph import build_executive_graph
 from laoshiren.agent.model_gateway import ExecutiveModelGateway
@@ -22,7 +23,11 @@ from laoshiren.infrastructure.persistence.database import Database
 from laoshiren.infrastructure.runtime.dispatcher import InProcessRunDispatcher
 from laoshiren.infrastructure.sources.text_parser import TextSourceParser
 from laoshiren.infrastructure.storage.local import LocalObjectStorage
-from laoshiren.workers.agent import AgentRunWorker, RuntimeAgentEventSink
+from laoshiren.workers.agent import (
+    AgentRunWorker,
+    RuntimeAgentEventSink,
+    RuntimeToolExecutionLedger,
+)
 from laoshiren.workers.automation import AutomationScheduler
 
 
@@ -89,17 +94,26 @@ def build_agent_worker(
     """Compose the Agent adapter only after the async checkpoint lifecycle has started."""
     tools = ToolRegistry()
     register_personal_state_tools(tools, container.personal_state)
+    worker_id = f"agent-worker-{uuid4()}"
     graph = build_executive_graph(
         model_gateway=model_gateway,
         tools=tools,
         checkpointer=container.checkpoints.saver,
         event_sink=RuntimeAgentEventSink(container.runtime),
+        tool_ledger=RuntimeToolExecutionLedger(
+            container.runtime,
+            owner=worker_id,
+            lease_seconds=container.settings.run_lease_seconds,
+        ),
     )
     return AgentRunWorker(
         container.runtime,
         graph,
         AgentMemoryApplicationService(container.memories),
         container.sources,
+        worker_id=worker_id,
+        lease_seconds=container.settings.run_lease_seconds,
+        heartbeat_seconds=container.settings.run_heartbeat_seconds,
     )
 
 

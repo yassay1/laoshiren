@@ -1,8 +1,15 @@
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
-from laoshiren.application.runtime.dto import MessageDTO, RunDTO, RunEventDTO, ThreadDTO
+from laoshiren.application.runtime.dto import (
+    MessageDTO,
+    RunDTO,
+    RunEventDTO,
+    ThreadDTO,
+    ToolExecutionClaimDTO,
+)
 from laoshiren.application.runtime.ports import RunDispatcher, RuntimeUnitOfWork
 from laoshiren.domain.personal_state.exceptions import (
     EntityNotFound,
@@ -18,6 +25,8 @@ from laoshiren.domain.runtime.entities import (
     RunStatus,
     RunTrigger,
     Thread,
+    ToolExecution,
+    ToolExecutionStatus,
 )
 
 UnitOfWorkFactory = Callable[[], RuntimeUnitOfWork]
@@ -64,6 +73,10 @@ def to_run_dto(value: AgentRun, *, replayed: bool = False) -> RunDTO:
             dict(value.resume_payload) if value.resume_payload is not None else None
         ),
         error_code=value.error_code,
+        claim_owner=value.claim_owner,
+        lease_expires_at=value.lease_expires_at,
+        heartbeat_at=value.heartbeat_at,
+        attempt_count=value.attempt_count,
         version=value.version,
         created_at=value.created_at,
         started_at=value.started_at,
@@ -106,6 +119,7 @@ class RuntimeApplicationService:
         if not clean_title:
             raise ValueError("Thread title must not be empty.")
         async with self._unit_of_work_factory() as uow:
+            await uow.lock_idempotency(user_id=user_id, key=idempotency_key)
             existing = await uow.threads.get_by_idempotency(user_id=user_id, key=idempotency_key)
             if existing is not None:
                 return to_thread_dto(existing, replayed=True)
@@ -176,6 +190,7 @@ class RuntimeApplicationService:
         if len(set(source_ids)) != len(source_ids):
             raise ValueError("Run source_ids must not contain duplicates.")
         async with self._unit_of_work_factory() as uow:
+            await uow.lock_idempotency(user_id=user_id, key=idempotency_key)
             existing = await uow.runs.get_by_idempotency(user_id=user_id, key=idempotency_key)
             if existing is not None:
                 return to_run_dto(existing, replayed=True)
@@ -225,7 +240,7 @@ class RuntimeApplicationService:
         """Requeue crash-abandoned Runs and dispatch all durable queued work."""
         dispatches: list[tuple[UUID, UUID]] = []
         async with self._unit_of_work_factory() as uow:
-            runs = await uow.runs.list_recoverable(limit=limit)
+            runs = await uow.runs.list_recoverable(now=datetime.now(UTC), limit=limit)
             for run in runs:
                 if run.status is RunStatus.RUNNING:
                     expected_version = run.version
@@ -248,6 +263,151 @@ class RuntimeApplicationService:
             for user_id, run_id in dispatches:
                 await self._run_dispatcher.dispatch(user_id=user_id, run_id=run_id)
         return len(dispatches)
+
+    async def claim_run(
+        self,
+        *,
+        user_id: UUID,
+        run_id: UUID,
+        owner: str,
+        lease_seconds: float,
+    ) -> RunDTO | None:
+        if not owner.strip() or lease_seconds <= 0:
+            raise ValueError("Run claim owner and lease must be valid.")
+        now = datetime.now(UTC)
+        async with self._unit_of_work_factory() as uow:
+            run = await uow.runs.claim(
+                user_id=user_id,
+                run_id=run_id,
+                owner=owner,
+                now=now,
+                lease_expires_at=now + timedelta(seconds=lease_seconds),
+            )
+            if run is None:
+                await uow.rollback()
+                return None
+            await uow.runs.append_event(
+                run_id=run.id,
+                event_type=RunEventType.RUN_STARTED,
+                data={
+                    "phase": run.current_phase,
+                    "label": run.status_label,
+                    "attempt": run.attempt_count,
+                    "claim_owner": owner,
+                },
+            )
+            await uow.commit()
+            return to_run_dto(run)
+
+    async def renew_run_lease(
+        self,
+        *,
+        user_id: UUID,
+        run_id: UUID,
+        owner: str,
+        lease_seconds: float,
+    ) -> bool:
+        now = datetime.now(UTC)
+        async with self._unit_of_work_factory() as uow:
+            renewed = await uow.runs.renew_lease(
+                user_id=user_id,
+                run_id=run_id,
+                owner=owner,
+                now=now,
+                lease_expires_at=now + timedelta(seconds=lease_seconds),
+            )
+            if renewed:
+                await uow.commit()
+            else:
+                await uow.rollback()
+            return renewed
+
+    async def claim_tool_execution(
+        self,
+        *,
+        user_id: UUID,
+        run_id: UUID,
+        action_id: str,
+        tool_name: str,
+        arguments_hash: str,
+        owner: str,
+        lease_seconds: float,
+    ) -> ToolExecutionClaimDTO:
+        now = datetime.now(UTC)
+        execution = ToolExecution(
+            run_id=run_id,
+            action_id=action_id,
+            tool_name=tool_name,
+            arguments_hash=arguments_hash,
+            status=ToolExecutionStatus.RUNNING,
+            claim_owner=owner,
+            lease_expires_at=now + timedelta(seconds=lease_seconds),
+        )
+        async with self._unit_of_work_factory() as uow:
+            run = await uow.runs.get(user_id=user_id, run_id=run_id)
+            if run is None:
+                raise EntityNotFound("Run was not found.")
+            if run.claim_owner != owner or run.status is not RunStatus.RUNNING:
+                raise InvalidStateTransition("Run is not owned by this Tool worker.")
+            if await uow.tool_executions.add_if_absent(execution):
+                await uow.commit()
+                return ToolExecutionClaimDTO(acquired=True)
+            existing = await uow.tool_executions.get(
+                run_id=run_id, action_id=action_id
+            )
+            if existing is None:
+                raise RuntimeError("Tool execution conflict points to missing data.")
+            if (
+                existing.tool_name != tool_name
+                or existing.arguments_hash != arguments_hash
+            ):
+                raise InvalidStateTransition(
+                    "Tool action id was reused with different arguments."
+                )
+            if existing.result is not None:
+                await uow.rollback()
+                return ToolExecutionClaimDTO(
+                    acquired=False, cached_result=dict(existing.result)
+                )
+            acquired = await uow.tool_executions.takeover_if_expired(
+                existing,
+                now=now,
+                owner=owner,
+                lease_expires_at=now + timedelta(seconds=lease_seconds),
+            )
+            if acquired:
+                await uow.commit()
+            else:
+                await uow.rollback()
+            return ToolExecutionClaimDTO(acquired=acquired)
+
+    async def complete_tool_execution(
+        self,
+        *,
+        user_id: UUID,
+        run_id: UUID,
+        action_id: str,
+        owner: str,
+        result: dict[str, Any],
+        succeeded: bool,
+    ) -> None:
+        async with self._unit_of_work_factory() as uow:
+            run = await uow.runs.get(user_id=user_id, run_id=run_id)
+            if run is None:
+                raise EntityNotFound("Run was not found.")
+            if run.claim_owner != owner or run.status is not RunStatus.RUNNING:
+                raise InvalidStateTransition("Run is not owned by this Tool worker.")
+            completed = await uow.tool_executions.complete(
+                run_id=run_id,
+                action_id=action_id,
+                owner=owner,
+                result=result,
+                succeeded=succeeded,
+                now=datetime.now(UTC),
+            )
+            if not completed:
+                raise InvalidStateTransition("Tool execution lease was lost.")
+            await uow.commit()
 
     async def resume_run(
         self,
@@ -300,6 +460,7 @@ class RuntimeApplicationService:
         response: dict[str, Any] | None = None,
     ) -> RunDTO:
         async with self._unit_of_work_factory() as uow:
+            await uow.lock_idempotency(user_id=user_id, key=idempotency_key)
             previous = await uow.runs.get_operation(user_id=user_id, key=idempotency_key)
             if previous is not None:
                 previous_run_id, _ = previous
@@ -370,24 +531,51 @@ class RuntimeApplicationService:
         )
 
     async def require_input(
-        self, *, user_id: UUID, run_id: UUID, payload: dict[str, Any]
+        self,
+        *,
+        user_id: UUID,
+        run_id: UUID,
+        payload: dict[str, Any],
+        claim_owner: str | None = None,
     ) -> RunDTO:
         return await self._worker_transition(
-            user_id=user_id, run_id=run_id, action="WAIT", payload=payload
+            user_id=user_id,
+            run_id=run_id,
+            action="WAIT",
+            payload=payload,
+            claim_owner=claim_owner,
         )
 
     async def complete_run(
-        self, *, user_id: UUID, run_id: UUID, content: str
+        self,
+        *,
+        user_id: UUID,
+        run_id: UUID,
+        content: str,
+        claim_owner: str | None = None,
     ) -> RunDTO:
         return await self._worker_transition(
-            user_id=user_id, run_id=run_id, action="COMPLETE", content=content
+            user_id=user_id,
+            run_id=run_id,
+            action="COMPLETE",
+            content=content,
+            claim_owner=claim_owner,
         )
 
     async def fail_run(
-        self, *, user_id: UUID, run_id: UUID, error_code: str
+        self,
+        *,
+        user_id: UUID,
+        run_id: UUID,
+        error_code: str,
+        claim_owner: str | None = None,
     ) -> RunDTO:
         return await self._worker_transition(
-            user_id=user_id, run_id=run_id, action="FAIL", error_code=error_code
+            user_id=user_id,
+            run_id=run_id,
+            action="FAIL",
+            error_code=error_code,
+            claim_owner=claim_owner,
         )
 
     async def emit_event(
@@ -418,11 +606,14 @@ class RuntimeApplicationService:
         payload: dict[str, Any] | None = None,
         content: str | None = None,
         error_code: str | None = None,
+        claim_owner: str | None = None,
     ) -> RunDTO:
         async with self._unit_of_work_factory() as uow:
             run = await uow.runs.get(user_id=user_id, run_id=run_id)
             if run is None:
                 raise EntityNotFound("Run was not found.")
+            if claim_owner is not None and run.claim_owner != claim_owner:
+                raise InvalidStateTransition("Run lease is no longer owned by this worker.")
             expected_version = run.version
             try:
                 if action == "START":

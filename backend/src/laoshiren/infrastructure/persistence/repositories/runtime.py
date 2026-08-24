@@ -1,7 +1,9 @@
+from datetime import datetime
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import func, or_, select, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +14,8 @@ from laoshiren.domain.runtime.entities import (
     RunEventType,
     RunStatus,
     Thread,
+    ToolExecution,
+    ToolExecutionStatus,
 )
 from laoshiren.infrastructure.persistence.orm.personal_state import (
     AgentRunORM,
@@ -19,6 +23,7 @@ from laoshiren.infrastructure.persistence.orm.personal_state import (
     RunEventORM,
     RunOperationORM,
     ThreadORM,
+    ToolExecutionORM,
 )
 
 
@@ -66,6 +71,10 @@ def run_to_domain(model: AgentRunORM) -> AgentRun:
             dict(model.resume_payload) if model.resume_payload is not None else None
         ),
         error_code=model.error_code,
+        claim_owner=model.claim_owner,
+        lease_expires_at=model.lease_expires_at,
+        heartbeat_at=model.heartbeat_at,
+        attempt_count=model.attempt_count,
         version=model.version,
         event_sequence=model.event_sequence,
         idempotency_key=model.idempotency_key,
@@ -199,6 +208,10 @@ class SqlAlchemyRunRepository:
                 interrupt=run.interrupt,
                 resume_payload=run.resume_payload,
                 error_code=run.error_code,
+                claim_owner=run.claim_owner,
+                lease_expires_at=run.lease_expires_at,
+                heartbeat_at=run.heartbeat_at,
+                attempt_count=run.attempt_count,
                 version=run.version,
                 event_sequence=run.event_sequence,
                 idempotency_key=run.idempotency_key,
@@ -225,16 +238,95 @@ class SqlAlchemyRunRepository:
         )
         return run_to_domain(model) if model is not None else None
 
-    async def list_recoverable(self, *, limit: int) -> list[AgentRun]:
+    async def list_recoverable(self, *, now: datetime, limit: int) -> list[AgentRun]:
         models = (
             await self._session.scalars(
                 select(AgentRunORM)
-                .where(AgentRunORM.status.in_([RunStatus.QUEUED, RunStatus.RUNNING]))
+                .where(
+                    or_(
+                        AgentRunORM.status == RunStatus.QUEUED,
+                        (
+                            (AgentRunORM.status == RunStatus.RUNNING)
+                            & (
+                                AgentRunORM.lease_expires_at.is_(None)
+                                | (AgentRunORM.lease_expires_at <= now)
+                            )
+                        ),
+                    )
+                )
                 .order_by(AgentRunORM.created_at, AgentRunORM.id)
                 .limit(limit)
             )
         ).all()
         return [run_to_domain(model) for model in models]
+
+    async def claim(
+        self,
+        *,
+        user_id: UUID,
+        run_id: UUID,
+        owner: str,
+        now: datetime,
+        lease_expires_at: datetime,
+    ) -> AgentRun | None:
+        claimed = await self._session.scalar(
+            update(AgentRunORM)
+            .where(
+                AgentRunORM.id == run_id,
+                AgentRunORM.user_id == user_id,
+                or_(
+                    AgentRunORM.status == RunStatus.QUEUED,
+                    (
+                        (AgentRunORM.status == RunStatus.RUNNING)
+                        & (
+                            AgentRunORM.lease_expires_at.is_(None)
+                            | (AgentRunORM.lease_expires_at <= now)
+                        )
+                    ),
+                ),
+            )
+            .values(
+                status=RunStatus.RUNNING,
+                current_phase="executive",
+                status_label="正在理解并处理",
+                claim_owner=owner,
+                heartbeat_at=now,
+                lease_expires_at=lease_expires_at,
+                attempt_count=AgentRunORM.attempt_count + 1,
+                started_at=func.coalesce(AgentRunORM.started_at, now),
+                updated_at=now,
+                version=AgentRunORM.version + 1,
+            )
+            .returning(AgentRunORM.id)
+        )
+        if claimed is None:
+            return None
+        model = await self._session.scalar(select(AgentRunORM).where(AgentRunORM.id == claimed))
+        return run_to_domain(model) if model is not None else None
+
+    async def renew_lease(
+        self,
+        *,
+        user_id: UUID,
+        run_id: UUID,
+        owner: str,
+        now: datetime,
+        lease_expires_at: datetime,
+    ) -> bool:
+        result = cast(
+            CursorResult[Any],
+            await self._session.execute(
+                update(AgentRunORM)
+                .where(
+                    AgentRunORM.id == run_id,
+                    AgentRunORM.user_id == user_id,
+                    AgentRunORM.status == RunStatus.RUNNING,
+                    AgentRunORM.claim_owner == owner,
+                )
+                .values(heartbeat_at=now, lease_expires_at=lease_expires_at, updated_at=now)
+            ),
+        )
+        return result.rowcount == 1
 
     async def update(self, run: AgentRun, *, expected_version: int) -> bool:
         result = cast(
@@ -251,6 +343,10 @@ class SqlAlchemyRunRepository:
                     interrupt=run.interrupt,
                     resume_payload=run.resume_payload,
                     error_code=run.error_code,
+                    claim_owner=run.claim_owner,
+                    lease_expires_at=run.lease_expires_at,
+                    heartbeat_at=run.heartbeat_at,
+                    attempt_count=run.attempt_count,
                     version=run.version,
                     started_at=run.started_at,
                     completed_at=run.completed_at,
@@ -340,3 +436,116 @@ class SqlAlchemyRunRepository:
             await self._session.scalars(statement.order_by(RunEventORM.sequence).limit(limit))
         ).all()
         return [event_to_domain(model) for model in models]
+
+
+def tool_execution_to_domain(model: ToolExecutionORM) -> ToolExecution:
+    return ToolExecution(
+        id=model.id,
+        run_id=model.run_id,
+        action_id=model.action_id,
+        tool_name=model.tool_name,
+        arguments_hash=model.arguments_hash,
+        status=model.status,
+        result=dict(model.result) if model.result is not None else None,
+        claim_owner=model.claim_owner,
+        lease_expires_at=model.lease_expires_at,
+        attempt_count=model.attempt_count,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+    )
+
+
+class SqlAlchemyToolExecutionRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get(self, *, run_id: UUID, action_id: str) -> ToolExecution | None:
+        model = await self._session.scalar(
+            select(ToolExecutionORM).where(
+                ToolExecutionORM.run_id == run_id,
+                ToolExecutionORM.action_id == action_id,
+            )
+        )
+        return tool_execution_to_domain(model) if model is not None else None
+
+    async def add_if_absent(self, execution: ToolExecution) -> bool:
+        inserted = await self._session.scalar(
+            insert(ToolExecutionORM)
+            .values(
+                id=execution.id,
+                run_id=execution.run_id,
+                action_id=execution.action_id,
+                tool_name=execution.tool_name,
+                arguments_hash=execution.arguments_hash,
+                status=execution.status,
+                result=execution.result,
+                claim_owner=execution.claim_owner,
+                lease_expires_at=execution.lease_expires_at,
+                attempt_count=execution.attempt_count,
+                created_at=execution.created_at,
+                updated_at=execution.updated_at,
+            )
+            .on_conflict_do_nothing(index_elements=["run_id", "action_id"])
+            .returning(ToolExecutionORM.id)
+        )
+        return inserted is not None
+
+    async def takeover_if_expired(
+        self,
+        execution: ToolExecution,
+        *,
+        now: datetime,
+        owner: str,
+        lease_expires_at: datetime,
+    ) -> bool:
+        result = cast(
+            CursorResult[Any],
+            await self._session.execute(
+                update(ToolExecutionORM)
+                .where(
+                    ToolExecutionORM.id == execution.id,
+                    ToolExecutionORM.status == ToolExecutionStatus.RUNNING,
+                    ToolExecutionORM.lease_expires_at <= now,
+                )
+                .values(
+                    claim_owner=owner,
+                    lease_expires_at=lease_expires_at,
+                    attempt_count=ToolExecutionORM.attempt_count + 1,
+                    updated_at=now,
+                )
+            ),
+        )
+        return result.rowcount == 1
+
+    async def complete(
+        self,
+        *,
+        run_id: UUID,
+        action_id: str,
+        owner: str,
+        result: dict[str, Any],
+        succeeded: bool,
+        now: datetime,
+    ) -> bool:
+        updated = cast(
+            CursorResult[Any],
+            await self._session.execute(
+                update(ToolExecutionORM)
+                .where(
+                    ToolExecutionORM.run_id == run_id,
+                    ToolExecutionORM.action_id == action_id,
+                    ToolExecutionORM.status == ToolExecutionStatus.RUNNING,
+                    ToolExecutionORM.claim_owner == owner,
+                )
+                .values(
+                    status=(
+                        ToolExecutionStatus.SUCCEEDED
+                        if succeeded
+                        else ToolExecutionStatus.FAILED
+                    ),
+                    result=result,
+                    updated_at=now,
+                )
+            ),
+        )
+        return updated.rowcount == 1

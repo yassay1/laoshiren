@@ -41,6 +41,7 @@ from laoshiren.domain.runtime.entities import (
     RunEventType,
     RunStatus,
     RunTrigger,
+    ToolExecutionStatus,
 )
 from laoshiren.domain.sources.entities import (
     ProcessingStatus,
@@ -372,6 +373,7 @@ class AgentRunORM(Base):
         UniqueConstraint("user_id", "idempotency_key", name="uq_agent_runs_user_key"),
         Index("ix_agent_runs_thread_created", "thread_id", "created_at"),
         Index("ix_agent_runs_status_updated", "status", "updated_at"),
+        Index("ix_agent_runs_status_lease", "status", "lease_expires_at"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -387,6 +389,10 @@ class AgentRunORM(Base):
     interrupt: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     resume_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     error_code: Mapped[str | None] = mapped_column(String(100))
+    claim_owner: Mapped[str | None] = mapped_column(String(200))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
     version: Mapped[int] = mapped_column(Integer, default=1)
     event_sequence: Mapped[int] = mapped_column(Integer, default=0)
     idempotency_key: Mapped[str] = mapped_column(String(200))
@@ -447,3 +453,26 @@ class RunOperationORM(Base):
     operation: Mapped[str] = mapped_column(String(30))
     target_version: Mapped[int]
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ToolExecutionORM(Base):
+    __tablename__ = "tool_executions"
+    __table_args__ = (
+        UniqueConstraint("run_id", "action_id", name="uq_tool_executions_action"),
+        Index("ix_tool_executions_status_lease", "status", "lease_expires_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id"))
+    action_id: Mapped[str] = mapped_column(String(200))
+    tool_name: Mapped[str] = mapped_column(String(200))
+    arguments_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[ToolExecutionStatus] = mapped_column(
+        Enum(ToolExecutionStatus, name="tool_execution_status")
+    )
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    claim_owner: Mapped[str] = mapped_column(String(200))
+    lease_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    attempt_count: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

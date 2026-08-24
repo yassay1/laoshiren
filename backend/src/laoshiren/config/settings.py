@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     model_api_key: str = Field(default="", repr=False)
     model_timeout_seconds: float = 60.0
     automation_poll_seconds: float = 30.0
+    run_lease_seconds: float = 60.0
+    run_heartbeat_seconds: float = 15.0
 
 
 @lru_cache
