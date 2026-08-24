@@ -17,6 +17,7 @@ from laoshiren.application.memories.service import MemoryApplicationService
 from laoshiren.application.personal_state.service import PersonalStateApplicationService
 from laoshiren.application.runtime.service import RuntimeApplicationService
 from laoshiren.application.sources.service import SourceApplicationService
+from laoshiren.application.system.service import OperationalStatusApplicationService
 from laoshiren.config.settings import Settings, get_settings
 from laoshiren.infrastructure.ai.deepseek import DeepSeekExecutiveModelGateway
 from laoshiren.infrastructure.ai.embeddings import OpenAICompatibleEmbeddingProvider
@@ -24,6 +25,9 @@ from laoshiren.infrastructure.ai.zhipu import ZhipuExecutiveModelGateway
 from laoshiren.infrastructure.notifications.recording import RecordingNotificationAdapter
 from laoshiren.infrastructure.persistence.checkpoints import PostgresCheckpointLifecycle
 from laoshiren.infrastructure.persistence.database import Database
+from laoshiren.infrastructure.persistence.operational_status import (
+    SqlAlchemyOperationalStatusAdapter,
+)
 from laoshiren.infrastructure.runtime.dispatcher import InProcessRunDispatcher
 from laoshiren.infrastructure.sources.text_parser import TextSourceParser
 from laoshiren.infrastructure.storage.local import LocalObjectStorage
@@ -49,6 +53,7 @@ class Container:
     embedding_provider: EmbeddingProvider | None
     automations: AutomationApplicationService
     attention: AttentionApplicationService
+    operational_status: OperationalStatusApplicationService
     runtime: RuntimeApplicationService
     notification_adapter: RecordingNotificationAdapter
     checkpoints: PostgresCheckpointLifecycle
@@ -108,6 +113,9 @@ def bootstrap() -> Container:
         database.automation_unit_of_work, notification_adapter
     )
     attention = AttentionApplicationService(database.automation_unit_of_work)
+    operational_status = OperationalStatusApplicationService(
+        SqlAlchemyOperationalStatusAdapter(database.session_factory)
+    )
     run_dispatcher = InProcessRunDispatcher()
     runtime = RuntimeApplicationService(database.runtime_unit_of_work, run_dispatcher)
     run_scanner = RunDispatchScanner(
@@ -128,6 +136,7 @@ def bootstrap() -> Container:
         embedding_provider=embedding_provider,
         automations=automations,
         attention=attention,
+        operational_status=operational_status,
         runtime=runtime,
         notification_adapter=notification_adapter,
         checkpoints=checkpoints,

@@ -30,6 +30,27 @@
         }
       }
     },
+    "/api/v1/health/ready": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Readiness",
+        "operationId": "readiness_api_v1_health_ready_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationalStatusResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/things": {
       "get": {
         "tags": [
@@ -4418,6 +4439,33 @@
           "replayed"
         ],
         "title": "MutationResponse"
+      },
+      "OperationalStatusResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "checked_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Checked At"
+          },
+          "backlogs": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Backlogs"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "checked_at",
+          "backlogs"
+        ],
+        "title": "OperationalStatusResponse"
       },
       "NotificationResponse": {
         "properties": {
