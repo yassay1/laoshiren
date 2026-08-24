@@ -47,6 +47,8 @@
 
 上传请求不再执行 PDF/TXT/Markdown 解析。`SourceProcessingWorker` 从 Application 领取任务；Repository 使用 PostgreSQL queue-like claim，最多 3 次有上限指数退避。解析器确定性失败直接终止，存储等基础设施异常进入 retry；Worker 崩溃后 lease 到期可被其他实例接管，旧 owner 的迟到完成写入会被拒绝。图片、Office、音频仍保持 PENDING，等待未来 parser adapter。
 
+PDF 解析增加加密文件拒绝、最大页数、单页字符、总字符和 Application 超时边界。READY 写入与 `source_chunks` Evidence 块在同一事务完成；每块包含稳定 `id/ordinal/char_start/char_end`。Agent 按最多 5 个 Source、每 Source 最多 8 块和总计 12,000 字符组装 context，并携带 chunk_id。迁移前 READY 数据保留 extracted_text 兼容回退。
+
 TXT/Markdown 使用 UTF-8（含 BOM）解析；PDF 使用 pypdf 提取文本。空文本、损坏 PDF 记录 `FAILED / SOURCE_PARSE_FAILED`，不伪装 READY。图片、Office、音频仍保持 PENDING，等待未来 OCR/Office/image/STT adapter。
 
 ## 7. Runtime / checkpoint / resume / recovery 实现
@@ -143,7 +145,7 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。外部 adapter 
 
 - 未配置生产 EmbeddingProvider；Agent Memory 当前为文本检索降级，尚未在真实 Run 中启用 pgvector semantic ranking。
 - Memory formation 仅覆盖显式中文触发语，不是模型辅助的事实抽取、冲突检测和 PROFILE key-level supersede。
-- Source 已迁移到持久 Worker，但尚无页数/解析耗时硬限制、chunk/evidence 表、OCR、Office、图片理解和 STT adapter。
+- Source 已有解析资源限制与文本 Evidence chunks，但尚无 OCR、Office、图片理解、STT、页码级 provenance 和 semantic chunk retrieval。
 - Automation outbox 已有 claim/lease/backoff，但真实 Push adapter 仍须使用 occurrence_key 作为下游幂等键，才能覆盖“外部接收成功、ack 前崩溃”的窗口。
 - RecordingNotificationAdapter 不是真实 Push adapter。
 - InProcessRunDispatcher 仍是本地低延迟唤醒机制；周期性 `RunDispatchScanner` 已让每个实例从数据库发现 QUEUED/过期 RUNNING Run。扫描为 at-least-once，执行唯一所有权仍由数据库 claim 保证；尚未引入独立 broker，因此空闲扫描存在最多一个 poll interval 的延迟。
@@ -153,13 +155,13 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。外部 adapter 
 ## 15. 与七份 v1.0 设计文档的差异
 
 - 文档将 thread_id 容易理解为会话标识；实现明确拆分为业务 `Thread.id` 和 LangGraph checkpoint `Run.id`。这是为避免跨 Run Graph State 污染的长期可维护修正。
-- Source v1 设想完整异步多模态 processing；当前已完成持久异步文本/PDF worker，未支持类型仍为 PENDING，尚无完整 Evidence/chunk/OCR 管线。
+- Source v1 设想完整异步多模态 processing；当前已完成持久异步文本/PDF worker 与字符区间 Evidence，未支持类型仍为 PENDING，尚无 OCR 和页码级 Evidence。
 - Memory v1 允许更丰富自动形成；本轮采用显式用户意图白名单，优先避免错误长期记忆覆盖现实 State。
 - Automation 当前 action 是 notification outbox，不直接触发 Agent；符合边界保守原则，但未达到完整自动 Agent action。
 
 ## 16. 当前技术债和风险
 
-最高风险已从“没有执行所有权/跨节点无法发现任务”下降为外部副作用下游幂等和 heartbeat 运行隔离；其次是 production embedding、Source 解析资源限制与 Evidence、Automation backoff 和真实通知 adapter。模型 Gateway prompt 仍是静态工具说明，新增 Tool 时需要同步维护。当前开发环境使用固定 Bearer auth，不适合生产。
+最高风险已从“没有执行所有权/跨节点无法发现任务”下降为外部副作用下游幂等和 heartbeat 运行隔离；其次是 production embedding、Source 页码 provenance/OCR、真实 Push adapter 和可观测性。模型 Gateway prompt 仍是静态工具说明，新增 Tool 时需要同步维护。当前开发环境使用固定 Bearer auth，不适合生产。
 
 ## 17. 当前项目完成度判断
 
@@ -203,7 +205,7 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。外部 adapter 
 
 ## 20. 下一阶段建议
 
-下一阶段 P0 应规定所有外部副作用 Tool/Push adapter 的下游 idempotency contract，并将 CPU/阻塞 adapter 隔离出 heartbeat event loop。P1 接入可配置 EmbeddingProvider，增加 Memory candidate extraction/冲突 supersede eval。P2 为 Source 增加页数/耗时限制、chunk/evidence 表与 OCR adapter。P3 接入真实 Push adapter 并增加 outbox 可观测指标。前端继续维持联调范围。
+下一阶段 P0 应规定所有外部副作用 Tool/Push adapter 的下游 idempotency contract，并进一步隔离无法被 asyncio timeout 终止的解析线程。P1 接入可配置 EmbeddingProvider，增加 Memory candidate extraction/冲突 supersede eval。P2 为 Source 增加页码 provenance、semantic chunk retrieval 与 OCR adapter。P3 接入真实 Push adapter 并增加 outbox 可观测指标。前端继续维持联调范围。
 
 ## 最终仓库与验证快照
 
@@ -221,13 +223,13 @@ ee596e5 feat: harden agent runtime and connect durable context
 测试汇总
 ruff: passed
 mypy strict: 99 source files passed
-pytest (not eval, database enabled): 48 passed
-Alembic 0011 downgrade/upgrade: passed
+pytest (not eval, database enabled): 52 passed
+Alembic 0012 downgrade/upgrade: passed
 真实模型 eval: not run
 HarmonyOS build/E2E: not run
 ```
 
-当前仍存在的 P0/P1：外部 Tool 下游幂等契约与 heartbeat 隔离、生产 EmbeddingProvider、Memory 冲突/supersede formation、Source 解析资源限制与 Evidence/chunk。
+当前仍存在的 P0/P1：外部 Tool/Push 下游幂等契约、无法强制终止的 parser thread、生产 EmbeddingProvider、Memory 冲突/supersede formation、Source 页码 provenance/OCR/semantic retrieval。
 
 ## 2026-08-25 外部参考与可靠性增量
 
