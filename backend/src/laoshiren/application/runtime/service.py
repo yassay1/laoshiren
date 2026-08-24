@@ -332,6 +332,8 @@ class RuntimeApplicationService:
         arguments_hash: str,
         owner: str,
         lease_seconds: float,
+        replay_safe: bool = True,
+        idempotency_key: str | None = None,
     ) -> ToolExecutionClaimDTO:
         now = datetime.now(UTC)
         execution = ToolExecution(
@@ -342,6 +344,8 @@ class RuntimeApplicationService:
             status=ToolExecutionStatus.RUNNING,
             claim_owner=owner,
             lease_expires_at=now + timedelta(seconds=lease_seconds),
+            replay_safe=replay_safe,
+            idempotency_key=idempotency_key,
         )
         async with self._unit_of_work_factory() as uow:
             run = await uow.runs.get(user_id=user_id, run_id=run_id)
@@ -364,10 +368,26 @@ class RuntimeApplicationService:
                 raise InvalidStateTransition(
                     "Tool action id was reused with different arguments."
                 )
+            if existing.replay_safe != replay_safe or (
+                existing.idempotency_key is not None
+                and existing.idempotency_key != idempotency_key
+            ):
+                raise InvalidStateTransition(
+                    "Tool action id was reused with a different replay contract."
+                )
             if existing.result is not None:
                 await uow.rollback()
                 return ToolExecutionClaimDTO(
                     acquired=False, cached_result=dict(existing.result)
+                )
+            if existing.lease_expires_at <= now and not existing.replay_safe:
+                await uow.rollback()
+                return ToolExecutionClaimDTO(
+                    acquired=False,
+                    blocked_reason=(
+                        "Non-replayable Tool outcome is unknown for "
+                        f"idempotency key {idempotency_key or action_id}."
+                    ),
                 )
             acquired = await uow.tool_executions.takeover_if_expired(
                 existing,

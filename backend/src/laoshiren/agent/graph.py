@@ -15,7 +15,7 @@ from laoshiren.agent.contracts import (
 )
 from laoshiren.agent.model_gateway import ExecutiveModelGateway
 from laoshiren.agent.policy import PolicyDecision, ToolPolicy
-from laoshiren.agent.tools import ToolExecutionContext, ToolRegistry
+from laoshiren.agent.tools import ToolExecutionContext, ToolRegistry, ToolReplayPolicy
 
 ACTION_NAMESPACE = UUID("af195d42-065c-4a50-9eb3-6ea8e46b1928")
 
@@ -46,6 +46,8 @@ class ToolExecutionLedger(Protocol):
         action_id: str,
         tool_name: str,
         arguments: dict[str, Any],
+        replay_policy: ToolReplayPolicy,
+        idempotency_key: str,
     ) -> tuple[bool, dict[str, Any] | None]: ...
 
     async def complete(
@@ -61,6 +63,10 @@ class ToolExecutionLedger(Protocol):
 
 class ToolExecutionBusy(RuntimeError):
     """Another worker still owns this durable Tool action."""
+
+
+class ToolOutcomeUnknown(RuntimeError):
+    """A non-replayable Tool lost its lease after its outcome became unknowable."""
 
 
 class NullAgentEventSink:
@@ -218,6 +224,17 @@ def build_executive_graph(
         run_id = UUID(state["run_id"])
         action_id = str(action["action_id"])
         tool_name = str(action["tool_name"])
+        definition = tools.get(tool_name)
+        replay_policy = (
+            definition.replay_policy
+            if definition is not None
+            else ToolReplayPolicy.READ_ONLY
+        )
+        execution_context = ToolExecutionContext(
+            user_id=user_id,
+            run_id=run_id,
+            action_id=action_id,
+        )
         if tool_ledger is not None:
             acquired, cached = await tool_ledger.claim(
                 user_id=user_id,
@@ -225,6 +242,8 @@ def build_executive_graph(
                 action_id=action_id,
                 tool_name=tool_name,
                 arguments=arguments,
+                replay_policy=replay_policy,
+                idempotency_key=execution_context.idempotency_key,
             )
             if cached is not None:
                 return {
@@ -242,11 +261,7 @@ def build_executive_graph(
         )
         result = await tools.execute(
             name=tool_name,
-            context=ToolExecutionContext(
-                user_id=user_id,
-                run_id=run_id,
-                action_id=action_id,
-            ),
+            context=execution_context,
             arguments=arguments,
         )
         result_data = result.as_dict()

@@ -514,6 +514,8 @@ class ToolExecutionORM(Base):
     result: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     claim_owner: Mapped[str] = mapped_column(String(200))
     lease_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    replay_safe: Mapped[bool] = mapped_column(default=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(300))
     attempt_count: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

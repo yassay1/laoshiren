@@ -10,6 +10,8 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
 from laoshiren.agent.contracts import AgentBudgetExceeded, GraphState, ToolStatus
+from laoshiren.agent.graph import ToolOutcomeUnknown
+from laoshiren.agent.tools import ToolReplayPolicy
 from laoshiren.application.memories.context import AgentMemoryApplicationService
 from laoshiren.application.runtime.service import RuntimeApplicationService
 from laoshiren.application.sources.service import SourceApplicationService
@@ -36,6 +38,8 @@ class RuntimeToolExecutionLedger:
         action_id: str,
         tool_name: str,
         arguments: dict[str, Any],
+        replay_policy: ToolReplayPolicy,
+        idempotency_key: str,
     ) -> tuple[bool, dict[str, Any] | None]:
         canonical = json.dumps(
             arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -48,7 +52,11 @@ class RuntimeToolExecutionLedger:
             arguments_hash=hashlib.sha256(canonical).hexdigest(),
             owner=self._owner,
             lease_seconds=self._lease_seconds,
+            replay_safe=replay_policy is not ToolReplayPolicy.NON_REPLAYABLE,
+            idempotency_key=idempotency_key,
         )
+        if claim.blocked_reason is not None:
+            raise ToolOutcomeUnknown(claim.blocked_reason)
         return claim.acquired, claim.cached_result
 
     async def complete(
@@ -277,11 +285,12 @@ class AgentRunWorker:
             )
             return RunStatus.COMPLETED
         except Exception as exception:
-            error_code = (
-                "AGENT_BUDGET_EXCEEDED"
-                if isinstance(exception, AgentBudgetExceeded)
-                else "AGENT_EXECUTION_FAILED"
-            )
+            if isinstance(exception, AgentBudgetExceeded):
+                error_code = "AGENT_BUDGET_EXCEEDED"
+            elif isinstance(exception, ToolOutcomeUnknown):
+                error_code = "TOOL_OUTCOME_UNKNOWN"
+            else:
+                error_code = "AGENT_EXECUTION_FAILED"
             await self._runtime.fail_run(
                 user_id=user_id,
                 run_id=run_id,

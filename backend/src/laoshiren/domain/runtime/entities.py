@@ -217,6 +217,8 @@ class ToolExecution:
     status: ToolExecutionStatus
     claim_owner: str
     lease_expires_at: datetime
+    replay_safe: bool = True
+    idempotency_key: str | None = None
     id: UUID = field(default_factory=uuid4)
     result: dict[str, Any] | None = None
     attempt_count: int = 1

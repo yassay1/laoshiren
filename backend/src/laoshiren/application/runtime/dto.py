@@ -75,3 +75,4 @@ class RunEventDTO:
 class ToolExecutionClaimDTO:
     acquired: bool
     cached_result: dict[str, Any] | None = None
+    blocked_reason: str | None = None

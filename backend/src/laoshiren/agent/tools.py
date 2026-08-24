@@ -24,11 +24,22 @@ class ToolRisk(StrEnum):
     IRREVERSIBLE = "IRREVERSIBLE"
 
 
+class ToolReplayPolicy(StrEnum):
+    READ_ONLY = "READ_ONLY"
+    IDEMPOTENT = "IDEMPOTENT"
+    NON_REPLAYABLE = "NON_REPLAYABLE"
+
+
 @dataclass(frozen=True, slots=True)
 class ToolExecutionContext:
     user_id: UUID
     run_id: UUID
     action_id: str
+
+    @property
+    def idempotency_key(self) -> str:
+        """Stable key that every downstream side-effect adapter must propagate."""
+        return f"agent:{self.run_id}:{self.action_id}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +48,7 @@ class ToolDefinition:
     description: str
     risk: ToolRisk
     handler: ToolHandler
+    replay_policy: ToolReplayPolicy = ToolReplayPolicy.READ_ONLY
     enabled: bool = True
     required_arguments: tuple[str, ...] = ()
 
@@ -48,6 +60,16 @@ class ToolRegistry:
     def register(self, definition: ToolDefinition) -> None:
         if definition.name in self._definitions:
             raise ValueError(f"Tool is already registered: {definition.name}")
+        if (
+            definition.risk is not ToolRisk.READ
+            and definition.replay_policy is ToolReplayPolicy.READ_ONLY
+        ):
+            raise ValueError("Write Tools must declare an explicit replay policy.")
+        if (
+            definition.risk is ToolRisk.READ
+            and definition.replay_policy is not ToolReplayPolicy.READ_ONLY
+        ):
+            raise ValueError("Read Tools must use the READ_ONLY replay policy.")
         self._definitions[definition.name] = definition
 
     def names(self) -> tuple[str, ...]:
@@ -197,7 +219,7 @@ def register_personal_state_tools(
         )
 
     def idempotency_key(context: ToolExecutionContext) -> str:
-        return f"agent:{context.run_id}:{context.action_id}"
+        return context.idempotency_key
 
     async def create_thing(
         context: ToolExecutionContext, arguments: dict[str, Any]
@@ -324,6 +346,7 @@ def register_personal_state_tools(
             "Create a Thing.",
             ToolRisk.REVERSIBLE_WRITE,
             create_thing,
+            replay_policy=ToolReplayPolicy.IDEMPOTENT,
             required_arguments=("name",),
         ),
         ToolDefinition(
@@ -331,6 +354,7 @@ def register_personal_state_tools(
             "Create a Task.",
             ToolRisk.REVERSIBLE_WRITE,
             create_task,
+            replay_policy=ToolReplayPolicy.IDEMPOTENT,
             required_arguments=("thing_id", "title"),
         ),
         ToolDefinition(
@@ -338,6 +362,7 @@ def register_personal_state_tools(
             "Complete a Task with optimistic concurrency.",
             ToolRisk.REVERSIBLE_WRITE,
             complete_task,
+            replay_policy=ToolReplayPolicy.IDEMPOTENT,
             required_arguments=("task_id", "expected_version"),
         ),
         ToolDefinition(
@@ -345,6 +370,7 @@ def register_personal_state_tools(
             "Set the formal deadline through the dedicated use case.",
             ToolRisk.SENSITIVE_WRITE,
             set_deadline,
+            replay_policy=ToolReplayPolicy.IDEMPOTENT,
             required_arguments=(
                 "thing_id",
                 "value",
