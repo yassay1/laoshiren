@@ -14,6 +14,10 @@ class MemoryRepository(Protocol):
 
     async def get_by_idempotency(self, *, user_id: UUID, key: str) -> Memory | None: ...
 
+    async def get_active_profile(
+        self, *, user_id: UUID, profile_key: str
+    ) -> Memory | None: ...
+
     async def search(
         self,
         *,
@@ -53,3 +57,5 @@ class MemoryUnitOfWork(Protocol):
     async def commit(self) -> None: ...
 
     async def rollback(self) -> None: ...
+
+    async def lock_idempotency(self, *, user_id: UUID, key: str) -> None: ...

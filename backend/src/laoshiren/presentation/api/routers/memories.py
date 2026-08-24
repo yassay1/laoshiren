@@ -56,6 +56,7 @@ async def create_memory(
         source_ids=request.source_ids,
         valid_from=request.valid_from,
         valid_until=request.valid_until,
+        profile_key=request.profile_key,
     )
     return MemoryResponse.from_dto(memory)
 

@@ -3929,6 +3929,19 @@
               }
             ],
             "title": "Valid Until"
+          },
+          "profile_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Key"
           }
         },
         "type": "object",
@@ -4205,6 +4218,29 @@
             ],
             "title": "Valid Until"
           },
+          "profile_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Key"
+          },
+          "supersedes_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supersedes Id"
+          },
           "status": {
             "$ref": "#/components/schemas/MemoryStatus"
           },
@@ -4252,6 +4288,8 @@
           "source_ids",
           "valid_from",
           "valid_until",
+          "profile_key",
+          "supersedes_id",
           "status",
           "version",
           "created_at",

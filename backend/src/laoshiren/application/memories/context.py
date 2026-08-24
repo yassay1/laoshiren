@@ -97,6 +97,13 @@ class AgentMemoryApplicationService:
             content = normalized[3:].lstrip("：:，, ")
         if memory_type is None or len(content) < 2:
             return None
+        profile_key = None
+        if memory_type is MemoryType.PROFILE:
+            normalized_profile = content.casefold()
+            if any(word in normalized_profile for word in ("回答", "回复", "沟通")):
+                profile_key = "preference:response_style"
+            elif "提醒" in normalized_profile:
+                profile_key = "preference:reminder"
         existing = await self._memories.search(
             user_id=user_id, query=content, memory_type=memory_type, limit=5
         )
@@ -119,4 +126,5 @@ class AgentMemoryApplicationService:
             confidence=1.0,
             idempotency_key=f"agent-memory:{run_id}",
             embedding=embedding,
+            profile_key=profile_key,
         )

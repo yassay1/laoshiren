@@ -23,6 +23,8 @@ def to_memory_dto(memory: Memory, *, replayed: bool = False) -> MemoryDTO:
         source_ids=memory.source_ids,
         valid_from=memory.valid_from,
         valid_until=memory.valid_until,
+        profile_key=memory.profile_key,
+        supersedes_id=memory.supersedes_id,
         status=memory.status,
         version=memory.version,
         created_at=memory.created_at,
@@ -51,6 +53,7 @@ class MemoryApplicationService:
         valid_from: datetime | None = None,
         valid_until: datetime | None = None,
         embedding: list[float] | None = None,
+        profile_key: str | None = None,
     ) -> MemoryDTO:
         normalized_content = content.strip()
         normalized_summary = summary.strip()
@@ -62,8 +65,17 @@ class MemoryApplicationService:
             raise ValueError("Memory valid_until must be later than valid_from.")
         if embedding is not None and len(embedding) != 1536:
             raise ValueError("Memory embedding must contain exactly 1536 values.")
+        normalized_profile_key = profile_key.strip().casefold() if profile_key else None
+        if normalized_profile_key and memory_type is not MemoryType.PROFILE:
+            raise ValueError("Only PROFILE Memory can define a profile key.")
+        if normalized_profile_key and len(normalized_profile_key) > 100:
+            raise ValueError("Memory profile key must not exceed 100 characters.")
 
         async with self._unit_of_work_factory() as unit_of_work:
+            if normalized_profile_key:
+                await unit_of_work.lock_idempotency(
+                    user_id=user_id, key=f"memory-profile:{normalized_profile_key}"
+                )
             previous = await unit_of_work.memories.get_by_idempotency(
                 user_id=user_id, key=idempotency_key
             )
@@ -77,6 +89,18 @@ class MemoryApplicationService:
             for source_id in source_ids:
                 if await unit_of_work.sources.get(user_id=user_id, source_id=source_id) is None:
                     raise EntityNotFound("Source was not found.")
+            superseded = None
+            if normalized_profile_key:
+                superseded = await unit_of_work.memories.get_active_profile(
+                    user_id=user_id, profile_key=normalized_profile_key
+                )
+                if superseded is not None:
+                    expected_version = superseded.version
+                    superseded.supersede()
+                    if not await unit_of_work.memories.update(
+                        superseded, expected_version=expected_version
+                    ):
+                        raise VersionConflict("PROFILE Memory was updated concurrently.")
             memory = Memory(
                 user_id=user_id,
                 memory_type=memory_type,
@@ -90,6 +114,8 @@ class MemoryApplicationService:
                 valid_from=valid_from,
                 valid_until=valid_until,
                 embedding=embedding,
+                profile_key=normalized_profile_key,
+                supersedes_id=superseded.id if superseded is not None else None,
             )
             await unit_of_work.memories.add(memory)
             await unit_of_work.commit()

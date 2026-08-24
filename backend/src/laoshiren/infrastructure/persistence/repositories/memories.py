@@ -23,6 +23,8 @@ def memory_to_domain(model: MemoryORM) -> Memory:
         valid_from=model.valid_from,
         valid_until=model.valid_until,
         embedding=list(model.embedding) if model.embedding is not None else None,
+        profile_key=model.profile_key,
+        supersedes_id=model.supersedes_id,
         status=model.status,
         version=model.version,
         idempotency_key=model.idempotency_key,
@@ -51,6 +53,8 @@ class SqlAlchemyMemoryRepository:
                 valid_from=memory.valid_from,
                 valid_until=memory.valid_until,
                 embedding=memory.embedding,
+                profile_key=memory.profile_key,
+                supersedes_id=memory.supersedes_id,
                 status=memory.status,
                 version=memory.version,
                 idempotency_key=memory.idempotency_key,
@@ -70,6 +74,19 @@ class SqlAlchemyMemoryRepository:
         model = await self._session.scalar(
             select(MemoryORM).where(
                 MemoryORM.user_id == user_id, MemoryORM.idempotency_key == key
+            )
+        )
+        return memory_to_domain(model) if model is not None else None
+
+    async def get_active_profile(
+        self, *, user_id: UUID, profile_key: str
+    ) -> Memory | None:
+        model = await self._session.scalar(
+            select(MemoryORM).where(
+                MemoryORM.user_id == user_id,
+                MemoryORM.memory_type == MemoryType.PROFILE,
+                MemoryORM.status == MemoryStatus.ACTIVE,
+                MemoryORM.profile_key == profile_key,
             )
         )
         return memory_to_domain(model) if model is not None else None
@@ -120,6 +137,8 @@ class SqlAlchemyMemoryRepository:
                     summary=memory.summary,
                     importance=memory.importance,
                     confidence=memory.confidence,
+                    profile_key=memory.profile_key,
+                    supersedes_id=memory.supersedes_id,
                     status=memory.status,
                     version=memory.version,
                     updated_at=memory.updated_at,

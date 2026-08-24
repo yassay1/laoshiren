@@ -18,6 +18,8 @@ class MemoryDTO:
     source_ids: tuple[UUID, ...]
     valid_from: datetime | None
     valid_until: datetime | None
+    profile_key: str | None
+    supersedes_id: UUID | None
     status: MemoryStatus
     version: int
     created_at: datetime

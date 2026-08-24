@@ -245,6 +245,10 @@ class MemoryORM(Base):
     valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     embedding: Mapped[list[float] | None] = mapped_column(Vector(1536))
+    profile_key: Mapped[str | None] = mapped_column(String(100))
+    supersedes_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("long_term_memories.id")
+    )
     status: Mapped[MemoryStatus] = mapped_column(Enum(MemoryStatus, name="memory_status"))
     version: Mapped[int] = mapped_column(Integer, default=1)
     idempotency_key: Mapped[str] = mapped_column(String(200))

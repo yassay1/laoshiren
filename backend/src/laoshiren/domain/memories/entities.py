@@ -35,6 +35,8 @@ class Memory:
     valid_from: datetime | None = None
     valid_until: datetime | None = None
     embedding: list[float] | None = None
+    profile_key: str | None = None
+    supersedes_id: UUID | None = None
     status: MemoryStatus = MemoryStatus.ACTIVE
     version: int = 1
     created_at: datetime = field(default_factory=utc_now)

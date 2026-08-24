@@ -27,6 +27,8 @@ def memory_dto(content: str, memory_type: MemoryType, importance: float) -> Memo
         source_ids=(),
         valid_from=None,
         valid_until=None,
+        profile_key=None,
+        supersedes_id=None,
         status=MemoryStatus.ACTIVE,
         version=1,
         created_at=now,

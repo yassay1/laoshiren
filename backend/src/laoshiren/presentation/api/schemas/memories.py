@@ -17,6 +17,7 @@ class CreateMemoryRequest(BaseModel):
     source_ids: tuple[UUID, ...] = ()
     valid_from: datetime | None = None
     valid_until: datetime | None = None
+    profile_key: str | None = Field(default=None, min_length=1, max_length=100)
 
 
 class UpdateMemoryRequest(BaseModel):
@@ -42,6 +43,8 @@ class MemoryResponse(BaseModel):
     source_ids: tuple[UUID, ...]
     valid_from: datetime | None
     valid_until: datetime | None
+    profile_key: str | None
+    supersedes_id: UUID | None
     status: MemoryStatus
     version: int
     created_at: datetime
