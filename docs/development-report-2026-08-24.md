@@ -36,7 +36,7 @@
 
 - `AgentMemoryApplicationService.load_context` 精确读取 ACTIVE PROFILE（默认 6 条）。
 - SEMANTIC（默认 6 条）与 EPISODIC（默认 3 条）分别检索，再按 importance/confidence/update time 合并裁剪。
-- 若配置 EmbeddingProvider，可直接走现有 1536 维 pgvector cosine retrieval；当前生产 composition 尚未配置 embedding provider，因此运行时使用受限文本检索，现有 pgvector persistence test 仍覆盖向量查询。
+- 已提供可配置的 OpenAI-compatible Embedding Gateway，并在 Composition Root 注入 Agent Memory；配置 model/base/key 后走现有 1536 维 pgvector cosine retrieval。provider HTTP/响应/维度异常会归一化并回退文本检索，Memory formation 仍保存内容但 embedding 留空，不使 Agent Run 失败。
 - Model Gateway 只接收裁剪后的 `memory_context`，不会加载全部 Memory。
 - `form_from_user_input` 只处理显式长期记忆意图；普通聊天、Thread 历史、checkpoint 与当前 Personal State 不写入长期记忆。
 - 相同规范化内容不重复创建；创建使用 `agent-memory:{run_id}` 幂等键。既有 update API 继续提供 version、supersede、soft delete 和 operation idempotency。
@@ -120,7 +120,7 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。外部 adapter 
 ## 12. 测试结果
 
 - 通过：ruff 全仓检查。
-- 通过：mypy strict，97 个 source files。
+- 通过：mypy strict，100 个 source files。
 - 通过：`RUN_DATABASE_TESTS=1 uv run pytest -q -m "not eval"`，38 passed。
 - 通过：migration `0008 -> 0007 -> head` 往返。
 - 通过：OpenAPI 重新生成，`git diff --check`。
@@ -143,7 +143,7 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。外部 adapter 
 
 ## 14. 尚未解决的问题
 
-- 未配置生产 EmbeddingProvider；Agent Memory 当前为文本检索降级，尚未在真实 Run 中启用 pgvector semantic ranking。
+- Embedding Gateway 已可配置，但部署环境仍需提供实际 embedding model/base/key；未配置时明确使用文本检索降级。
 - Memory formation 仅覆盖显式中文触发语，不是模型辅助的事实抽取、冲突检测和 PROFILE key-level supersede。
 - Source 已有解析资源限制与文本 Evidence chunks，但尚无 OCR、Office、图片理解、STT、页码级 provenance 和 semantic chunk retrieval。
 - Automation outbox 已有 claim/lease/backoff，但真实 Push adapter 仍须使用 occurrence_key 作为下游幂等键，才能覆盖“外部接收成功、ack 前崩溃”的窗口。
@@ -161,7 +161,7 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。外部 adapter 
 
 ## 16. 当前技术债和风险
 
-最高风险已从“没有执行所有权/跨节点无法发现任务”下降为外部副作用下游幂等和 heartbeat 运行隔离；其次是 production embedding、Source 页码 provenance/OCR、真实 Push adapter 和可观测性。模型 Gateway prompt 仍是静态工具说明，新增 Tool 时需要同步维护。当前开发环境使用固定 Bearer auth，不适合生产。
+最高风险已从“没有执行所有权/跨节点无法发现任务”下降为外部副作用下游幂等和 heartbeat 运行隔离；其次是 embedding 凭据/模型部署、Source 页码 provenance/OCR、真实 Push adapter 和可观测性。模型 Gateway prompt 仍是静态工具说明，新增 Tool 时需要同步维护。当前开发环境使用固定 Bearer auth，不适合生产。
 
 ## 17. 当前项目完成度判断
 
@@ -205,7 +205,7 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。外部 adapter 
 
 ## 20. 下一阶段建议
 
-下一阶段 P0 应规定所有外部副作用 Tool/Push adapter 的下游 idempotency contract，并进一步隔离无法被 asyncio timeout 终止的解析线程。P1 接入可配置 EmbeddingProvider，增加 Memory candidate extraction/冲突 supersede eval。P2 为 Source 增加页码 provenance、semantic chunk retrieval 与 OCR adapter。P3 接入真实 Push adapter 并增加 outbox 可观测指标。前端继续维持联调范围。
+下一阶段 P0 应规定所有外部副作用 Tool/Push adapter 的下游 idempotency contract，并进一步隔离无法被 asyncio timeout 终止的解析线程。P1 配置实际 Embedding 服务并增加 Memory candidate extraction/冲突 supersede eval。P2 为 Source 增加页码 provenance、semantic chunk retrieval 与 OCR adapter。P3 接入真实 Push adapter 并增加 outbox 可观测指标。前端继续维持联调范围。
 
 ## 最终仓库与验证快照
 
@@ -222,14 +222,14 @@ ee596e5 feat: harden agent runtime and connect durable context
 
 测试汇总
 ruff: passed
-mypy strict: 99 source files passed
-pytest (not eval, database enabled): 52 passed
+mypy strict: 100 source files passed
+pytest (not eval, database enabled): 55 passed
 Alembic 0012 downgrade/upgrade: passed
 真实模型 eval: not run
 HarmonyOS build/E2E: not run
 ```
 
-当前仍存在的 P0/P1：外部 Tool/Push 下游幂等契约、无法强制终止的 parser thread、生产 EmbeddingProvider、Memory 冲突/supersede formation、Source 页码 provenance/OCR/semantic retrieval。
+当前仍存在的 P0/P1：外部 Tool/Push 下游幂等契约、无法强制终止的 parser thread、实际 Embedding 服务配置、Memory 冲突/supersede formation、Source 页码 provenance/OCR/semantic retrieval。
 
 ## 2026-08-25 外部参考与可靠性增量
 
