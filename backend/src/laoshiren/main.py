@@ -46,12 +46,13 @@ def create_app() -> FastAPI:
         await container.checkpoints.start()
         worker = build_configured_agent_worker(container)
         await container.run_dispatcher.start(worker.run_once)
-        await container.runtime.recover_pending_runs()
+        await container.run_scanner.start()
         await container.automation_scheduler.start()
         try:
             yield
         finally:
             await container.automation_scheduler.stop()
+            await container.run_scanner.stop()
             await container.run_dispatcher.stop()
             await container.checkpoints.stop()
             await container.database.dispose()

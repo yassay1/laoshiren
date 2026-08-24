@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     automation_poll_seconds: float = 30.0
     run_lease_seconds: float = 60.0
     run_heartbeat_seconds: float = 15.0
+    run_scan_seconds: float = 2.0
+    run_scan_batch_size: int = 500
 
 
 @lru_cache

@@ -170,7 +170,10 @@ class AgentRunWorker:
         try:
             if run.resume_payload is not None:
                 command: Command[Any] = Command(resume=run.resume_payload)
-                output = cast(dict[str, Any], await self._graph.ainvoke(command, config))
+                output = cast(
+                    dict[str, Any],
+                    await self._graph.ainvoke(command, config, durability="sync"),
+                )
             else:
                 current = next(item for item in messages if item.id == run.input_message_id)
                 initial: GraphState = {
@@ -211,7 +214,10 @@ class AgentRunWorker:
                     initial.setdefault("prefetched_state", {})[
                         "source_context"
                     ] = source_context
-                output = cast(dict[str, Any], await self._graph.ainvoke(initial, config))
+                output = cast(
+                    dict[str, Any],
+                    await self._graph.ainvoke(initial, config, durability="sync"),
+                )
             interrupts = output.get("__interrupt__")
             if interrupts:
                 first = interrupts[0]

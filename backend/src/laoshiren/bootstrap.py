@@ -29,6 +29,7 @@ from laoshiren.workers.agent import (
     RuntimeToolExecutionLedger,
 )
 from laoshiren.workers.automation import AutomationScheduler
+from laoshiren.workers.runtime import RunDispatchScanner
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +47,7 @@ class Container:
     notification_adapter: RecordingNotificationAdapter
     checkpoints: PostgresCheckpointLifecycle
     run_dispatcher: InProcessRunDispatcher
+    run_scanner: RunDispatchScanner
     automation_scheduler: AutomationScheduler
 
 
@@ -68,6 +70,11 @@ def bootstrap() -> Container:
     attention = AttentionApplicationService(database.automation_unit_of_work)
     run_dispatcher = InProcessRunDispatcher()
     runtime = RuntimeApplicationService(database.runtime_unit_of_work, run_dispatcher)
+    run_scanner = RunDispatchScanner(
+        runtime,
+        interval_seconds=settings.run_scan_seconds,
+        batch_size=settings.run_scan_batch_size,
+    )
     checkpoints = PostgresCheckpointLifecycle(settings.database_url)
     automation_scheduler = AutomationScheduler(
         automations, interval_seconds=settings.automation_poll_seconds
@@ -84,6 +91,7 @@ def bootstrap() -> Container:
         notification_adapter=notification_adapter,
         checkpoints=checkpoints,
         run_dispatcher=run_dispatcher,
+        run_scanner=run_scanner,
         automation_scheduler=automation_scheduler,
     )
 
