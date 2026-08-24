@@ -106,4 +106,6 @@ class AutomationUnitOfWork(Protocol):
 
 
 class NotificationPort(Protocol):
-    async def submit(self, notification: NotificationOutbox) -> bool: ...
+    async def submit(
+        self, notification: NotificationOutbox, *, idempotency_key: str
+    ) -> bool: ...

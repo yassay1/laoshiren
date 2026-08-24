@@ -256,7 +256,9 @@ class AutomationApplicationService:
                     break
                 await unit_of_work.commit()
             try:
-                accepted = await self._notification_port.submit(notification)
+                accepted = await self._notification_port.submit(
+                    notification, idempotency_key=notification.occurrence_key
+                )
             except Exception:
                 error_code = "ADAPTER_EXCEPTION"
                 accepted = False

@@ -8,6 +8,7 @@ from sqlalchemy import text
 
 from laoshiren.application.automations.service import AutomationApplicationService
 from laoshiren.domain.automations.entities import AutomationType, NotificationOutbox
+from laoshiren.infrastructure.notifications.recording import RecordingNotificationAdapter
 from laoshiren.main import create_app
 
 pytestmark = [
@@ -25,7 +26,10 @@ class SequenceNotificationAdapter:
         self.results = results
         self.calls: list[UUID] = []
 
-    async def submit(self, notification: NotificationOutbox) -> bool:
+    async def submit(
+        self, notification: NotificationOutbox, *, idempotency_key: str
+    ) -> bool:
+        assert idempotency_key == notification.occurrence_key
         self.calls.append(notification.id)
         return self.results.pop(0)
 
@@ -95,6 +99,78 @@ async def test_outbox_retry_is_due_gated_and_concurrent_claim_is_exclusive() -> 
         assert row.attempt_count == 2
         assert row.claim_owner is None
         assert row.next_attempt_at is None
+    finally:
+        if automation_id is not None:
+            async with container.database.engine.begin() as connection:
+                await connection.execute(
+                    text("DELETE FROM notification_outbox WHERE automation_id = :id"),
+                    {"id": automation_id},
+                )
+                await connection.execute(
+                    text("DELETE FROM automations WHERE id = :id"),
+                    {"id": automation_id},
+                )
+        await container.database.dispose()
+
+
+async def test_adapter_success_before_ack_is_deduplicated_after_lease_takeover() -> None:
+    app = create_app()
+    container = app.state.container
+    user_id = UUID(container.settings.dev_user_id)
+    automation_id = None
+    adapter = RecordingNotificationAdapter()
+    service = AutomationApplicationService(
+        container.database.automation_unit_of_work, adapter
+    )
+    try:
+        automation = await service.create(
+            user_id=user_id,
+            automation_type=AutomationType.ONE_SHOT,
+            title="crash window",
+            message="submit once",
+            timezone_name="UTC",
+            next_trigger_at=datetime.now(UTC) - timedelta(seconds=1),
+            idempotency_key=f"outbox-crash-{uuid4()}",
+        )
+        automation_id = automation.id
+        assert await service.process_due() == 1
+
+        now = datetime.now(UTC)
+        async with container.database.automation_unit_of_work() as unit_of_work:
+            claimed = await unit_of_work.notifications.claim_next(
+                owner="crashed-worker",
+                now=now,
+                lease_expires_at=now + timedelta(seconds=60),
+                max_attempts=3,
+            )
+            assert claimed is not None
+            await unit_of_work.commit()
+        assert await adapter.submit(
+            claimed, idempotency_key=claimed.occurrence_key
+        )
+        # Simulate process death before the database completion acknowledgement.
+        async with container.database.engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "UPDATE notification_outbox SET lease_expires_at = :expired "
+                    "WHERE id = :notification_id"
+                ),
+                {
+                    "expired": datetime.now(UTC) - timedelta(seconds=1),
+                    "notification_id": claimed.id,
+                },
+            )
+
+        assert await service.dispatch_pending() == 1
+        assert adapter.submitted_ids == [str(claimed.id)]
+        assert adapter.submitted_keys == {claimed.occurrence_key}
+
+        async with container.database.engine.connect() as connection:
+            status = await connection.scalar(
+                text("SELECT status FROM notification_outbox WHERE id = :id"),
+                {"id": claimed.id},
+            )
+        assert status == "SUBMITTED_TO_ADAPTER"
     finally:
         if automation_id is not None:
             async with container.database.engine.begin() as connection:
