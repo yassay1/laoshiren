@@ -1,13 +1,13 @@
 from collections.abc import AsyncIterator, Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import PurePath
 from uuid import UUID, uuid4
 
 from laoshiren.application.personal_state.ports import PersonalStateUnitOfWork
-from laoshiren.application.sources.dto import SourceDTO
+from laoshiren.application.sources.dto import SourceDTO, SourceProcessingJobDTO
 from laoshiren.application.sources.ports import (
     ObjectStorage,
     SourceParser,
-    SourceParsingError,
 )
 from laoshiren.domain.personal_state.entities import StateMutation, TimelineEvent, utc_now
 from laoshiren.domain.personal_state.exceptions import EntityNotFound
@@ -40,6 +40,7 @@ ALLOWED_UPLOADS: dict[str, tuple[SourceType, set[str], tuple[bytes, ...]]] = {
     ".txt": (SourceType.OTHER, {"text/plain"}, ()),
     ".md": (SourceType.OTHER, {"text/markdown", "text/plain"}, ()),
 }
+PROCESSABLE_MIME_TYPES = ("text/plain", "text/markdown", "application/pdf")
 
 
 def to_source_dto(source: Source, *, replayed: bool = False) -> SourceDTO:
@@ -140,16 +141,6 @@ class SourceApplicationService:
                 size=size,
                 idempotency_key=idempotency_key,
             )
-            if self._parser is not None and extension in {".txt", ".md", ".pdf"}:
-                try:
-                    extracted = await self._parser.parse(
-                        filename=safe_name,
-                        mime_type=mime_type,
-                        content=await self._storage.read(object_key=object_key),
-                    )
-                    source.mark_ready(extracted_text=extracted)
-                except SourceParsingError:
-                    source.mark_failed(error_code="SOURCE_PARSE_FAILED")
             async with self._unit_of_work_factory() as unit_of_work:
                 await unit_of_work.users.ensure_exists(user_id)
                 await unit_of_work.sources.add(source)
@@ -158,6 +149,119 @@ class SourceApplicationService:
         except Exception:
             await self._storage.delete(object_key=object_key)
             raise
+
+    async def claim_next_processing(
+        self,
+        *,
+        owner: str,
+        lease_seconds: float,
+        max_attempts: int,
+    ) -> SourceProcessingJobDTO | None:
+        if not owner.strip() or lease_seconds <= 0 or max_attempts <= 0:
+            raise ValueError("Source processing claim settings must be positive.")
+        now = datetime.now(UTC)
+        async with self._unit_of_work_factory() as unit_of_work:
+            source = await unit_of_work.sources.claim_next_processing(
+                owner=owner,
+                now=now,
+                lease_expires_at=now + timedelta(seconds=lease_seconds),
+                supported_mime_types=PROCESSABLE_MIME_TYPES,
+                max_attempts=max_attempts,
+            )
+            if source is None:
+                await unit_of_work.rollback()
+                return None
+            await unit_of_work.commit()
+            return SourceProcessingJobDTO(
+                id=source.id,
+                user_id=source.user_id,
+                title=source.title,
+                mime_type=source.mime_type,
+                object_key=source.object_key,
+                attempt_count=source.processing_attempt_count,
+            )
+
+    async def extract_claimed_text(self, job: SourceProcessingJobDTO) -> str:
+        if self._parser is None:
+            raise RuntimeError("No Source parser is configured.")
+        content = await self._storage.read(object_key=job.object_key)
+        return await self._parser.parse(
+            filename=job.title,
+            mime_type=job.mime_type,
+            content=content,
+        )
+
+    async def renew_processing_lease(
+        self,
+        *,
+        source_id: UUID,
+        owner: str,
+        lease_seconds: float,
+    ) -> bool:
+        now = datetime.now(UTC)
+        async with self._unit_of_work_factory() as unit_of_work:
+            renewed = await unit_of_work.sources.renew_processing_lease(
+                source_id=source_id,
+                owner=owner,
+                now=now,
+                lease_expires_at=now + timedelta(seconds=lease_seconds),
+            )
+            if renewed:
+                await unit_of_work.commit()
+            else:
+                await unit_of_work.rollback()
+            return renewed
+
+    async def complete_processing(
+        self,
+        *,
+        source_id: UUID,
+        owner: str,
+        extracted_text: str,
+    ) -> bool:
+        clean_text = extracted_text.strip()
+        if not clean_text:
+            raise ValueError("Extracted Source text cannot be empty.")
+        async with self._unit_of_work_factory() as unit_of_work:
+            completed = await unit_of_work.sources.complete_processing(
+                source_id=source_id,
+                owner=owner,
+                extracted_text=clean_text,
+                now=datetime.now(UTC),
+            )
+            if completed:
+                await unit_of_work.commit()
+            else:
+                await unit_of_work.rollback()
+            return completed
+
+    async def fail_processing(
+        self,
+        *,
+        source_id: UUID,
+        owner: str,
+        error_code: str,
+        retry_delay_seconds: float | None,
+    ) -> bool:
+        now = datetime.now(UTC)
+        retry_at = (
+            now + timedelta(seconds=retry_delay_seconds)
+            if retry_delay_seconds is not None
+            else None
+        )
+        async with self._unit_of_work_factory() as unit_of_work:
+            failed = await unit_of_work.sources.fail_processing(
+                source_id=source_id,
+                owner=owner,
+                error_code=error_code,
+                now=now,
+                retry_at=retry_at,
+            )
+            if failed:
+                await unit_of_work.commit()
+            else:
+                await unit_of_work.rollback()
+            return failed
 
     async def get(self, *, user_id: UUID, source_id: UUID) -> SourceDTO:
         async with self._unit_of_work_factory() as unit_of_work:

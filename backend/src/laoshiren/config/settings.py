@@ -32,6 +32,13 @@ class Settings(BaseSettings):
     run_heartbeat_seconds: float = 15.0
     run_scan_seconds: float = 2.0
     run_scan_batch_size: int = 500
+    source_poll_seconds: float = 2.0
+    source_batch_size: int = 10
+    source_lease_seconds: float = 60.0
+    source_heartbeat_seconds: float = 15.0
+    source_max_attempts: int = 3
+    source_retry_base_seconds: float = 5.0
+    source_retry_max_seconds: float = 300.0
 
 
 @lru_cache

@@ -1,7 +1,10 @@
+from datetime import datetime
+from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from laoshiren.domain.sources.entities import Source, ThingSource
@@ -30,6 +33,11 @@ def source_to_domain(model: SourceORM) -> Source:
         extracted_text=model.extracted_text,
         processing_error=model.processing_error,
         processed_at=model.processed_at,
+        processing_claim_owner=model.processing_claim_owner,
+        processing_lease_expires_at=model.processing_lease_expires_at,
+        processing_heartbeat_at=model.processing_heartbeat_at,
+        processing_attempt_count=model.processing_attempt_count,
+        next_processing_attempt_at=model.next_processing_attempt_at,
         idempotency_key=model.idempotency_key,
         created_at=model.created_at,
     )
@@ -58,6 +66,11 @@ class SqlAlchemySourceRepository:
                 extracted_text=source.extracted_text,
                 processing_error=source.processing_error,
                 processed_at=source.processed_at,
+                processing_claim_owner=source.processing_claim_owner,
+                processing_lease_expires_at=source.processing_lease_expires_at,
+                processing_heartbeat_at=source.processing_heartbeat_at,
+                processing_attempt_count=source.processing_attempt_count,
+                next_processing_attempt_at=source.next_processing_attempt_at,
                 idempotency_key=source.idempotency_key,
                 created_at=source.created_at,
             )
@@ -102,3 +115,140 @@ class SqlAlchemySourceRepository:
         )
         models = (await self._session.scalars(statement)).all()
         return [source_to_domain(model) for model in models]
+
+    async def claim_next_processing(
+        self,
+        *,
+        owner: str,
+        now: datetime,
+        lease_expires_at: datetime,
+        supported_mime_types: tuple[str, ...],
+        max_attempts: int,
+    ) -> Source | None:
+        candidate = (
+            select(SourceORM.id)
+            .where(
+                SourceORM.mime_type.in_(supported_mime_types),
+                SourceORM.processing_attempt_count < max_attempts,
+                or_(
+                    and_(
+                        SourceORM.processing_status == "PENDING",
+                        or_(
+                            SourceORM.processing_lease_expires_at.is_(None),
+                            SourceORM.processing_lease_expires_at <= now,
+                        ),
+                    ),
+                    and_(
+                        SourceORM.processing_status == "FAILED",
+                        SourceORM.next_processing_attempt_at.is_not(None),
+                        SourceORM.next_processing_attempt_at <= now,
+                    ),
+                ),
+            )
+            .order_by(SourceORM.created_at, SourceORM.id)
+            .limit(1)
+            .with_for_update(skip_locked=True)
+            .scalar_subquery()
+        )
+        model = await self._session.scalar(
+            update(SourceORM)
+            .where(SourceORM.id == candidate)
+            .values(
+                processing_status="PENDING",
+                processing_claim_owner=owner,
+                processing_lease_expires_at=lease_expires_at,
+                processing_heartbeat_at=now,
+                processing_attempt_count=SourceORM.processing_attempt_count + 1,
+                next_processing_attempt_at=None,
+                processed_at=None,
+            )
+            .returning(SourceORM)
+        )
+        return source_to_domain(model) if model is not None else None
+
+    async def renew_processing_lease(
+        self,
+        *,
+        source_id: UUID,
+        owner: str,
+        now: datetime,
+        lease_expires_at: datetime,
+    ) -> bool:
+        result = cast(
+            CursorResult[Any],
+            await self._session.execute(
+                update(SourceORM)
+                .where(
+                    SourceORM.id == source_id,
+                    SourceORM.processing_status == "PENDING",
+                    SourceORM.processing_claim_owner == owner,
+                )
+                .values(
+                    processing_heartbeat_at=now,
+                    processing_lease_expires_at=lease_expires_at,
+                )
+            ),
+        )
+        return result.rowcount == 1
+
+    async def complete_processing(
+        self,
+        *,
+        source_id: UUID,
+        owner: str,
+        extracted_text: str,
+        now: datetime,
+    ) -> bool:
+        result = cast(
+            CursorResult[Any],
+            await self._session.execute(
+                update(SourceORM)
+                .where(
+                    SourceORM.id == source_id,
+                    SourceORM.processing_status == "PENDING",
+                    SourceORM.processing_claim_owner == owner,
+                )
+                .values(
+                    processing_status="READY",
+                    extracted_text=extracted_text,
+                    processing_error=None,
+                    processed_at=now,
+                    processing_claim_owner=None,
+                    processing_lease_expires_at=None,
+                    processing_heartbeat_at=None,
+                    next_processing_attempt_at=None,
+                )
+            ),
+        )
+        return result.rowcount == 1
+
+    async def fail_processing(
+        self,
+        *,
+        source_id: UUID,
+        owner: str,
+        error_code: str,
+        now: datetime,
+        retry_at: datetime | None,
+    ) -> bool:
+        result = cast(
+            CursorResult[Any],
+            await self._session.execute(
+                update(SourceORM)
+                .where(
+                    SourceORM.id == source_id,
+                    SourceORM.processing_status == "PENDING",
+                    SourceORM.processing_claim_owner == owner,
+                )
+                .values(
+                    processing_status="FAILED",
+                    processing_error=error_code,
+                    processed_at=now if retry_at is None else None,
+                    processing_claim_owner=None,
+                    processing_lease_expires_at=None,
+                    processing_heartbeat_at=None,
+                    next_processing_attempt_at=retry_at,
+                )
+            ),
+        )
+        return result.rowcount == 1

@@ -23,3 +23,13 @@ class SourceDTO:
     metadata: dict[str, object]
     created_at: datetime
     replayed: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class SourceProcessingJobDTO:
+    id: UUID
+    user_id: UUID
+    title: str
+    mime_type: str
+    object_key: str
+    attempt_count: int

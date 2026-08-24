@@ -30,6 +30,7 @@ from laoshiren.workers.agent import (
 )
 from laoshiren.workers.automation import AutomationScheduler
 from laoshiren.workers.runtime import RunDispatchScanner
+from laoshiren.workers.source import SourceProcessingScheduler, SourceProcessingWorker
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +49,7 @@ class Container:
     checkpoints: PostgresCheckpointLifecycle
     run_dispatcher: InProcessRunDispatcher
     run_scanner: RunDispatchScanner
+    source_scheduler: SourceProcessingScheduler
     automation_scheduler: AutomationScheduler
 
 
@@ -61,6 +63,19 @@ def bootstrap() -> Container:
         storage,
         max_upload_bytes=settings.max_upload_bytes,
         parser=TextSourceParser(),
+    )
+    source_worker = SourceProcessingWorker(
+        sources,
+        lease_seconds=settings.source_lease_seconds,
+        heartbeat_seconds=settings.source_heartbeat_seconds,
+        max_attempts=settings.source_max_attempts,
+        retry_base_seconds=settings.source_retry_base_seconds,
+        retry_max_seconds=settings.source_retry_max_seconds,
+    )
+    source_scheduler = SourceProcessingScheduler(
+        source_worker,
+        interval_seconds=settings.source_poll_seconds,
+        batch_size=settings.source_batch_size,
     )
     memories = MemoryApplicationService(database.memory_unit_of_work)
     notification_adapter = RecordingNotificationAdapter()
@@ -92,6 +107,7 @@ def bootstrap() -> Container:
         checkpoints=checkpoints,
         run_dispatcher=run_dispatcher,
         run_scanner=run_scanner,
+        source_scheduler=source_scheduler,
         automation_scheduler=automation_scheduler,
     )
 

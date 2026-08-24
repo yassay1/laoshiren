@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator
+from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
@@ -15,6 +16,44 @@ class SourceRepository(Protocol):
     async def add_relation(self, relation: ThingSource) -> bool: ...
 
     async def list_for_thing(self, *, user_id: UUID, thing_id: UUID) -> list[Source]: ...
+
+    async def claim_next_processing(
+        self,
+        *,
+        owner: str,
+        now: datetime,
+        lease_expires_at: datetime,
+        supported_mime_types: tuple[str, ...],
+        max_attempts: int,
+    ) -> Source | None: ...
+
+    async def renew_processing_lease(
+        self,
+        *,
+        source_id: UUID,
+        owner: str,
+        now: datetime,
+        lease_expires_at: datetime,
+    ) -> bool: ...
+
+    async def complete_processing(
+        self,
+        *,
+        source_id: UUID,
+        owner: str,
+        extracted_text: str,
+        now: datetime,
+    ) -> bool: ...
+
+    async def fail_processing(
+        self,
+        *,
+        source_id: UUID,
+        owner: str,
+        error_code: str,
+        now: datetime,
+        retry_at: datetime | None,
+    ) -> bool: ...
 
 
 class ObjectStorage(Protocol):

@@ -58,6 +58,11 @@ class Source:
     extracted_text: str | None = None
     processing_error: str | None = None
     processed_at: datetime | None = None
+    processing_claim_owner: str | None = None
+    processing_lease_expires_at: datetime | None = None
+    processing_heartbeat_at: datetime | None = None
+    processing_attempt_count: int = 0
+    next_processing_attempt_at: datetime | None = None
     created_at: datetime = field(default_factory=utc_now)
 
     def mark_ready(self, *, extracted_text: str) -> None:
@@ -65,11 +70,19 @@ class Source:
         self.processing_status = ProcessingStatus.READY
         self.processing_error = None
         self.processed_at = utc_now()
+        self.processing_claim_owner = None
+        self.processing_lease_expires_at = None
+        self.processing_heartbeat_at = None
+        self.next_processing_attempt_at = None
 
     def mark_failed(self, *, error_code: str) -> None:
         self.processing_status = ProcessingStatus.FAILED
         self.processing_error = error_code
         self.processed_at = utc_now()
+        self.processing_claim_owner = None
+        self.processing_lease_expires_at = None
+        self.processing_heartbeat_at = None
+        self.next_processing_attempt_at = None
 
 
 @dataclass(slots=True)
