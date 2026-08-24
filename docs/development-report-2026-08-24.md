@@ -262,3 +262,13 @@ Agent Graph 的两条 `ainvoke` 路径现均显式设置 `durability="sync"`。�
 建议人工聊天验证补充：上传至少两页、每页包含不同事实的可复制文本 PDF，引用 source_id 后询问仅第二页可回答的问题，例如“根据附件，最终截止日期是哪天？请说明依据页码。”期望回答使用第二页事实；随后询问第一页事实，验证检索结果切换。停用 embedding 配置并重启后重复提问，期望仍可通过文本/顺序回退回答而不使 Source 失败。
 
 当前仍存在的 P0/P1 已收敛为：未来外部 Tool 的下游幂等契约与 crash-window 验证、真实 Push adapter 持久幂等、实际 Embedding 服务部署验证、Memory 通用候选抽取/矛盾检测，以及 Source OCR/Office/图片/STT。Source 页码 provenance 与 semantic chunk retrieval 不再属于未实现项。
+
+## 2026-08-25 Tool 副作用与崩溃窗口增量
+
+Tool 注册现在必须声明 `ToolReplayPolicy`：只读 Tool 使用 `READ_ONLY`，已有 Personal State 写 Tool 明确使用 `IDEMPOTENT`，未来无法提供下游幂等保证的外部副作用 Tool 必须标记 `NON_REPLAYABLE`。所有 Tool handler 都通过 `ToolExecutionContext.idempotency_key` 获得稳定键 `agent:{run_id}:{action_id}`，Adapter 必须把它继续传递到 Application 或外部服务。
+
+`tool_executions` ledger 现在持久化 `replay_safe` 与 `idempotency_key`。相同 action_id 若改变参数、Tool 名称或重放契约会被拒绝。幂等 Tool 在 Worker 崩溃、lease 过期后仍可接管并依赖下游键安全重试；不可重放 Tool 在“副作用可能已发生、ledger 尚未 complete”的窗口失租后不会自动接管，而是产生 `TOOL_OUTCOME_UNKNOWN`，要求人工对账。这是明确的 at-least-once/unknown-outcome 语义，不宣称无法实现的任意外部 exactly-once。
+
+新增 migration `20260825_0015_tool_replay_contract.py`。关键代码位于 `agent/tools.py` 的 replay contract、`application/runtime/service.py::claim_tool_execution` 的持久契约校验、`workers/agent.py::RuntimeToolExecutionLedger` 的错误映射，以及 `test_runtime_leases_and_ledger.py` 的真实 lease 过期/禁止接管测试。
+
+本增量验证：ruff 通过；mypy strict 106 个 source files 通过；数据库测试启用时 64 passed；Alembic 为 `20260825_0015 (head)`。因此上一节列出的“未来外部 Tool 下游幂等契约与 crash-window 验证”已完成框架级闭环；具体外部 Provider 仍必须实现并验证其接收的幂等键。
