@@ -43,7 +43,9 @@
 
 ## 6. Source 当前实现链路
 
-`Upload -> extension/MIME/signature/size validation -> LocalObjectStorage + SHA-256 -> TextSourceParser -> extracted_text / status / error -> Source row -> USER Message source_ids -> AgentRunWorker bounded context`。
+`Upload -> extension/MIME/signature/size validation -> LocalObjectStorage + SHA-256 -> PENDING Source row -> SourceProcessingScheduler -> atomic claim/lease/heartbeat -> TextSourceParser -> READY/FAILED/retry -> USER Message source_ids -> AgentRunWorker bounded context`。
+
+上传请求不再执行 PDF/TXT/Markdown 解析。`SourceProcessingWorker` 从 Application 领取任务；Repository 使用 PostgreSQL queue-like claim，最多 3 次有上限指数退避。解析器确定性失败直接终止，存储等基础设施异常进入 retry；Worker 崩溃后 lease 到期可被其他实例接管，旧 owner 的迟到完成写入会被拒绝。图片、Office、音频仍保持 PENDING，等待未来 parser adapter。
 
 TXT/Markdown 使用 UTF-8（含 BOM）解析；PDF 使用 pypdf 提取文本。空文本、损坏 PDF 记录 `FAILED / SOURCE_PARSE_FAILED`，不伪装 READY。图片、Office、音频仍保持 PENDING，等待未来 OCR/Office/image/STT adapter。
 
@@ -141,23 +143,23 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。FAILED outbox �
 
 - 未配置生产 EmbeddingProvider；Agent Memory 当前为文本检索降级，尚未在真实 Run 中启用 pgvector semantic ranking。
 - Memory formation 仅覆盖显式中文触发语，不是模型辅助的事实抽取、冲突检测和 PROFILE key-level supersede。
-- Source parsing 为同步 upload 路径；大 PDF 应迁移到持久 Source worker/claim，当前最大上传限制降低了风险但不等于后台处理。
+- Source 已迁移到持久 Worker，但尚无页数/解析耗时硬限制、chunk/evidence 表、OCR、Office、图片理解和 STT adapter。
 - Automation retry 尚无指数退避/`next_attempt_at`，会按 scheduler interval 重试，最多 3 次。
 - RecordingNotificationAdapter 不是真实 Push adapter。
-- InProcessRunDispatcher 仍是本地唤醒机制，但数据库 Run lease 已成为执行所有权权威；尚未实现独立跨节点 wake-up broker，其他实例只能依赖启动恢复或未来轮询扫描。
+- InProcessRunDispatcher 仍是本地低延迟唤醒机制；周期性 `RunDispatchScanner` 已让每个实例从数据库发现 QUEUED/过期 RUNNING Run。扫描为 at-least-once，执行唯一所有权仍由数据库 claim 保证；尚未引入独立 broker，因此空闲扫描存在最多一个 poll interval 的延迟。
 - Tool ledger 能防止已持久完成结果重放，并与现有 Application 幂等组成 at-least-once 安全链；对于“外部副作用成功、ledger complete 前崩溃”仍要求外部 Tool 使用下游 idempotency key，无法宣称任意外部系统 exactly-once。
 - Run heartbeat 目前由同一 asyncio 事件循环驱动；CPU 阻塞型 adapter 必须移出事件循环，否则可能发生 lease 误过期。
 
 ## 15. 与七份 v1.0 设计文档的差异
 
 - 文档将 thread_id 容易理解为会话标识；实现明确拆分为业务 `Thread.id` 和 LangGraph checkpoint `Run.id`。这是为避免跨 Run Graph State 污染的长期可维护修正。
-- Source v1 设想异步多模态 processing；本轮只实现同步、小文件、文本优先的第一版，并明确保留未支持类型为 PENDING。
+- Source v1 设想完整异步多模态 processing；当前已完成持久异步文本/PDF worker，未支持类型仍为 PENDING，尚无完整 Evidence/chunk/OCR 管线。
 - Memory v1 允许更丰富自动形成；本轮采用显式用户意图白名单，优先避免错误长期记忆覆盖现实 State。
 - Automation 当前 action 是 notification outbox，不直接触发 Agent；符合边界保守原则，但未达到完整自动 Agent action。
 
 ## 16. 当前技术债和风险
 
-最高风险已从“没有执行所有权”下降为跨节点唤醒、外部副作用下游幂等和 heartbeat 运行隔离；其次是 production embedding、Source background processing、Automation backoff 和真实通知 adapter。模型 Gateway prompt 仍是静态工具说明，新增 Tool 时需要同步维护。当前开发环境使用固定 Bearer auth，不适合生产。
+最高风险已从“没有执行所有权/跨节点无法发现任务”下降为外部副作用下游幂等和 heartbeat 运行隔离；其次是 production embedding、Source 解析资源限制与 Evidence、Automation backoff 和真实通知 adapter。模型 Gateway prompt 仍是静态工具说明，新增 Tool 时需要同步维护。当前开发环境使用固定 Bearer auth，不适合生产。
 
 ## 17. 当前项目完成度判断
 
@@ -168,9 +170,9 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。FAILED outbox �
 优先审核：
 
 1. `AgentRunWorker.run_once` 的 Run-ID checkpoint、heartbeat task 与 lease 丢失语义。
-2. Run repository 的原子 claim 条件和 `recover_pending_runs` 仅恢复 expired lease 的边界。
+2. Run repository 的原子 claim 条件、周期 `RunDispatchScanner` 与 `recover_pending_runs` 仅恢复 expired lease 的边界。
 3. `AgentMemoryApplicationService` 的显式形成边界与 profile/semantic 分类。
-4. Source 同步解析是否符合当前部署延迟预算。
+4. Source repository 的 `SKIP LOCKED` claim、lease 接管、旧 owner 拒绝和 retry 终态边界。
 5. Automation 外部调用持锁事务与 retry 策略；下一阶段应拆成短事务 claim/ack。
 6. HarmonyOS retry 流程在网络“服务端已创建、客户端未收到响应”场景的行为。
 
@@ -188,7 +190,7 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。FAILED outbox �
 8. PROFILE：`记住我偏好简洁、直接的回答。`
 9. 跨 Thread：新建会话后发送 `我偏好什么样的回答？`，检查模型 context 是否使用 PROFILE。
 10. Semantic 跨 Thread：新建会话后发送 `关于医疗安排，你记得我的提醒偏好吗？`
-11. Source：上传包含“体检地点：市中心医院三楼；携带身份证”的 `.txt` 或 `.md`，在创建 Run 时带该 source_id，然后问 `根据我刚上传的文件，体检在哪里、要带什么？`
+11. Source：上传包含“体检地点：市中心医院三楼；携带身份证”的 `.txt` 或 `.md`，先轮询 Source API 直到状态从 PENDING 变为 READY，再在创建 Run 时带该 source_id，然后问 `根据我刚上传的文件，体检在哪里、要带什么？`
 12. PDF Source：上传真实可复制文本 PDF，问其中一个明确事实；再上传扫描图片 PDF，确认它显示 FAILED 或无法提取，而不是编造内容。
 13. interrupt/resume：触发 deadline confirmation 后关闭客户端，再打开并通过 `GET /runs/{id}` + event reconnect 恢复；确认 WAITING_USER 不丢失。
 14. SSE reconnect：运行中断网，重连时发送最后一个 `Last-Event-ID`；确认事件只补发缺失部分，最终 Message 只有一条。
@@ -201,7 +203,7 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。FAILED outbox �
 
 ## 20. 下一阶段建议
 
-下一阶段 P0 应增加跨节点 Run wake-up/定期 claim scanner，规定所有外部副作用 Tool 的下游 idempotency contract，并将 CPU/阻塞 adapter 隔离出 heartbeat event loop。P1 接入可配置 EmbeddingProvider，增加 Memory candidate extraction/冲突 supersede eval。P2 把 Source parsing 移入持久 worker，并加入 chunk/evidence 表与 OCR adapter。P3 为 Automation outbox 增加 claim token、next_attempt_at、指数退避和真实 Push adapter。前端继续维持联调范围。
+下一阶段 P0 应规定所有外部副作用 Tool 的下游 idempotency contract，并将 CPU/阻塞 adapter 隔离出 heartbeat event loop。P1 接入可配置 EmbeddingProvider，增加 Memory candidate extraction/冲突 supersede eval。P2 为 Source 增加页数/耗时限制、chunk/evidence 表与 OCR adapter。P3 为 Automation outbox 增加 claim token、next_attempt_at、指数退避和真实 Push adapter。前端继续维持联调范围。
 
 ## 最终仓库与验证快照
 
@@ -209,17 +211,26 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。FAILED outbox �
 
 ```text
 git log --oneline
+917902c feat: add leased source processing worker
+fa3384d feat: add durable run dispatch scanning
+3f911dc docs: update audit for multi-worker execution safety
 6fd42bd feat: add leased run claims and durable tool ledger
 ee596e5 feat: harden agent runtime and connect durable context
 2dea15b chore: establish audited project baseline
 
 测试汇总
 ruff: passed
-mypy strict: 97 source files passed
-pytest (not eval, database enabled): 38 passed
-Alembic 0008 downgrade/upgrade: passed
+mypy strict: 99 source files passed
+pytest (not eval, database enabled): 47 passed
+Alembic 0010 downgrade/upgrade: passed
 真实模型 eval: not run
 HarmonyOS build/E2E: not run
 ```
 
-当前仍存在的 P0/P1：跨节点 Run wake-up/scanner、外部 Tool 下游幂等契约与 heartbeat 隔离、生产 EmbeddingProvider、Memory 冲突/supersede formation。
+当前仍存在的 P0/P1：外部 Tool 下游幂等契约与 heartbeat 隔离、生产 EmbeddingProvider、Memory 冲突/supersede formation、Source 解析资源限制与 Evidence/chunk。
+
+## 2026-08-25 外部参考与可靠性增量
+
+本批次额外核对 LangGraph、OpenAI Agents SDK、AutoGen、LlamaIndex/Llama Agents、Dify、PostgreSQL、Celery、SQLAlchemy 与 Unstructured 的官方资料/官方仓库，记录见 `docs/research/agent-runtime-reference-research-2026-08-25.md`。采用数据库扫描 + 原子 claim、at-least-once + 显式幂等、Source 持久状态机；未照搬多 Agent、Redis/Celery/Temporal 等重型结构。
+
+Agent Graph 的两条 `ainvoke` 路径现均显式设置 `durability="sync"`。服务生命周期启动 `RunDispatchScanner` 和 `SourceProcessingScheduler`；停止顺序先停止业务 scheduler，再停止 dispatcher/checkpointer。专项测试证明重复扫描不会绕过 Run claim，Source 并发领取互斥、过期接管成功、旧 owner 结果拒绝。
