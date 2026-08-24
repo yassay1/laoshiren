@@ -3,7 +3,11 @@ from uuid import uuid4
 import pytest
 
 from laoshiren.application.sources.dto import SourceProcessingJobDTO
-from laoshiren.application.sources.ports import SourceParsingError
+from laoshiren.application.sources.ports import (
+    ParsedSourceContent,
+    ParsedSourcePage,
+    SourceParsingError,
+)
 from laoshiren.workers.source import SourceProcessingScheduler, SourceProcessingWorker
 
 pytestmark = pytest.mark.asyncio
@@ -31,10 +35,15 @@ class RecordingSourceService:
         assert max_attempts == 3
         return self.jobs.pop(0) if self.jobs else None
 
-    async def extract_claimed_text(self, job: SourceProcessingJobDTO) -> str:
+    async def extract_claimed_content(
+        self, job: SourceProcessingJobDTO
+    ) -> ParsedSourceContent:
         if self.error is not None:
             raise self.error
-        return self.extracted_text
+        return ParsedSourceContent(
+            text=self.extracted_text,
+            pages=(ParsedSourcePage(None, self.extracted_text),),
+        )
 
     async def renew_processing_lease(
         self, *, source_id: object, owner: str, lease_seconds: float
@@ -42,9 +51,9 @@ class RecordingSourceService:
         return True
 
     async def complete_processing(
-        self, *, source_id: object, owner: str, extracted_text: str
+        self, *, source_id: object, owner: str, parsed_content: ParsedSourceContent
     ) -> bool:
-        self.completed.append((source_id, owner, extracted_text))
+        self.completed.append((source_id, owner, parsed_content.text))
         return True
 
     async def fail_processing(

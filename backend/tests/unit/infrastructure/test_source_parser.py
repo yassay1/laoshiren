@@ -20,7 +20,8 @@ async def test_text_and_markdown_are_decoded_and_normalized() -> None:
         content="\ufeff# 标题  \n\n正文\n".encode(),
     )
 
-    assert text == "# 标题\n\n正文"
+    assert text.text == "# 标题\n\n正文"
+    assert text.pages[0].page_number is None
 
 
 async def test_empty_text_source_is_rejected() -> None:
@@ -53,7 +54,8 @@ async def test_text_extraction_character_limit_is_enforced() -> None:
         filename="large.txt", mime_type="text/plain", content=b"123456789"
     )
 
-    assert text == "12345"
+    assert text.text == "12345"
+    assert text.pages[0].text == "12345"
 
 
 async def test_cancelled_pdf_parse_terminates_child_process() -> None:

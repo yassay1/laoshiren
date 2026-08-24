@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy import text
 
+from laoshiren.application.sources.ports import ParsedSourceContent, ParsedSourcePage
 from laoshiren.domain.sources.entities import ProcessingStatus
 from laoshiren.main import create_app
 
@@ -78,12 +79,17 @@ async def test_source_claim_is_exclusive_and_expired_lease_is_recoverable() -> N
         stale_complete = await service.complete_processing(
             source_id=source.id,
             owner=first_owner,
-            extracted_text="stale result",
+            parsed_content=ParsedSourceContent(
+                text="stale result", pages=(ParsedSourcePage(None, "stale result"),)
+            ),
         )
         completed = await service.complete_processing(
             source_id=source.id,
             owner=takeover_owner,
-            extracted_text="authoritative result",
+            parsed_content=ParsedSourceContent(
+                text="authoritative result",
+                pages=(ParsedSourcePage(None, "authoritative result"),),
+            ),
         )
         current = await service.get(user_id=user_id, source_id=source.id)
         context_chunks = await service.get_context_chunks(

@@ -3,10 +3,8 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from laoshiren.application.memories.context import (
-    AgentMemoryApplicationService,
-    EmbeddingProviderError,
-)
+from laoshiren.application.ai.ports import EmbeddingProviderError
+from laoshiren.application.memories.context import AgentMemoryApplicationService
 from laoshiren.application.memories.dto import MemoryDTO
 from laoshiren.domain.memories.entities import MemoryStatus, MemoryType
 
@@ -61,6 +59,9 @@ class FakeMemories:
 
 class FailingEmbeddingProvider:
     async def embed(self, text: str) -> list[float]:
+        raise EmbeddingProviderError("provider unavailable")
+
+    async def embed_many(self, texts: list[str]) -> list[list[float]]:
         raise EmbeddingProviderError("provider unavailable")
 
 

@@ -5,10 +5,15 @@ from uuid import uuid4
 import pytest
 
 from laoshiren.application.sources.dto import SourceProcessingJobDTO
-from laoshiren.application.sources.ports import SourceParsingError
+from laoshiren.application.sources.ports import (
+    ParsedSourceContent,
+    ParsedSourcePage,
+    SourceParsingError,
+)
 from laoshiren.application.sources.service import (
     SourceApplicationService,
     build_source_chunks,
+    build_source_chunks_from_content,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -29,9 +34,13 @@ class MemoryStorage:
 
 
 class SlowParser:
-    async def parse(self, *, filename: str, mime_type: str, content: bytes) -> str:
+    async def parse(
+        self, *, filename: str, mime_type: str, content: bytes
+    ) -> ParsedSourceContent:
         await asyncio.sleep(1)
-        return "too late"
+        return ParsedSourceContent(
+            text="too late", pages=(ParsedSourcePage(None, "too late"),)
+        )
 
 
 async def test_claimed_source_parse_timeout_becomes_terminal_parse_error() -> None:
@@ -52,7 +61,7 @@ async def test_claimed_source_parse_timeout_becomes_terminal_parse_error() -> No
     )
 
     with pytest.raises(SourceParsingError, match="time limit"):
-        await service.extract_claimed_text(job)
+        await service.extract_claimed_content(job)
 
 
 async def test_source_chunks_have_stable_ordinals_offsets_and_overlap() -> None:
@@ -70,3 +79,22 @@ async def test_source_chunks_have_stable_ordinals_offsets_and_overlap() -> None:
     ]
     assert [item.content for item in chunks] == ["abcdef", "efghij"]
     assert all(item.source_id == source_id for item in chunks)
+
+
+async def test_source_chunks_preserve_pdf_page_provenance() -> None:
+    source_id = uuid4()
+    content = ParsedSourceContent(
+        text="first page\n\nsecond page",
+        pages=(
+            ParsedSourcePage(1, "first page"),
+            ParsedSourcePage(2, "second page"),
+        ),
+    )
+
+    chunks = build_source_chunks_from_content(source_id=source_id, content=content)
+
+    assert [(chunk.ordinal, chunk.page_number) for chunk in chunks] == [(0, 1), (1, 2)]
+    assert [(chunk.char_start, chunk.char_end) for chunk in chunks] == [
+        (0, 10),
+        (12, 23),
+    ]
