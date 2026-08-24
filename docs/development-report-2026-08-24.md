@@ -95,6 +95,7 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。外部 adapter 
 ## 10. 新增 API / Tool / Worker / Adapter
 
 - API：Source response/OpenAPI 新增 extraction 三字段；上传新增 `.txt`、`.md` 类型。
+- API：新增无业务数据泄露的 `/health/ready`，返回数据库检查时间和五类持久 Worker backlog；原 `/health` 保持轻量 liveness。
 - Tool：未新增平行 Tool；既有 Personal State Tool 继续复用 Application。
 - Worker：新增 `AutomationScheduler`；增强 `AgentRunWorker` 的 context、formation、checkpoint 和 budget failure 语义。
 - Adapter：新增 `TextSourceParser`；`LocalObjectStorage` 新增受 object key 边界保护的 read。
@@ -120,7 +121,7 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。外部 adapter 
 ## 12. 测试结果
 
 - 通过：ruff 全仓检查。
-- 通过：mypy strict，100 个 source files。
+- 通过：mypy strict，104 个 source files。
 - 通过：`RUN_DATABASE_TESTS=1 uv run pytest -q -m "not eval"`，38 passed。
 - 通过：migration `0008 -> 0007 -> head` 往返。
 - 通过：OpenAPI 重新生成，`git diff --check`。
@@ -161,7 +162,7 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。外部 adapter 
 
 ## 16. 当前技术债和风险
 
-最高风险已从“没有执行所有权/跨节点无法发现任务”下降为外部副作用下游幂等和 heartbeat 运行隔离；其次是 embedding 凭据/模型部署、Source 页码 provenance/OCR、真实 Push adapter 和可观测性。模型 Gateway prompt 仍是静态工具说明，新增 Tool 时需要同步维护。当前开发环境使用固定 Bearer auth，不适合生产。
+最高风险已从“没有执行所有权/跨节点无法发现任务”下降为未来外部 Tool 幂等和 heartbeat 运行隔离；其次是 embedding 凭据/模型部署、Source 页码 provenance/OCR、真实 Push adapter。当前已有 backlog readiness，但尚无延迟直方图、失败码指标和 tracing exporter。模型 Gateway prompt 仍是静态工具说明，新增 Tool 时需要同步维护。当前开发环境使用固定 Bearer auth，不适合生产。
 
 ## 17. 当前项目完成度判断
 
@@ -205,7 +206,7 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。外部 adapter 
 
 ## 20. 下一阶段建议
 
-下一阶段 P0 应规定未来外部副作用 Tool 的下游 idempotency contract，并进一步隔离无法被 asyncio timeout 终止的解析线程。P1 配置实际 Embedding 服务并增加 Memory 通用 candidate extraction/矛盾检测 eval。P2 为 Source 增加页码 provenance、semantic chunk retrieval 与 OCR adapter。P3 接入真实 Push adapter 并验证其持久幂等能力，增加 outbox 可观测指标。前端继续维持联调范围。
+下一阶段 P0 应规定未来外部副作用 Tool 的下游 idempotency contract，并进一步隔离无法被 asyncio timeout 终止的解析线程。P1 配置实际 Embedding 服务并增加 Memory 通用 candidate extraction/矛盾检测 eval。P2 为 Source 增加页码 provenance、semantic chunk retrieval 与 OCR adapter。P3 接入真实 Push adapter 并验证其持久幂等能力，增加延迟/失败码指标和 tracing。前端继续维持联调范围。
 
 ## 最终仓库与验证快照
 
@@ -222,8 +223,8 @@ ee596e5 feat: harden agent runtime and connect durable context
 
 测试汇总
 ruff: passed
-mypy strict: 100 source files passed
-pytest (not eval, database enabled): 58 passed
+mypy strict: 104 source files passed
+pytest (not eval, database enabled): 59 passed
 Alembic 0013 downgrade/upgrade: passed
 真实模型 eval: not run
 HarmonyOS build/E2E: not run
