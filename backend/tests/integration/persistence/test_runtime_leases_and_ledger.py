@@ -153,6 +153,47 @@ async def test_concurrent_idempotency_run_lease_and_tool_ledger() -> None:
         )
         assert replay.cached_result == result
 
+        unsafe_action_id = "external-non-replayable"
+        unsafe_claim = await runtime.claim_tool_execution(
+            user_id=user_id,
+            run_id=run_id,
+            action_id=unsafe_action_id,
+            tool_name="external.charge",
+            arguments_hash="b" * 64,
+            owner="worker-two",
+            lease_seconds=60,
+            replay_safe=False,
+            idempotency_key=f"agent:{run_id}:{unsafe_action_id}",
+        )
+        assert unsafe_claim.acquired is True
+        async with container.database.engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "UPDATE tool_executions SET lease_expires_at = :expired "
+                    "WHERE run_id = :run_id AND action_id = :action_id"
+                ),
+                {
+                    "expired": datetime.now(UTC) - timedelta(seconds=1),
+                    "run_id": run_id,
+                    "action_id": unsafe_action_id,
+                },
+            )
+        blocked = await runtime.claim_tool_execution(
+            user_id=user_id,
+            run_id=run_id,
+            action_id=unsafe_action_id,
+            tool_name="external.charge",
+            arguments_hash="b" * 64,
+            owner="worker-two",
+            lease_seconds=60,
+            replay_safe=False,
+            idempotency_key=f"agent:{run_id}:{unsafe_action_id}",
+        )
+        assert blocked.acquired is False
+        assert blocked.cached_result is None
+        assert blocked.blocked_reason is not None
+        assert "outcome is unknown" in blocked.blocked_reason
+
         await runtime.fail_run(
             user_id=user_id,
             run_id=run_id,

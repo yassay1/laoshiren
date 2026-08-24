@@ -10,6 +10,7 @@ from laoshiren.agent.tools import (
     ToolDefinition,
     ToolExecutionContext,
     ToolRegistry,
+    ToolReplayPolicy,
     ToolRisk,
     register_personal_state_tools,
 )
@@ -39,6 +40,28 @@ async def test_policy_matrix_is_deterministic() -> None:
     assert policy.evaluate(sensitive).decision is PolicyDecision.REQUIRE_CONFIRMATION
     assert policy.evaluate(irreversible).decision is PolicyDecision.REQUIRE_CONFIRMATION
     assert policy.evaluate(disabled).decision is PolicyDecision.DENY
+
+
+async def test_write_tool_requires_replay_contract_and_context_key_is_stable() -> None:
+    registry = ToolRegistry()
+    with pytest.raises(ValueError, match="explicit replay policy"):
+        registry.register(
+            ToolDefinition(
+                "unsafe.write", "write", ToolRisk.REVERSIBLE_WRITE, _unused_handler
+            )
+        )
+    registry.register(
+        ToolDefinition(
+            "safe.write",
+            "write",
+            ToolRisk.REVERSIBLE_WRITE,
+            _unused_handler,
+            replay_policy=ToolReplayPolicy.IDEMPOTENT,
+        )
+    )
+    context = ToolExecutionContext(uuid4(), uuid4(), "stable-action")
+
+    assert context.idempotency_key == f"agent:{context.run_id}:stable-action"
 
 
 class RecordingPersonalStateService:

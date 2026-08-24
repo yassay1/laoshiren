@@ -19,6 +19,7 @@ from laoshiren.agent.tools import (
     ToolDefinition,
     ToolExecutionContext,
     ToolRegistry,
+    ToolReplayPolicy,
     ToolRisk,
 )
 
@@ -89,8 +90,9 @@ async def test_sensitive_tool_interrupts_and_resumes_after_confirmation() -> Non
         ToolDefinition(
             name="test.delete",
             description="Test sensitive operation.",
-            risk=ToolRisk.SENSITIVE_WRITE,
-            handler=delete_tool,
+                risk=ToolRisk.SENSITIVE_WRITE,
+                handler=delete_tool,
+                replay_policy=ToolReplayPolicy.IDEMPOTENT,
         )
     )
     state = initial_state()
@@ -181,8 +183,9 @@ async def test_graph_reuses_durable_cached_tool_result_without_handler_replay() 
         ToolDefinition(
             "test.cached",
             "cached tool",
-            ToolRisk.REVERSIBLE_WRITE,
-            handler,
+                ToolRisk.REVERSIBLE_WRITE,
+                handler,
+                replay_policy=ToolReplayPolicy.IDEMPOTENT,
         )
     )
     state = initial_state()
