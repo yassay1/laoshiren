@@ -178,14 +178,15 @@ class SqlAlchemyMessageRepository:
     async def list_for_thread(
         self, *, user_id: UUID, thread_id: UUID, limit: int
     ) -> list[Message]:
-        models = (
+        models = list(
             await self._session.scalars(
                 select(MessageORM)
                 .where(MessageORM.user_id == user_id, MessageORM.thread_id == thread_id)
-                .order_by(MessageORM.created_at, MessageORM.id)
+                .order_by(MessageORM.created_at.desc(), MessageORM.id.desc())
                 .limit(limit)
             )
-        ).all()
+        )
+        models.reverse()
         return [message_to_domain(model) for model in models]
 
 

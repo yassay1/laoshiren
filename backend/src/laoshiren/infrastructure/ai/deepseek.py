@@ -54,7 +54,10 @@ class DeepSeekExecutiveModelGateway:
                     "content": json.dumps(
                         {
                             "current_input": state.get("current_input", ""),
-                            "conversation": state.get("messages", [])[-20:],
+                            "conversation": state.get("messages", []),
+                            "thread_summary": state.get("prefetched_state", {}).get(
+                                "thread_summary", ""
+                            ),
                             "tool_results": state.get("tool_results", [])[-10:],
                             "memory_context": state.get("prefetched_state", {}).get(
                                 "memory_context", {}

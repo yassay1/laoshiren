@@ -12,6 +12,7 @@ from langgraph.types import Command
 from laoshiren.agent.contracts import AgentBudgetExceeded, GraphState, ToolStatus
 from laoshiren.agent.graph import ToolOutcomeUnknown
 from laoshiren.agent.tools import ToolReplayPolicy
+from laoshiren.application.context import AgentContextBuilder
 from laoshiren.application.memories.context import AgentMemoryApplicationService
 from laoshiren.application.runtime.service import RuntimeApplicationService
 from laoshiren.application.sources.service import SourceApplicationService
@@ -144,6 +145,7 @@ class AgentRunWorker:
         worker_id: str | None = None,
         lease_seconds: float = 60.0,
         heartbeat_seconds: float = 15.0,
+        context_builder: AgentContextBuilder | None = None,
     ) -> None:
         self._runtime = runtime
         self._graph = graph
@@ -152,6 +154,7 @@ class AgentRunWorker:
         self._worker_id = worker_id or f"agent-worker-{uuid4()}"
         self._lease_seconds = lease_seconds
         self._heartbeat_seconds = heartbeat_seconds
+        self._context_builder = context_builder or AgentContextBuilder()
 
     async def run_once(self, *, user_id: UUID, run_id: UUID) -> RunStatus:
         run = await self._runtime.claim_run(
@@ -166,7 +169,7 @@ class AgentRunWorker:
             raise RuntimeError("Claimed Run did not return its fencing token.")
         run_claim_token = run.claim_token
         messages = await self._runtime.list_messages(
-            user_id=user_id, thread_id=run.thread_id, limit=100
+            user_id=user_id, thread_id=run.thread_id, limit=500
         )
         lease_lost = asyncio.Event()
 
@@ -208,21 +211,18 @@ class AgentRunWorker:
                     "run_id": str(run_id),
                     "run_claim_token": str(run_claim_token),
                     "current_input": current.content,
-                    "messages": [
-                        {"role": item.role, "content": item.content} for item in messages
-                    ],
+                    "messages": [],
                     "source_refs": [str(value) for value in current.source_ids],
                     "tool_results": [],
                 }
+                memory_prompt: dict[str, Any] = {}
                 if self._agent_memory is not None:
                     memory_context = await self._agent_memory.load_context(
                         user_id=user_id, query=current.content
                     )
-                    initial["prefetched_state"] = {
-                        "memory_context": memory_context.as_prompt_data()
-                    }
+                    memory_prompt = memory_context.as_prompt_data()
+                source_context: list[dict[str, str]] = []
                 if self._sources is not None and current.source_ids:
-                    source_context: list[dict[str, str]] = []
                     remaining = 12_000
                     for source_id in current.source_ids[:5]:
                         source = await self._sources.get(
@@ -266,9 +266,13 @@ class AgentRunWorker:
                                 }
                             )
                             remaining -= len(chunk.content)
-                    initial.setdefault("prefetched_state", {})[
-                        "source_context"
-                    ] = source_context
+                bounded_context = self._context_builder.build(
+                    messages=messages,
+                    memory_context=memory_prompt,
+                    source_context=source_context,
+                )
+                initial["messages"] = bounded_context.messages
+                initial["prefetched_state"] = bounded_context.prefetched_state
                 output = cast(
                     dict[str, Any],
                     await self._graph.ainvoke(initial, config, durability="sync"),
