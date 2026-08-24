@@ -49,6 +49,7 @@ class RunDTO:
     resume_payload: dict[str, Any] | None
     error_code: str | None
     claim_owner: str | None
+    claim_token: UUID | None
     lease_expires_at: datetime | None
     heartbeat_at: datetime | None
     attempt_count: int
@@ -74,5 +75,6 @@ class RunEventDTO:
 @dataclass(frozen=True, slots=True)
 class ToolExecutionClaimDTO:
     acquired: bool
+    claim_token: UUID | None = None
     cached_result: dict[str, Any] | None = None
     blocked_reason: str | None = None

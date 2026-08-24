@@ -43,6 +43,7 @@ class ToolExecutionLedger(Protocol):
         *,
         user_id: UUID,
         run_id: UUID,
+        run_claim_token: UUID,
         action_id: str,
         tool_name: str,
         arguments: dict[str, Any],
@@ -239,6 +240,7 @@ def build_executive_graph(
             acquired, cached = await tool_ledger.claim(
                 user_id=user_id,
                 run_id=run_id,
+                run_claim_token=UUID(state["run_claim_token"]),
                 action_id=action_id,
                 tool_name=tool_name,
                 arguments=arguments,

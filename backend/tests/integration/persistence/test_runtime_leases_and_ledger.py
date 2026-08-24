@@ -65,7 +65,7 @@ async def test_concurrent_idempotency_run_lease_and_tool_ledger() -> None:
         first = await runtime.claim_run(
             user_id=user_id,
             run_id=run_id,
-            owner="worker-one",
+            owner="shared-worker",
             lease_seconds=60,
         )
         assert first is not None
@@ -74,7 +74,7 @@ async def test_concurrent_idempotency_run_lease_and_tool_ledger() -> None:
         assert await runtime.claim_run(
             user_id=user_id,
             run_id=run_id,
-            owner="worker-two",
+            owner="shared-worker",
             lease_seconds=60,
         ) is None
 
@@ -92,15 +92,19 @@ async def test_concurrent_idempotency_run_lease_and_tool_ledger() -> None:
         takeover = await runtime.claim_run(
             user_id=user_id,
             run_id=run_id,
-            owner="worker-two",
+            owner="shared-worker",
             lease_seconds=60,
         )
         assert takeover is not None
+        assert first.claim_token is not None
+        assert takeover.claim_token is not None
+        assert takeover.claim_token != first.claim_token
         assert takeover.attempt_count == 2
         assert await runtime.renew_run_lease(
             user_id=user_id,
             run_id=run_id,
-            owner="worker-one",
+            owner="shared-worker",
+            claim_token=first.claim_token,
             lease_seconds=60,
         ) is False
         with pytest.raises(InvalidStateTransition, match="no longer owned"):
@@ -108,7 +112,8 @@ async def test_concurrent_idempotency_run_lease_and_tool_ledger() -> None:
                 user_id=user_id,
                 run_id=run_id,
                 content="stale result",
-                claim_owner="worker-one",
+                claim_owner="shared-worker",
+                claim_token=first.claim_token,
             )
 
         action_id = "action-one"
@@ -118,17 +123,20 @@ async def test_concurrent_idempotency_run_lease_and_tool_ledger() -> None:
             action_id=action_id,
             tool_name="state.create_thing",
             arguments_hash="a" * 64,
-            owner="worker-two",
+            owner="shared-worker",
+            run_claim_token=takeover.claim_token,
             lease_seconds=60,
         )
         assert claim.acquired is True
+        assert claim.claim_token is not None
         busy = await runtime.claim_tool_execution(
             user_id=user_id,
             run_id=run_id,
             action_id=action_id,
             tool_name="state.create_thing",
             arguments_hash="a" * 64,
-            owner="worker-two",
+            owner="shared-worker",
+            run_claim_token=takeover.claim_token,
             lease_seconds=60,
         )
         assert busy.acquired is False
@@ -138,7 +146,8 @@ async def test_concurrent_idempotency_run_lease_and_tool_ledger() -> None:
             user_id=user_id,
             run_id=run_id,
             action_id=action_id,
-            owner="worker-two",
+            owner="shared-worker",
+            claim_token=claim.claim_token,
             result=result,
             succeeded=True,
         )
@@ -148,7 +157,8 @@ async def test_concurrent_idempotency_run_lease_and_tool_ledger() -> None:
             action_id=action_id,
             tool_name="state.create_thing",
             arguments_hash="a" * 64,
-            owner="worker-two",
+            owner="shared-worker",
+            run_claim_token=takeover.claim_token,
             lease_seconds=60,
         )
         assert replay.cached_result == result
@@ -160,7 +170,8 @@ async def test_concurrent_idempotency_run_lease_and_tool_ledger() -> None:
             action_id=unsafe_action_id,
             tool_name="external.charge",
             arguments_hash="b" * 64,
-            owner="worker-two",
+            owner="shared-worker",
+            run_claim_token=takeover.claim_token,
             lease_seconds=60,
             replay_safe=False,
             idempotency_key=f"agent:{run_id}:{unsafe_action_id}",
@@ -184,7 +195,8 @@ async def test_concurrent_idempotency_run_lease_and_tool_ledger() -> None:
             action_id=unsafe_action_id,
             tool_name="external.charge",
             arguments_hash="b" * 64,
-            owner="worker-two",
+            owner="shared-worker",
+            run_claim_token=takeover.claim_token,
             lease_seconds=60,
             replay_safe=False,
             idempotency_key=f"agent:{run_id}:{unsafe_action_id}",
@@ -193,12 +205,22 @@ async def test_concurrent_idempotency_run_lease_and_tool_ledger() -> None:
         assert blocked.cached_result is None
         assert blocked.blocked_reason is not None
         assert "outcome is unknown" in blocked.blocked_reason
+        async with container.database.engine.connect() as connection:
+            unknown_status = await connection.scalar(
+                text(
+                    "SELECT status::text FROM tool_executions "
+                    "WHERE run_id = :run_id AND action_id = :action_id"
+                ),
+                {"run_id": run_id, "action_id": unsafe_action_id},
+            )
+        assert unknown_status == "UNKNOWN"
 
         await runtime.fail_run(
             user_id=user_id,
             run_id=run_id,
             error_code="TEST_FINISHED",
-            claim_owner="worker-two",
+            claim_owner="shared-worker",
+            claim_token=takeover.claim_token,
         )
     finally:
         async with container.database.engine.begin() as connection:

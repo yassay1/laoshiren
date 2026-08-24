@@ -62,6 +62,7 @@ class GraphState(TypedDict, total=False):
     user_id: str
     thread_id: str
     run_id: str
+    run_claim_token: str
     current_input: str
     messages: list[dict[str, Any]]
     source_refs: list[str]

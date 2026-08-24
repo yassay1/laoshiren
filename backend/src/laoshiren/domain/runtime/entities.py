@@ -48,6 +48,7 @@ class ToolExecutionStatus(StrEnum):
     RUNNING = "RUNNING"
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
+    UNKNOWN = "UNKNOWN"
 
 
 TERMINAL_RUN_STATUSES = {
@@ -104,6 +105,7 @@ class AgentRun:
     resume_payload: dict[str, Any] | None = None
     error_code: str | None = None
     claim_owner: str | None = None
+    claim_token: UUID | None = None
     lease_expires_at: datetime | None = None
     heartbeat_at: datetime | None = None
     attempt_count: int = 0
@@ -194,6 +196,7 @@ class AgentRun:
 
     def _release_claim(self) -> None:
         self.claim_owner = None
+        self.claim_token = None
         self.lease_expires_at = None
         self.heartbeat_at = None
 
@@ -216,6 +219,7 @@ class ToolExecution:
     arguments_hash: str
     status: ToolExecutionStatus
     claim_owner: str
+    claim_token: UUID
     lease_expires_at: datetime
     replay_safe: bool = True
     idempotency_key: str | None = None

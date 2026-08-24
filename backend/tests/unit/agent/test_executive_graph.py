@@ -57,6 +57,7 @@ def initial_state() -> GraphState:
         "user_id": str(uuid4()),
         "thread_id": str(uuid4()),
         "run_id": str(uuid4()),
+        "run_claim_token": str(uuid4()),
         "current_input": "处理这件事",
         "messages": [],
         "source_refs": [],

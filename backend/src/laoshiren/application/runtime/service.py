@@ -74,6 +74,7 @@ def to_run_dto(value: AgentRun, *, replayed: bool = False) -> RunDTO:
         ),
         error_code=value.error_code,
         claim_owner=value.claim_owner,
+        claim_token=value.claim_token,
         lease_expires_at=value.lease_expires_at,
         heartbeat_at=value.heartbeat_at,
         attempt_count=value.attempt_count,
@@ -275,11 +276,13 @@ class RuntimeApplicationService:
         if not owner.strip() or lease_seconds <= 0:
             raise ValueError("Run claim owner and lease must be valid.")
         now = datetime.now(UTC)
+        claim_token = uuid4()
         async with self._unit_of_work_factory() as uow:
             run = await uow.runs.claim(
                 user_id=user_id,
                 run_id=run_id,
                 owner=owner,
+                claim_token=claim_token,
                 now=now,
                 lease_expires_at=now + timedelta(seconds=lease_seconds),
             )
@@ -305,6 +308,7 @@ class RuntimeApplicationService:
         user_id: UUID,
         run_id: UUID,
         owner: str,
+        claim_token: UUID,
         lease_seconds: float,
     ) -> bool:
         now = datetime.now(UTC)
@@ -313,6 +317,7 @@ class RuntimeApplicationService:
                 user_id=user_id,
                 run_id=run_id,
                 owner=owner,
+                claim_token=claim_token,
                 now=now,
                 lease_expires_at=now + timedelta(seconds=lease_seconds),
             )
@@ -332,10 +337,12 @@ class RuntimeApplicationService:
         arguments_hash: str,
         owner: str,
         lease_seconds: float,
+        run_claim_token: UUID,
         replay_safe: bool = True,
         idempotency_key: str | None = None,
     ) -> ToolExecutionClaimDTO:
         now = datetime.now(UTC)
+        claim_token = uuid4()
         execution = ToolExecution(
             run_id=run_id,
             action_id=action_id,
@@ -343,6 +350,7 @@ class RuntimeApplicationService:
             arguments_hash=arguments_hash,
             status=ToolExecutionStatus.RUNNING,
             claim_owner=owner,
+            claim_token=claim_token,
             lease_expires_at=now + timedelta(seconds=lease_seconds),
             replay_safe=replay_safe,
             idempotency_key=idempotency_key,
@@ -351,11 +359,17 @@ class RuntimeApplicationService:
             run = await uow.runs.get(user_id=user_id, run_id=run_id)
             if run is None:
                 raise EntityNotFound("Run was not found.")
-            if run.claim_owner != owner or run.status is not RunStatus.RUNNING:
+            if (
+                run.claim_owner != owner
+                or run.claim_token != run_claim_token
+                or run.status is not RunStatus.RUNNING
+            ):
                 raise InvalidStateTransition("Run is not owned by this Tool worker.")
             if await uow.tool_executions.add_if_absent(execution):
                 await uow.commit()
-                return ToolExecutionClaimDTO(acquired=True)
+                return ToolExecutionClaimDTO(
+                    acquired=True, claim_token=claim_token
+                )
             existing = await uow.tool_executions.get(
                 run_id=run_id, action_id=action_id
             )
@@ -381,7 +395,13 @@ class RuntimeApplicationService:
                     acquired=False, cached_result=dict(existing.result)
                 )
             if existing.lease_expires_at <= now and not existing.replay_safe:
-                await uow.rollback()
+                marked_unknown = await uow.tool_executions.mark_unknown_if_expired(
+                    execution_id=existing.id, now=now
+                )
+                if marked_unknown:
+                    await uow.commit()
+                else:
+                    await uow.rollback()
                 return ToolExecutionClaimDTO(
                     acquired=False,
                     blocked_reason=(
@@ -393,13 +413,17 @@ class RuntimeApplicationService:
                 existing,
                 now=now,
                 owner=owner,
+                claim_token=claim_token,
                 lease_expires_at=now + timedelta(seconds=lease_seconds),
             )
             if acquired:
                 await uow.commit()
             else:
                 await uow.rollback()
-            return ToolExecutionClaimDTO(acquired=acquired)
+            return ToolExecutionClaimDTO(
+                acquired=acquired,
+                claim_token=claim_token if acquired else None,
+            )
 
     async def complete_tool_execution(
         self,
@@ -408,6 +432,7 @@ class RuntimeApplicationService:
         run_id: UUID,
         action_id: str,
         owner: str,
+        claim_token: UUID,
         result: dict[str, Any],
         succeeded: bool,
     ) -> None:
@@ -415,12 +440,16 @@ class RuntimeApplicationService:
             run = await uow.runs.get(user_id=user_id, run_id=run_id)
             if run is None:
                 raise EntityNotFound("Run was not found.")
-            if run.claim_owner != owner or run.status is not RunStatus.RUNNING:
+            if (
+                run.claim_owner != owner
+                or run.status is not RunStatus.RUNNING
+            ):
                 raise InvalidStateTransition("Run is not owned by this Tool worker.")
             completed = await uow.tool_executions.complete(
                 run_id=run_id,
                 action_id=action_id,
                 owner=owner,
+                claim_token=claim_token,
                 result=result,
                 succeeded=succeeded,
                 now=datetime.now(UTC),
@@ -557,6 +586,7 @@ class RuntimeApplicationService:
         run_id: UUID,
         payload: dict[str, Any],
         claim_owner: str | None = None,
+        claim_token: UUID | None = None,
     ) -> RunDTO:
         return await self._worker_transition(
             user_id=user_id,
@@ -564,6 +594,7 @@ class RuntimeApplicationService:
             action="WAIT",
             payload=payload,
             claim_owner=claim_owner,
+            claim_token=claim_token,
         )
 
     async def complete_run(
@@ -573,6 +604,7 @@ class RuntimeApplicationService:
         run_id: UUID,
         content: str,
         claim_owner: str | None = None,
+        claim_token: UUID | None = None,
     ) -> RunDTO:
         return await self._worker_transition(
             user_id=user_id,
@@ -580,6 +612,7 @@ class RuntimeApplicationService:
             action="COMPLETE",
             content=content,
             claim_owner=claim_owner,
+            claim_token=claim_token,
         )
 
     async def fail_run(
@@ -589,6 +622,7 @@ class RuntimeApplicationService:
         run_id: UUID,
         error_code: str,
         claim_owner: str | None = None,
+        claim_token: UUID | None = None,
     ) -> RunDTO:
         return await self._worker_transition(
             user_id=user_id,
@@ -596,6 +630,7 @@ class RuntimeApplicationService:
             action="FAIL",
             error_code=error_code,
             claim_owner=claim_owner,
+            claim_token=claim_token,
         )
 
     async def emit_event(
@@ -627,12 +662,17 @@ class RuntimeApplicationService:
         content: str | None = None,
         error_code: str | None = None,
         claim_owner: str | None = None,
+        claim_token: UUID | None = None,
     ) -> RunDTO:
         async with self._unit_of_work_factory() as uow:
             run = await uow.runs.get(user_id=user_id, run_id=run_id)
             if run is None:
                 raise EntityNotFound("Run was not found.")
-            if claim_owner is not None and run.claim_owner != claim_owner:
+            if claim_owner is not None and (
+                claim_token is None
+                or run.claim_owner != claim_owner
+                or run.claim_token != claim_token
+            ):
                 raise InvalidStateTransition("Run lease is no longer owned by this worker.")
             expected_version = run.version
             try:

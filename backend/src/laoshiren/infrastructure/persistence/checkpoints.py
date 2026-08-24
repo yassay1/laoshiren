@@ -2,6 +2,7 @@ from contextlib import AbstractAsyncContextManager
 from types import TracebackType
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from sqlalchemy.engine import make_url
 
 
@@ -29,7 +30,10 @@ class PostgresCheckpointLifecycle:
     async def start(self) -> AsyncPostgresSaver:
         if self._saver is not None:
             return self._saver
-        context = AsyncPostgresSaver.from_conn_string(self._connection_url)
+        serde = JsonPlusSerializer(allowed_msgpack_modules=None)
+        context = AsyncPostgresSaver.from_conn_string(
+            self._connection_url, serde=serde
+        )
         saver = await context.__aenter__()
         try:
             await saver.setup()

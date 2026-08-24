@@ -29,12 +29,14 @@ class RuntimeToolExecutionLedger:
         self._runtime = runtime
         self._owner = owner
         self._lease_seconds = lease_seconds
+        self._claim_tokens: dict[tuple[UUID, str], UUID] = {}
 
     async def claim(
         self,
         *,
         user_id: UUID,
         run_id: UUID,
+        run_claim_token: UUID,
         action_id: str,
         tool_name: str,
         arguments: dict[str, Any],
@@ -52,11 +54,16 @@ class RuntimeToolExecutionLedger:
             arguments_hash=hashlib.sha256(canonical).hexdigest(),
             owner=self._owner,
             lease_seconds=self._lease_seconds,
+            run_claim_token=run_claim_token,
             replay_safe=replay_policy is not ToolReplayPolicy.NON_REPLAYABLE,
             idempotency_key=idempotency_key,
         )
         if claim.blocked_reason is not None:
             raise ToolOutcomeUnknown(claim.blocked_reason)
+        if claim.acquired:
+            if claim.claim_token is None:
+                raise RuntimeError("Tool claim did not return its fencing token.")
+            self._claim_tokens[(run_id, action_id)] = claim.claim_token
         return claim.acquired, claim.cached_result
 
     async def complete(
@@ -68,11 +75,15 @@ class RuntimeToolExecutionLedger:
         result: dict[str, Any],
         succeeded: bool,
     ) -> None:
+        claim_token = self._claim_tokens.pop((run_id, action_id), None)
+        if claim_token is None:
+            raise RuntimeError("Tool completion is missing its fencing token.")
         await self._runtime.complete_tool_execution(
             run_id=run_id,
             user_id=user_id,
             action_id=action_id,
             owner=self._owner,
+            claim_token=claim_token,
             result=result,
             succeeded=succeeded,
         )
@@ -151,6 +162,9 @@ class AgentRunWorker:
         )
         if run is None:
             return (await self._runtime.get_run(user_id=user_id, run_id=run_id)).status
+        if run.claim_token is None:
+            raise RuntimeError("Claimed Run did not return its fencing token.")
+        run_claim_token = run.claim_token
         messages = await self._runtime.list_messages(
             user_id=user_id, thread_id=run.thread_id, limit=100
         )
@@ -163,6 +177,7 @@ class AgentRunWorker:
                     user_id=user_id,
                     run_id=run_id,
                     owner=self._worker_id,
+                    claim_token=run_claim_token,
                     lease_seconds=self._lease_seconds,
                 )
                 if not renewed:
@@ -177,7 +192,10 @@ class AgentRunWorker:
         config: RunnableConfig = {"configurable": {"thread_id": str(run.id)}}
         try:
             if run.resume_payload is not None:
-                command: Command[Any] = Command(resume=run.resume_payload)
+                command: Command[Any] = Command(
+                    resume=run.resume_payload,
+                    update={"run_claim_token": str(run_claim_token)},
+                )
                 output = cast(
                     dict[str, Any],
                     await self._graph.ainvoke(command, config, durability="sync"),
@@ -188,6 +206,7 @@ class AgentRunWorker:
                     "user_id": str(user_id),
                     "thread_id": str(run.thread_id),
                     "run_id": str(run_id),
+                    "run_claim_token": str(run_claim_token),
                     "current_input": current.content,
                     "messages": [
                         {"role": item.role, "content": item.content} for item in messages
@@ -265,6 +284,7 @@ class AgentRunWorker:
                     run_id=run_id,
                     payload=payload,
                     claim_owner=self._worker_id,
+                    claim_token=run_claim_token,
                 )
                 return RunStatus.WAITING_USER
             response = output.get("final_response")
@@ -282,6 +302,7 @@ class AgentRunWorker:
                 run_id=run_id,
                 content=response,
                 claim_owner=self._worker_id,
+                claim_token=run_claim_token,
             )
             return RunStatus.COMPLETED
         except Exception as exception:
@@ -296,6 +317,7 @@ class AgentRunWorker:
                 run_id=run_id,
                 error_code=error_code,
                 claim_owner=self._worker_id,
+                claim_token=run_claim_token,
             )
             raise
         finally:

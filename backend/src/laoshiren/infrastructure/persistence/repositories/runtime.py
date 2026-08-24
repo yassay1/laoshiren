@@ -72,6 +72,7 @@ def run_to_domain(model: AgentRunORM) -> AgentRun:
         ),
         error_code=model.error_code,
         claim_owner=model.claim_owner,
+        claim_token=model.claim_token,
         lease_expires_at=model.lease_expires_at,
         heartbeat_at=model.heartbeat_at,
         attempt_count=model.attempt_count,
@@ -209,6 +210,7 @@ class SqlAlchemyRunRepository:
                 resume_payload=run.resume_payload,
                 error_code=run.error_code,
                 claim_owner=run.claim_owner,
+                claim_token=run.claim_token,
                 lease_expires_at=run.lease_expires_at,
                 heartbeat_at=run.heartbeat_at,
                 attempt_count=run.attempt_count,
@@ -266,6 +268,7 @@ class SqlAlchemyRunRepository:
         user_id: UUID,
         run_id: UUID,
         owner: str,
+        claim_token: UUID,
         now: datetime,
         lease_expires_at: datetime,
     ) -> AgentRun | None:
@@ -290,6 +293,7 @@ class SqlAlchemyRunRepository:
                 current_phase="executive",
                 status_label="正在理解并处理",
                 claim_owner=owner,
+                claim_token=claim_token,
                 heartbeat_at=now,
                 lease_expires_at=lease_expires_at,
                 attempt_count=AgentRunORM.attempt_count + 1,
@@ -310,6 +314,7 @@ class SqlAlchemyRunRepository:
         user_id: UUID,
         run_id: UUID,
         owner: str,
+        claim_token: UUID,
         now: datetime,
         lease_expires_at: datetime,
     ) -> bool:
@@ -322,6 +327,7 @@ class SqlAlchemyRunRepository:
                     AgentRunORM.user_id == user_id,
                     AgentRunORM.status == RunStatus.RUNNING,
                     AgentRunORM.claim_owner == owner,
+                    AgentRunORM.claim_token == claim_token,
                 )
                 .values(heartbeat_at=now, lease_expires_at=lease_expires_at, updated_at=now)
             ),
@@ -344,6 +350,7 @@ class SqlAlchemyRunRepository:
                     resume_payload=run.resume_payload,
                     error_code=run.error_code,
                     claim_owner=run.claim_owner,
+                    claim_token=run.claim_token,
                     lease_expires_at=run.lease_expires_at,
                     heartbeat_at=run.heartbeat_at,
                     attempt_count=run.attempt_count,
@@ -448,6 +455,7 @@ def tool_execution_to_domain(model: ToolExecutionORM) -> ToolExecution:
         status=model.status,
         result=dict(model.result) if model.result is not None else None,
         claim_owner=model.claim_owner,
+        claim_token=model.claim_token,
         lease_expires_at=model.lease_expires_at,
         replay_safe=model.replay_safe,
         idempotency_key=model.idempotency_key,
@@ -482,6 +490,7 @@ class SqlAlchemyToolExecutionRepository:
                 status=execution.status,
                 result=execution.result,
                 claim_owner=execution.claim_owner,
+                claim_token=execution.claim_token,
                 lease_expires_at=execution.lease_expires_at,
                 replay_safe=execution.replay_safe,
                 idempotency_key=execution.idempotency_key,
@@ -500,6 +509,7 @@ class SqlAlchemyToolExecutionRepository:
         *,
         now: datetime,
         owner: str,
+        claim_token: UUID,
         lease_expires_at: datetime,
     ) -> bool:
         result = cast(
@@ -513,6 +523,7 @@ class SqlAlchemyToolExecutionRepository:
                 )
                 .values(
                     claim_owner=owner,
+                    claim_token=claim_token,
                     lease_expires_at=lease_expires_at,
                     attempt_count=ToolExecutionORM.attempt_count + 1,
                     updated_at=now,
@@ -527,6 +538,7 @@ class SqlAlchemyToolExecutionRepository:
         run_id: UUID,
         action_id: str,
         owner: str,
+        claim_token: UUID,
         result: dict[str, Any],
         succeeded: bool,
         now: datetime,
@@ -540,6 +552,7 @@ class SqlAlchemyToolExecutionRepository:
                     ToolExecutionORM.action_id == action_id,
                     ToolExecutionORM.status == ToolExecutionStatus.RUNNING,
                     ToolExecutionORM.claim_owner == owner,
+                    ToolExecutionORM.claim_token == claim_token,
                 )
                 .values(
                     status=(
@@ -550,6 +563,24 @@ class SqlAlchemyToolExecutionRepository:
                     result=result,
                     updated_at=now,
                 )
+            ),
+        )
+        return updated.rowcount == 1
+
+    async def mark_unknown_if_expired(
+        self, *, execution_id: UUID, now: datetime
+    ) -> bool:
+        updated = cast(
+            CursorResult[Any],
+            await self._session.execute(
+                update(ToolExecutionORM)
+                .where(
+                    ToolExecutionORM.id == execution_id,
+                    ToolExecutionORM.status == ToolExecutionStatus.RUNNING,
+                    ToolExecutionORM.lease_expires_at <= now,
+                    ToolExecutionORM.replay_safe.is_(False),
+                )
+                .values(status=ToolExecutionStatus.UNKNOWN, updated_at=now)
             ),
         )
         return updated.rowcount == 1

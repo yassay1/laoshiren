@@ -44,6 +44,7 @@ class RunRepository(Protocol):
         user_id: UUID,
         run_id: UUID,
         owner: str,
+        claim_token: UUID,
         now: datetime,
         lease_expires_at: datetime,
     ) -> AgentRun | None: ...
@@ -53,6 +54,7 @@ class RunRepository(Protocol):
         user_id: UUID,
         run_id: UUID,
         owner: str,
+        claim_token: UUID,
         now: datetime,
         lease_expires_at: datetime,
     ) -> bool: ...
@@ -86,6 +88,7 @@ class ToolExecutionRepository(Protocol):
         *,
         now: datetime,
         owner: str,
+        claim_token: UUID,
         lease_expires_at: datetime,
     ) -> bool: ...
     async def complete(
@@ -94,9 +97,13 @@ class ToolExecutionRepository(Protocol):
         run_id: UUID,
         action_id: str,
         owner: str,
+        claim_token: UUID,
         result: dict[str, Any],
         succeeded: bool,
         now: datetime,
+    ) -> bool: ...
+    async def mark_unknown_if_expired(
+        self, *, execution_id: UUID, now: datetime
     ) -> bool: ...
 
 
