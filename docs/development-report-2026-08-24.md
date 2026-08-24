@@ -66,9 +66,9 @@ TXT/Markdown 使用 UTF-8（含 BOM）解析；PDF 使用 pypdf 提取文本。�
 
 ## 8. Automation 当前执行链
 
-`AutomationScheduler -> process_due -> SELECT FOR UPDATE SKIP LOCKED -> occurrence_key -> NotificationOutbox unique insert -> Automation advance/complete -> dispatch_pending -> NotificationPort -> SUBMITTED/FAILED`。
+`AutomationScheduler -> process_due -> SELECT FOR UPDATE SKIP LOCKED -> occurrence_key -> NotificationOutbox unique insert -> Automation advance/complete -> atomic outbox claim/lease -> commit -> NotificationPort -> owner-checked SUBMITTED/FAILED + next_attempt_at`。
 
-Scheduler 默认 30 秒轮询并在启动后立即执行一次。FAILED outbox 在 attempt_count < 3 时再次 claim；外部 adapter 调用异常被持久化。当前 NotificationPort 是 recording adapter，没有 HarmonyOS Push；Automation 与 Agent Run 仍保持边界，不会隐式启动 Executive Run。
+Scheduler 默认 30 秒轮询并在启动后立即执行一次。外部 adapter 调用已移出数据库事务；FAILED outbox 使用有上限指数退避并仅在 `next_attempt_at` 到期后重新领取，最多 3 次。claim lease 允许崩溃后接管，旧 owner 不能覆盖新结果。当前 NotificationPort 是 recording adapter，没有 HarmonyOS Push；Automation 与 Agent Run 仍保持边界，不会隐式启动 Executive Run。
 
 ## 9. 新增或修改的数据表 / migration
 
@@ -144,7 +144,7 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。FAILED outbox �
 - 未配置生产 EmbeddingProvider；Agent Memory 当前为文本检索降级，尚未在真实 Run 中启用 pgvector semantic ranking。
 - Memory formation 仅覆盖显式中文触发语，不是模型辅助的事实抽取、冲突检测和 PROFILE key-level supersede。
 - Source 已迁移到持久 Worker，但尚无页数/解析耗时硬限制、chunk/evidence 表、OCR、Office、图片理解和 STT adapter。
-- Automation retry 尚无指数退避/`next_attempt_at`，会按 scheduler interval 重试，最多 3 次。
+- Automation outbox 已有 claim/lease/backoff，但真实 Push adapter 仍须使用 occurrence_key 作为下游幂等键，才能覆盖“外部接收成功、ack 前崩溃”的窗口。
 - RecordingNotificationAdapter 不是真实 Push adapter。
 - InProcessRunDispatcher 仍是本地低延迟唤醒机制；周期性 `RunDispatchScanner` 已让每个实例从数据库发现 QUEUED/过期 RUNNING Run。扫描为 at-least-once，执行唯一所有权仍由数据库 claim 保证；尚未引入独立 broker，因此空闲扫描存在最多一个 poll interval 的延迟。
 - Tool ledger 能防止已持久完成结果重放，并与现有 Application 幂等组成 at-least-once 安全链；对于“外部副作用成功、ledger complete 前崩溃”仍要求外部 Tool 使用下游 idempotency key，无法宣称任意外部系统 exactly-once。
@@ -198,12 +198,12 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。FAILED outbox �
 16. 服务重启恢复：在 Run 为 QUEUED 或 RUNNING 时重启后端；RUNNING lease 到期后确认出现 `reason=lease_expired` 的 status event，并继续到终态。
 17. Tool replay：创建 Thing 的 Run 在 Tool 完成后、Graph 完成前重启；确认 deterministic action id/Application idempotency 使 Thing 不重复。
 18. Automation：通过 API 创建 1 分钟内到期的一次性 Automation，等待 scheduler；确认只有一个 occurrence/outbox，状态进入 submitted。
-19. Automation retry：让 notification adapter 返回失败，等待 3 个 scheduler tick；确认 attempt_count 到 3 后停止自动重试。
+19. Automation retry：让 notification adapter 返回失败，确认下一 scheduler tick 不会立即热重试；到达 `next_attempt_at` 后重试，attempt_count 到 3 后终止。
 20. 失败恢复：让模型 provider 临时不可用，确认 Run 为 FAILED 且有 `AGENT_EXECUTION_FAILED`；恢复 provider 后用新 Run 重试，不应复用失败 Run 的 checkpoint。
 
 ## 20. 下一阶段建议
 
-下一阶段 P0 应规定所有外部副作用 Tool 的下游 idempotency contract，并将 CPU/阻塞 adapter 隔离出 heartbeat event loop。P1 接入可配置 EmbeddingProvider，增加 Memory candidate extraction/冲突 supersede eval。P2 为 Source 增加页数/耗时限制、chunk/evidence 表与 OCR adapter。P3 为 Automation outbox 增加 claim token、next_attempt_at、指数退避和真实 Push adapter。前端继续维持联调范围。
+下一阶段 P0 应规定所有外部副作用 Tool/Push adapter 的下游 idempotency contract，并将 CPU/阻塞 adapter 隔离出 heartbeat event loop。P1 接入可配置 EmbeddingProvider，增加 Memory candidate extraction/冲突 supersede eval。P2 为 Source 增加页数/耗时限制、chunk/evidence 表与 OCR adapter。P3 接入真实 Push adapter 并增加 outbox 可观测指标。前端继续维持联调范围。
 
 ## 最终仓库与验证快照
 
@@ -221,8 +221,8 @@ ee596e5 feat: harden agent runtime and connect durable context
 测试汇总
 ruff: passed
 mypy strict: 99 source files passed
-pytest (not eval, database enabled): 47 passed
-Alembic 0010 downgrade/upgrade: passed
+pytest (not eval, database enabled): 48 passed
+Alembic 0011 downgrade/upgrade: passed
 真实模型 eval: not run
 HarmonyOS build/E2E: not run
 ```
