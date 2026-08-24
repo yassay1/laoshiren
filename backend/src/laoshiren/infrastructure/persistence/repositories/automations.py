@@ -65,6 +65,9 @@ def notification_to_domain(model: NotificationOutboxORM) -> NotificationOutbox:
         attempt_count=model.attempt_count,
         submitted_at=model.submitted_at,
         error_code=model.error_code,
+        claim_owner=model.claim_owner,
+        lease_expires_at=model.lease_expires_at,
+        next_attempt_at=model.next_attempt_at,
         created_at=model.created_at,
         updated_at=model.updated_at,
     )
@@ -207,44 +210,82 @@ class SqlAlchemyNotificationOutboxRepository:
                 attempt_count=notification.attempt_count,
                 created_at=notification.created_at,
                 updated_at=notification.updated_at,
+                claim_owner=notification.claim_owner,
+                lease_expires_at=notification.lease_expires_at,
+                next_attempt_at=notification.next_attempt_at,
             )
             .on_conflict_do_nothing(index_elements=["occurrence_key"])
             .returning(NotificationOutboxORM.id)
         )
         return (await self._session.scalar(statement)) is not None
 
-    async def list_dispatchable(
-        self, *, limit: int, max_attempts: int
-    ) -> list[NotificationOutbox]:
-        models = (
-            await self._session.scalars(
-                select(NotificationOutboxORM)
-                .where(
-                    (NotificationOutboxORM.status == NotificationStatus.PENDING)
+    async def claim_next(
+        self,
+        *,
+        owner: str,
+        now: datetime,
+        lease_expires_at: datetime,
+        max_attempts: int,
+    ) -> NotificationOutbox | None:
+        candidate = (
+            select(NotificationOutboxORM.id)
+            .where(
+                NotificationOutboxORM.attempt_count < max_attempts,
+                (
+                    (
+                        (NotificationOutboxORM.status == NotificationStatus.PENDING)
+                        & (
+                            NotificationOutboxORM.lease_expires_at.is_(None)
+                            | (NotificationOutboxORM.lease_expires_at <= now)
+                        )
+                    )
                     | (
                         (NotificationOutboxORM.status == NotificationStatus.FAILED)
-                        & (NotificationOutboxORM.attempt_count < max_attempts)
+                        & (NotificationOutboxORM.next_attempt_at.is_not(None))
+                        & (NotificationOutboxORM.next_attempt_at <= now)
                     )
-                )
-                .order_by(NotificationOutboxORM.created_at, NotificationOutboxORM.id)
-                .limit(limit)
-                .with_for_update(skip_locked=True)
+                ),
             )
-        ).all()
-        return [notification_to_domain(model) for model in models]
-
-    async def update(self, notification: NotificationOutbox) -> None:
-        await self._session.execute(
+            .order_by(NotificationOutboxORM.created_at, NotificationOutboxORM.id)
+            .limit(1)
+            .with_for_update(skip_locked=True)
+            .scalar_subquery()
+        )
+        model = await self._session.scalar(
             update(NotificationOutboxORM)
-            .where(NotificationOutboxORM.id == notification.id)
+            .where(NotificationOutboxORM.id == candidate)
+            .values(
+                status=NotificationStatus.PENDING,
+                claim_owner=owner,
+                lease_expires_at=lease_expires_at,
+                next_attempt_at=None,
+            )
+            .returning(NotificationOutboxORM)
+        )
+        return notification_to_domain(model) if model is not None else None
+
+    async def complete(self, *, notification: NotificationOutbox, owner: str) -> bool:
+        result = cast(
+            CursorResult[Any],
+            await self._session.execute(
+                update(NotificationOutboxORM)
+                .where(
+                    NotificationOutboxORM.id == notification.id,
+                    NotificationOutboxORM.claim_owner == owner,
+                )
             .values(
                 status=notification.status,
                 attempt_count=notification.attempt_count,
                 submitted_at=notification.submitted_at,
                 error_code=notification.error_code,
                 updated_at=notification.updated_at,
+                claim_owner=notification.claim_owner,
+                lease_expires_at=notification.lease_expires_at,
+                next_attempt_at=notification.next_attempt_at,
             )
+            ),
         )
+        return result.rowcount == 1
 
     async def list_for_user(
         self, *, user_id: UUID, limit: int

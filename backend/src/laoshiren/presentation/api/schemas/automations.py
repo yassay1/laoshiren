@@ -72,6 +72,7 @@ class NotificationResponse(BaseModel):
     attempt_count: int
     submitted_at: datetime | None
     error_code: str | None
+    next_attempt_at: datetime | None
     created_at: datetime
 
     @classmethod

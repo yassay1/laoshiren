@@ -342,6 +342,9 @@ class NotificationOutboxORM(Base):
     attempt_count: Mapped[int] = mapped_column(Integer, default=0)
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error_code: Mapped[str | None] = mapped_column(String(100))
+    claim_owner: Mapped[str | None] = mapped_column(String(200))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

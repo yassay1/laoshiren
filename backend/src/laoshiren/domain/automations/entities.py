@@ -116,6 +116,9 @@ class NotificationOutbox:
     attempt_count: int = 0
     submitted_at: datetime | None = None
     error_code: str | None = None
+    claim_owner: str | None = None
+    lease_expires_at: datetime | None = None
+    next_attempt_at: datetime | None = None
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
 
@@ -124,12 +127,18 @@ class NotificationOutbox:
         self.attempt_count += 1
         self.submitted_at = utc_now()
         self.updated_at = self.submitted_at
+        self.claim_owner = None
+        self.lease_expires_at = None
+        self.next_attempt_at = None
 
-    def failed(self, error_code: str) -> None:
+    def failed(self, error_code: str, *, retry_at: datetime | None = None) -> None:
         self.status = NotificationStatus.FAILED
         self.attempt_count += 1
         self.error_code = error_code
         self.updated_at = utc_now()
+        self.claim_owner = None
+        self.lease_expires_at = None
+        self.next_attempt_at = retry_at
 
 
 @dataclass(frozen=True, slots=True)

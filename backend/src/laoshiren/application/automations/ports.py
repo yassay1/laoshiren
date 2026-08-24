@@ -44,11 +44,18 @@ class AutomationRepository(Protocol):
 class NotificationOutboxRepository(Protocol):
     async def add(self, notification: NotificationOutbox) -> bool: ...
 
-    async def list_dispatchable(
-        self, *, limit: int, max_attempts: int
-    ) -> list[NotificationOutbox]: ...
+    async def claim_next(
+        self,
+        *,
+        owner: str,
+        now: datetime,
+        lease_expires_at: datetime,
+        max_attempts: int,
+    ) -> NotificationOutbox | None: ...
 
-    async def update(self, notification: NotificationOutbox) -> None: ...
+    async def complete(
+        self, *, notification: NotificationOutbox, owner: str
+    ) -> bool: ...
 
     async def list_for_user(
         self, *, user_id: UUID, limit: int

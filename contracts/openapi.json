@@ -4443,6 +4443,18 @@
             ],
             "title": "Error Code"
           },
+          "next_attempt_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Attempt At"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -4460,6 +4472,7 @@
           "attempt_count",
           "submitted_at",
           "error_code",
+          "next_attempt_at",
           "created_at"
         ],
         "title": "NotificationResponse"

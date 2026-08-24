@@ -1,6 +1,6 @@
 from collections.abc import Callable
-from datetime import UTC, datetime
-from uuid import UUID
+from datetime import UTC, datetime, timedelta
+from uuid import UUID, uuid4
 
 from laoshiren.application.automations.dto import (
     AttentionCandidateDTO,
@@ -54,6 +54,7 @@ def to_notification_dto(value: NotificationOutbox) -> NotificationDTO:
         attempt_count=value.attempt_count,
         submitted_at=value.submitted_at,
         error_code=value.error_code,
+        next_attempt_at=value.next_attempt_at,
         created_at=value.created_at,
     )
 
@@ -64,6 +65,7 @@ class AutomationApplicationService:
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._notification_port = notification_port
+        self._dispatch_owner = f"automation-dispatch-{uuid4()}"
 
     async def create(
         self,
@@ -230,25 +232,61 @@ class AutomationApplicationService:
             await unit_of_work.commit()
         return created_count
 
-    async def dispatch_pending(self, *, limit: int = 100, max_attempts: int = 3) -> int:
+    async def dispatch_pending(
+        self,
+        *,
+        limit: int = 100,
+        max_attempts: int = 3,
+        lease_seconds: float = 60,
+        retry_base_seconds: float = 30,
+        retry_max_seconds: float = 900,
+    ) -> int:
         submitted_count = 0
-        async with self._unit_of_work_factory() as unit_of_work:
-            notifications = await unit_of_work.notifications.list_dispatchable(
-                limit=limit, max_attempts=max_attempts
-            )
-            for notification in notifications:
-                try:
-                    accepted = await self._notification_port.submit(notification)
-                except Exception:
-                    notification.failed("ADAPTER_EXCEPTION")
+        for _ in range(limit):
+            now = datetime.now(UTC)
+            async with self._unit_of_work_factory() as unit_of_work:
+                notification = await unit_of_work.notifications.claim_next(
+                    owner=self._dispatch_owner,
+                    now=now,
+                    lease_expires_at=now + timedelta(seconds=lease_seconds),
+                    max_attempts=max_attempts,
+                )
+                if notification is None:
+                    await unit_of_work.rollback()
+                    break
+                await unit_of_work.commit()
+            try:
+                accepted = await self._notification_port.submit(notification)
+            except Exception:
+                error_code = "ADAPTER_EXCEPTION"
+                accepted = False
+            else:
+                error_code = "ADAPTER_REJECTED"
+            if accepted:
+                notification.submitted()
+            else:
+                next_attempt = notification.attempt_count + 1
+                delay = min(
+                    retry_base_seconds * (2 ** max(next_attempt - 1, 0)),
+                    retry_max_seconds,
+                )
+                notification.failed(
+                    error_code,
+                    retry_at=(
+                        None
+                        if next_attempt >= max_attempts
+                        else datetime.now(UTC) + timedelta(seconds=delay)
+                    ),
+                )
+            async with self._unit_of_work_factory() as unit_of_work:
+                completed = await unit_of_work.notifications.complete(
+                    notification=notification, owner=self._dispatch_owner
+                )
+                if completed:
+                    await unit_of_work.commit()
+                    submitted_count += int(accepted)
                 else:
-                    if accepted:
-                        notification.submitted()
-                        submitted_count += 1
-                    else:
-                        notification.failed("ADAPTER_REJECTED")
-                await unit_of_work.notifications.update(notification)
-            await unit_of_work.commit()
+                    await unit_of_work.rollback()
         return submitted_count
 
     async def list_notifications(
