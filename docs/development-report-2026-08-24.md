@@ -47,7 +47,7 @@
 
 上传请求不再执行 PDF/TXT/Markdown 解析。`SourceProcessingWorker` 从 Application 领取任务；Repository 使用 PostgreSQL queue-like claim，最多 3 次有上限指数退避。解析器确定性失败直接终止，存储等基础设施异常进入 retry；Worker 崩溃后 lease 到期可被其他实例接管，旧 owner 的迟到完成写入会被拒绝。图片、Office、音频仍保持 PENDING，等待未来 parser adapter。
 
-PDF 解析增加加密文件拒绝、最大页数、单页字符、总字符和 Application 超时边界。READY 写入与 `source_chunks` Evidence 块在同一事务完成；每块包含稳定 `id/ordinal/char_start/char_end`。Agent 按最多 5 个 Source、每 Source 最多 8 块和总计 12,000 字符组装 context，并携带 chunk_id。迁移前 READY 数据保留 extracted_text 兼容回退。
+PDF 解析增加加密文件拒绝、最大页数、单页字符、总字符和 Application 超时边界。每个 PDF 在独立 `spawn` 子进程中解析；超时、取消或 scheduler stop 会 terminate/kill 并 join 子进程，避免 pypdf CPU/阻塞影响 Worker heartbeat。READY 写入与 `source_chunks` Evidence 块在同一事务完成；每块包含稳定 `id/ordinal/char_start/char_end`。Agent 按最多 5 个 Source、每 Source 最多 8 块和总计 12,000 字符组装 context，并携带 chunk_id。迁移前 READY 数据保留 extracted_text 兼容回退。
 
 TXT/Markdown 使用 UTF-8（含 BOM）解析；PDF 使用 pypdf 提取文本。空文本、损坏 PDF 记录 `FAILED / SOURCE_PARSE_FAILED`，不伪装 READY。图片、Office、音频仍保持 PENDING，等待未来 OCR/Office/image/STT adapter。
 
@@ -206,7 +206,7 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。外部 adapter 
 
 ## 20. 下一阶段建议
 
-下一阶段 P0 应规定未来外部副作用 Tool 的下游 idempotency contract，并进一步隔离无法被 asyncio timeout 终止的解析线程。P1 配置实际 Embedding 服务并增加 Memory 通用 candidate extraction/矛盾检测 eval。P2 为 Source 增加页码 provenance、semantic chunk retrieval 与 OCR adapter。P3 接入真实 Push adapter 并验证其持久幂等能力，增加延迟/失败码指标和 tracing。前端继续维持联调范围。
+下一阶段 P0 应规定未来外部副作用 Tool 的下游 idempotency contract，并对 PDF 子进程并发数、启动开销和操作系统资源做压力测试。P1 配置实际 Embedding 服务并增加 Memory 通用 candidate extraction/矛盾检测 eval。P2 为 Source 增加页码 provenance、semantic chunk retrieval 与 OCR adapter。P3 接入真实 Push adapter 并验证其持久幂等能力，增加延迟/失败码指标和 tracing。前端继续维持联调范围。
 
 ## 最终仓库与验证快照
 
@@ -224,13 +224,13 @@ ee596e5 feat: harden agent runtime and connect durable context
 测试汇总
 ruff: passed
 mypy strict: 104 source files passed
-pytest (not eval, database enabled): 59 passed
+pytest (not eval, database enabled): 60 passed
 Alembic 0013 downgrade/upgrade: passed
 真实模型 eval: not run
 HarmonyOS build/E2E: not run
 ```
 
-当前仍存在的 P0/P1：未来外部 Tool 下游幂等契约、真实 Push 的持久幂等验证、无法强制终止的 parser thread、实际 Embedding 服务配置、Memory 通用候选抽取/矛盾检测、Source 页码 provenance/OCR/semantic retrieval。
+当前仍存在的 P0/P1：未来外部 Tool 下游幂等契约、真实 Push 的持久幂等验证、PDF 子进程并发/资源压力、实际 Embedding 服务配置、Memory 通用候选抽取/矛盾检测、Source 页码 provenance/OCR/semantic retrieval。
 
 ## 2026-08-25 外部参考与可靠性增量
 
