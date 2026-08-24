@@ -230,10 +230,12 @@ class AutomationApplicationService:
             await unit_of_work.commit()
         return created_count
 
-    async def dispatch_pending(self, *, limit: int = 100) -> int:
+    async def dispatch_pending(self, *, limit: int = 100, max_attempts: int = 3) -> int:
         submitted_count = 0
         async with self._unit_of_work_factory() as unit_of_work:
-            notifications = await unit_of_work.notifications.list_pending(limit=limit)
+            notifications = await unit_of_work.notifications.list_dispatchable(
+                limit=limit, max_attempts=max_attempts
+            )
             for notification in notifications:
                 try:
                     accepted = await self._notification_port.submit(notification)

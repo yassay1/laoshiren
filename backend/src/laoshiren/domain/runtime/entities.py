@@ -115,6 +115,16 @@ class AgentRun:
         self.updated_at = now
         self.version += 1
 
+    def recover_after_crash(self) -> None:
+        """Return an abandoned in-flight Run to the durable dispatch queue."""
+        if self.status is not RunStatus.RUNNING:
+            raise ValueError("Only a running Run can be recovered.")
+        self.status = RunStatus.QUEUED
+        self.current_phase = "recovering"
+        self.status_label = "Recovering after service restart"
+        self.updated_at = utc_now()
+        self.version += 1
+
     def wait_for_user(self, *, interrupt_id: UUID, payload: dict[str, Any]) -> None:
         if self.status is not RunStatus.RUNNING:
             raise ValueError("Only a running Run can wait for user input.")

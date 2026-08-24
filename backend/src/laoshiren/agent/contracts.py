@@ -48,7 +48,7 @@ class ToolResult:
 
     def as_dict(self) -> dict[str, Any]:
         return {
-            "status": self.status,
+            "status": self.status.value,
             "code": self.code,
             "message": self.message,
             "data": self.data,
@@ -71,6 +71,12 @@ class GraphState(TypedDict, total=False):
     pending_action: dict[str, Any]
     user_response: dict[str, Any]
     final_response: str
+    decision_count: int
+    tool_call_count: int
     route: Literal[
         "respond", "ask_user", "policy", "confirmation", "execute", "executive"
     ]
+
+
+class AgentBudgetExceeded(RuntimeError):
+    """Raised when one Run exceeds a deterministic execution guardrail."""

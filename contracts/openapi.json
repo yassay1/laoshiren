@@ -4853,6 +4853,40 @@
           "processing_status": {
             "$ref": "#/components/schemas/ProcessingStatus"
           },
+          "extracted_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extracted Text"
+          },
+          "processing_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Processing Error"
+          },
+          "processed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Processed At"
+          },
           "captured_at": {
             "anyOf": [
               {
@@ -4891,6 +4925,9 @@
           "size",
           "content_hash",
           "processing_status",
+          "extracted_text",
+          "processing_error",
+          "processed_at",
           "captured_at",
           "metadata",
           "created_at",

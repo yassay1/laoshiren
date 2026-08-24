@@ -221,6 +221,34 @@ class RuntimeApplicationService:
                 raise EntityNotFound("Run was not found.")
             return to_run_dto(run)
 
+    async def recover_pending_runs(self, *, limit: int = 500) -> int:
+        """Requeue crash-abandoned Runs and dispatch all durable queued work."""
+        dispatches: list[tuple[UUID, UUID]] = []
+        async with self._unit_of_work_factory() as uow:
+            runs = await uow.runs.list_recoverable(limit=limit)
+            for run in runs:
+                if run.status is RunStatus.RUNNING:
+                    expected_version = run.version
+                    run.recover_after_crash()
+                    if not await uow.runs.update(run, expected_version=expected_version):
+                        continue
+                    await uow.runs.append_event(
+                        run_id=run.id,
+                        event_type=RunEventType.STATUS_UPDATED,
+                        data={
+                            "status": RunStatus.QUEUED.value,
+                            "phase": run.current_phase,
+                            "label": run.status_label,
+                            "reason": "service_restart",
+                        },
+                    )
+                dispatches.append((run.user_id, run.id))
+            await uow.commit()
+        if self._run_dispatcher is not None:
+            for user_id, run_id in dispatches:
+                await self._run_dispatcher.dispatch(user_id=user_id, run_id=run_id)
+        return len(dispatches)
+
     async def resume_run(
         self,
         *,

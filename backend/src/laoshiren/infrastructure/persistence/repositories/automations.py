@@ -213,11 +213,19 @@ class SqlAlchemyNotificationOutboxRepository:
         )
         return (await self._session.scalar(statement)) is not None
 
-    async def list_pending(self, *, limit: int) -> list[NotificationOutbox]:
+    async def list_dispatchable(
+        self, *, limit: int, max_attempts: int
+    ) -> list[NotificationOutbox]:
         models = (
             await self._session.scalars(
                 select(NotificationOutboxORM)
-                .where(NotificationOutboxORM.status == NotificationStatus.PENDING)
+                .where(
+                    (NotificationOutboxORM.status == NotificationStatus.PENDING)
+                    | (
+                        (NotificationOutboxORM.status == NotificationStatus.FAILED)
+                        & (NotificationOutboxORM.attempt_count < max_attempts)
+                    )
+                )
                 .order_by(NotificationOutboxORM.created_at, NotificationOutboxORM.id)
                 .limit(limit)
                 .with_for_update(skip_locked=True)

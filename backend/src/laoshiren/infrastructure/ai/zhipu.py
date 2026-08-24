@@ -61,6 +61,12 @@ class ZhipuExecutiveModelGateway:
                             "current_input": state.get("current_input", ""),
                             "conversation": state.get("messages", [])[-20:],
                             "tool_results": state.get("tool_results", [])[-10:],
+                            "memory_context": state.get("prefetched_state", {}).get(
+                                "memory_context", {}
+                            ),
+                            "source_context": state.get("prefetched_state", {}).get(
+                                "source_context", []
+                            ),
                             "available_tools": list(available_tools),
                         },
                         ensure_ascii=False,

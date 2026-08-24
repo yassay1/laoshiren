@@ -4,9 +4,7 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy import text
 
-from laoshiren.agent.contracts import DecisionKind, ExecutiveDecision, GraphState
-from laoshiren.bootstrap import build_agent_worker
-from laoshiren.domain.runtime.entities import RunEventType, RunStatus
+from laoshiren.domain.runtime.entities import RunStatus
 from laoshiren.main import create_app
 
 pytestmark = [
@@ -19,19 +17,7 @@ pytestmark = [
 ]
 
 
-class WorkerGateway:
-    async def decide(
-        self, *, state: GraphState, available_tools: tuple[str, ...]
-    ) -> ExecutiveDecision:
-        assert "state.get_thing" in available_tools
-        assert "state.set_deadline" in available_tools
-        return ExecutiveDecision(
-            DecisionKind.RESPOND,
-            content=f"已处理：{state['current_input']}",
-        )
-
-
-async def test_worker_completes_persistent_run_and_emits_message_event() -> None:
+async def test_running_run_is_requeued_after_service_restart_recovery() -> None:
     app = create_app()
     runtime = app.state.container.runtime
     user_id = UUID(app.state.container.settings.dev_user_id)
@@ -40,37 +26,30 @@ async def test_worker_completes_persistent_run_and_emits_message_event() -> None
     try:
         thread = await runtime.create_thread(
             user_id=user_id,
-            title="Agent Worker 测试",
-            idempotency_key=f"worker-thread-{uuid4()}",
+            title="Recovery test",
+            idempotency_key=f"recovery-thread-{uuid4()}",
         )
         thread_id = thread.id
         run = await runtime.create_user_run(
             user_id=user_id,
             thread_id=thread.id,
-            content="继续实现 Agent",
+            content="recover me",
             source_ids=[],
-            idempotency_key=f"worker-run-{uuid4()}",
+            idempotency_key=f"recovery-run-{uuid4()}",
         )
         run_id = run.id
-        await app.state.container.checkpoints.start()
-        worker = build_agent_worker(app.state.container, WorkerGateway())
+        await runtime.start_run(
+            user_id=user_id, run_id=run.id, phase="tool", label="in flight"
+        )
 
-        status = await worker.run_once(user_id=user_id, run_id=run.id)
-
-        assert status is RunStatus.COMPLETED
+        recovered = await runtime.recover_pending_runs()
         current = await runtime.get_run(user_id=user_id, run_id=run.id)
-        messages = await runtime.list_messages(user_id=user_id, thread_id=thread.id)
         events = await runtime.list_events(user_id=user_id, run_id=run.id)
-        assert current.status is RunStatus.COMPLETED
-        assert messages[-1].content == "已处理：继续实现 Agent"
-        assert [event.event for event in events][-2:] == [
-            RunEventType.ASSISTANT_MESSAGE,
-            RunEventType.RUN_COMPLETED,
-        ]
+
+        assert recovered >= 1
+        assert current.status is RunStatus.QUEUED
+        assert events[-1].data["reason"] == "service_restart"
     finally:
-        if run_id is not None:
-            await app.state.container.checkpoints.saver.adelete_thread(str(run_id))
-        await app.state.container.checkpoints.stop()
         async with app.state.container.database.engine.begin() as connection:
             if run_id is not None:
                 await connection.execute(

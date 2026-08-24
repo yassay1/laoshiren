@@ -21,6 +21,15 @@ class ObjectStorage(Protocol):
     async def put(self, *, object_key: str, chunks: AsyncIterator[bytes]) -> tuple[int, str]: ...
 
     async def delete(self, *, object_key: str) -> None: ...
+    async def read(self, *, object_key: str) -> bytes: ...
+
+
+class SourceParser(Protocol):
+    async def parse(self, *, filename: str, mime_type: str, content: bytes) -> str: ...
+
+
+class SourceParsingError(ValueError):
+    """A supported Source could not be converted into text."""
 
 
 class SourceLinkRequest(Protocol):

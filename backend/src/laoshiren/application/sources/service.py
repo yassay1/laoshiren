@@ -4,7 +4,11 @@ from uuid import UUID, uuid4
 
 from laoshiren.application.personal_state.ports import PersonalStateUnitOfWork
 from laoshiren.application.sources.dto import SourceDTO
-from laoshiren.application.sources.ports import ObjectStorage
+from laoshiren.application.sources.ports import (
+    ObjectStorage,
+    SourceParser,
+    SourceParsingError,
+)
 from laoshiren.domain.personal_state.entities import StateMutation, TimelineEvent, utc_now
 from laoshiren.domain.personal_state.exceptions import EntityNotFound
 from laoshiren.domain.sources.entities import (
@@ -33,6 +37,8 @@ ALLOWED_UPLOADS: dict[str, tuple[SourceType, set[str], tuple[bytes, ...]]] = {
         (b"PK\x03\x04",),
     ),
     ".mp3": (SourceType.AUDIO, {"audio/mpeg"}, (b"ID3", b"\xff\xfb", b"\xff\xf3")),
+    ".txt": (SourceType.OTHER, {"text/plain"}, ()),
+    ".md": (SourceType.OTHER, {"text/markdown", "text/plain"}, ()),
 }
 
 
@@ -47,6 +53,9 @@ def to_source_dto(source: Source, *, replayed: bool = False) -> SourceDTO:
         size=source.size,
         content_hash=source.content_hash,
         processing_status=source.processing_status,
+        extracted_text=source.extracted_text,
+        processing_error=source.processing_error,
+        processed_at=source.processed_at,
         captured_at=source.captured_at,
         metadata=source.metadata,
         created_at=source.created_at,
@@ -61,10 +70,12 @@ class SourceApplicationService:
         storage: ObjectStorage,
         *,
         max_upload_bytes: int,
+        parser: SourceParser | None = None,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._storage = storage
         self._max_upload_bytes = max_upload_bytes
+        self._parser = parser
 
     async def upload(
         self,
@@ -102,7 +113,9 @@ class SourceApplicationService:
                     continue
                 if first_chunk is None:
                     first_chunk = chunk
-                    if not any(chunk.startswith(signature) for signature in signatures):
+                    if signatures and not any(
+                        chunk.startswith(signature) for signature in signatures
+                    ):
                         raise ValueError("File signature does not match its declared type.")
                 total += len(chunk)
                 if total > self._max_upload_bytes:
@@ -127,6 +140,16 @@ class SourceApplicationService:
                 size=size,
                 idempotency_key=idempotency_key,
             )
+            if self._parser is not None and extension in {".txt", ".md", ".pdf"}:
+                try:
+                    extracted = await self._parser.parse(
+                        filename=safe_name,
+                        mime_type=mime_type,
+                        content=await self._storage.read(object_key=object_key),
+                    )
+                    source.mark_ready(extracted_text=extracted)
+                except SourceParsingError:
+                    source.mark_failed(error_code="SOURCE_PARSE_FAILED")
             async with self._unit_of_work_factory() as unit_of_work:
                 await unit_of_work.users.ensure_exists(user_id)
                 await unit_of_work.sources.add(source)

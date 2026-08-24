@@ -34,3 +34,6 @@ class LocalObjectStorage:
 
     async def delete(self, *, object_key: str) -> None:
         await asyncio.to_thread(self._resolve(object_key).unlink, missing_ok=True)
+
+    async def read(self, *, object_key: str) -> bytes:
+        return await asyncio.to_thread(self._resolve(object_key).read_bytes)

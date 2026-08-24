@@ -10,6 +10,7 @@ from laoshiren.domain.runtime.entities import (
     Message,
     RunEvent,
     RunEventType,
+    RunStatus,
     Thread,
 )
 from laoshiren.infrastructure.persistence.orm.personal_state import (
@@ -223,6 +224,17 @@ class SqlAlchemyRunRepository:
             )
         )
         return run_to_domain(model) if model is not None else None
+
+    async def list_recoverable(self, *, limit: int) -> list[AgentRun]:
+        models = (
+            await self._session.scalars(
+                select(AgentRunORM)
+                .where(AgentRunORM.status.in_([RunStatus.QUEUED, RunStatus.RUNNING]))
+                .order_by(AgentRunORM.created_at, AgentRunORM.id)
+                .limit(limit)
+            )
+        ).all()
+        return [run_to_domain(model) for model in models]
 
     async def update(self, run: AgentRun, *, expected_version: int) -> bool:
         result = cast(

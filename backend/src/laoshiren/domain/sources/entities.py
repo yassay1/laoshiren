@@ -55,7 +55,21 @@ class Source:
     captured_at: datetime | None = None
     metadata: dict[str, object] = field(default_factory=dict)
     processing_status: ProcessingStatus = ProcessingStatus.PENDING
+    extracted_text: str | None = None
+    processing_error: str | None = None
+    processed_at: datetime | None = None
     created_at: datetime = field(default_factory=utc_now)
+
+    def mark_ready(self, *, extracted_text: str) -> None:
+        self.extracted_text = extracted_text.strip()
+        self.processing_status = ProcessingStatus.READY
+        self.processing_error = None
+        self.processed_at = utc_now()
+
+    def mark_failed(self, *, error_code: str) -> None:
+        self.processing_status = ProcessingStatus.FAILED
+        self.processing_error = error_code
+        self.processed_at = utc_now()
 
 
 @dataclass(slots=True)

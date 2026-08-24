@@ -45,7 +45,7 @@ export interface CreateRunBody {
 }
 
 export interface ResumeDecisionBody {
-  approved: boolean;
+  action: string;
 }
 
 export interface ResumeRunBody {

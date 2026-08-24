@@ -27,6 +27,9 @@ def source_to_domain(model: SourceORM) -> Source:
         captured_at=model.captured_at,
         metadata=model.metadata_,
         processing_status=model.processing_status,
+        extracted_text=model.extracted_text,
+        processing_error=model.processing_error,
+        processed_at=model.processed_at,
         idempotency_key=model.idempotency_key,
         created_at=model.created_at,
     )
@@ -52,6 +55,9 @@ class SqlAlchemySourceRepository:
                 captured_at=source.captured_at,
                 metadata_=source.metadata,
                 processing_status=source.processing_status,
+                extracted_text=source.extracted_text,
+                processing_error=source.processing_error,
+                processed_at=source.processed_at,
                 idempotency_key=source.idempotency_key,
                 created_at=source.created_at,
             )

@@ -24,6 +24,9 @@ class SourceResponse(BaseModel):
     size: int
     content_hash: str
     processing_status: ProcessingStatus
+    extracted_text: str | None
+    processing_error: str | None
+    processed_at: datetime | None
     captured_at: datetime | None
     metadata: dict[str, object]
     created_at: datetime

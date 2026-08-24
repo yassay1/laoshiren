@@ -11,6 +11,7 @@ export class ChatViewModel {
   waitingRun?: AgentRun;
   private threadId: string = '';
   private lastDraft: string = '';
+  private lastRunKey: string = '';
   private readonly repository: ChatRepository = new ChatRepository();
 
   async initialize(): Promise<void> {
@@ -38,13 +39,14 @@ export class ChatViewModel {
       if (this.threadId.length === 0) return;
     }
     this.lastDraft = content;
+    this.lastRunKey = this.repository.newIdempotencyKey('run');
     this.draft = '';
     this.busy = true;
     this.errorText = '';
     this.waitingRun = undefined;
     this.statusText = '正在理解和处理…';
     try {
-      const run = await this.repository.createRun(this.threadId, content);
+      const run = await this.repository.createRun(this.threadId, content, this.lastRunKey);
       await this.refreshMessages();
       await this.follow(run);
     } catch (error) {
@@ -60,8 +62,20 @@ export class ChatViewModel {
       await this.initialize();
       return;
     }
-    this.draft = this.lastDraft;
-    await this.send();
+    this.busy = true;
+    this.errorText = '';
+    try {
+      const run = await this.repository.createRun(
+        this.threadId,
+        this.lastDraft,
+        this.lastRunKey
+      );
+      await this.follow(run);
+    } catch (error) {
+      this.errorText = this.messageOf(error, 'Retry failed');
+    } finally {
+      this.busy = false;
+    }
   }
 
   async respondToInterrupt(approved: boolean): Promise<void> {

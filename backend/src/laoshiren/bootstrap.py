@@ -8,6 +8,7 @@ from laoshiren.application.automations.service import (
     AttentionApplicationService,
     AutomationApplicationService,
 )
+from laoshiren.application.memories.context import AgentMemoryApplicationService
 from laoshiren.application.memories.service import MemoryApplicationService
 from laoshiren.application.personal_state.service import PersonalStateApplicationService
 from laoshiren.application.runtime.service import RuntimeApplicationService
@@ -19,8 +20,10 @@ from laoshiren.infrastructure.notifications.recording import RecordingNotificati
 from laoshiren.infrastructure.persistence.checkpoints import PostgresCheckpointLifecycle
 from laoshiren.infrastructure.persistence.database import Database
 from laoshiren.infrastructure.runtime.dispatcher import InProcessRunDispatcher
+from laoshiren.infrastructure.sources.text_parser import TextSourceParser
 from laoshiren.infrastructure.storage.local import LocalObjectStorage
 from laoshiren.workers.agent import AgentRunWorker, RuntimeAgentEventSink
+from laoshiren.workers.automation import AutomationScheduler
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +41,7 @@ class Container:
     notification_adapter: RecordingNotificationAdapter
     checkpoints: PostgresCheckpointLifecycle
     run_dispatcher: InProcessRunDispatcher
+    automation_scheduler: AutomationScheduler
 
 
 def bootstrap() -> Container:
@@ -49,6 +53,7 @@ def bootstrap() -> Container:
         database.personal_state_unit_of_work,
         storage,
         max_upload_bytes=settings.max_upload_bytes,
+        parser=TextSourceParser(),
     )
     memories = MemoryApplicationService(database.memory_unit_of_work)
     notification_adapter = RecordingNotificationAdapter()
@@ -59,6 +64,9 @@ def bootstrap() -> Container:
     run_dispatcher = InProcessRunDispatcher()
     runtime = RuntimeApplicationService(database.runtime_unit_of_work, run_dispatcher)
     checkpoints = PostgresCheckpointLifecycle(settings.database_url)
+    automation_scheduler = AutomationScheduler(
+        automations, interval_seconds=settings.automation_poll_seconds
+    )
     return Container(
         settings=settings,
         database=database,
@@ -71,6 +79,7 @@ def bootstrap() -> Container:
         notification_adapter=notification_adapter,
         checkpoints=checkpoints,
         run_dispatcher=run_dispatcher,
+        automation_scheduler=automation_scheduler,
     )
 
 
@@ -86,7 +95,12 @@ def build_agent_worker(
         checkpointer=container.checkpoints.saver,
         event_sink=RuntimeAgentEventSink(container.runtime),
     )
-    return AgentRunWorker(container.runtime, graph)
+    return AgentRunWorker(
+        container.runtime,
+        graph,
+        AgentMemoryApplicationService(container.memories),
+        container.sources,
+    )
 
 
 def build_configured_agent_worker(container: Container) -> AgentRunWorker:

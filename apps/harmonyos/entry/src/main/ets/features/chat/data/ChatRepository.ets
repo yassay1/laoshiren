@@ -25,14 +25,14 @@ export class ChatRepository {
     return this.api.get<ChatMessage[]>(`/threads/${threadId}/messages`);
   }
 
-  createRun(threadId: string, content: string): Promise<AgentRun> {
+  createRun(threadId: string, content: string, idempotencyKey: string): Promise<AgentRun> {
     const message: RunMessageBody = { type: 'text', content: content };
     const body: CreateRunBody = {
       thread_id: threadId,
       message: message,
       source_ids: []
     };
-    return this.api.post<AgentRun>('/runs', body, this.key('run'));
+    return this.api.post<AgentRun>('/runs', body, idempotencyKey);
   }
 
   getRun(runId: string): Promise<AgentRun> {
@@ -40,7 +40,7 @@ export class ChatRepository {
   }
 
   resumeRun(run: AgentRun, approved: boolean): Promise<AgentRun> {
-    const response: ResumeDecisionBody = { approved: approved };
+    const response: ResumeDecisionBody = { action: approved ? 'confirm' : 'cancel' };
     const body: ResumeRunBody = {
       interrupt_id: run.interrupt_id,
       response: response,
@@ -55,6 +55,10 @@ export class ChatRepository {
 
   closeStream(): void {
     this.stream.close();
+  }
+
+  newIdempotencyKey(prefix: string): string {
+    return this.key(prefix);
   }
 
   private key(prefix: string): string {

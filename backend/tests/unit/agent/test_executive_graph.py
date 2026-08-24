@@ -7,6 +7,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
 from laoshiren.agent.contracts import (
+    AgentBudgetExceeded,
     DecisionKind,
     ExecutiveDecision,
     GraphState,
@@ -112,3 +113,24 @@ async def test_sensitive_tool_interrupts_and_resumes_after_confirmation() -> Non
     assert len(calls) == 1
     assert calls[0][1] == {"target": "demo"}
     assert resumed["final_response"] == "工具结果：SUCCESS"
+
+
+async def test_graph_stops_repeated_decisions_at_budget() -> None:
+    class LoopGateway:
+        async def decide(
+            self, *, state: GraphState, available_tools: tuple[str, ...]
+        ) -> ExecutiveDecision:
+            del state, available_tools
+            return ExecutiveDecision(DecisionKind.CALL_TOOL, tool_name="missing")
+
+    state = initial_state()
+    graph = build_executive_graph(
+        model_gateway=LoopGateway(),
+        tools=ToolRegistry(),
+        checkpointer=InMemorySaver(),
+        max_decisions=2,
+    )
+    config: RunnableConfig = {"configurable": {"thread_id": state["run_id"]}}
+
+    with pytest.raises(AgentBudgetExceeded):
+        await graph.ainvoke(state, config)

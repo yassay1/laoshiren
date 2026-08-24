@@ -5,8 +5,10 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
-from laoshiren.agent.contracts import GraphState, ToolStatus
+from laoshiren.agent.contracts import AgentBudgetExceeded, GraphState, ToolStatus
+from laoshiren.application.memories.context import AgentMemoryApplicationService
 from laoshiren.application.runtime.service import RuntimeApplicationService
+from laoshiren.application.sources.service import SourceApplicationService
 from laoshiren.domain.runtime.entities import RunEventType, RunStatus
 
 
@@ -59,9 +61,13 @@ class AgentRunWorker:
         self,
         runtime: RuntimeApplicationService,
         graph: CompiledStateGraph[GraphState, None, GraphState, GraphState],
+        agent_memory: AgentMemoryApplicationService | None = None,
+        sources: SourceApplicationService | None = None,
     ) -> None:
         self._runtime = runtime
         self._graph = graph
+        self._agent_memory = agent_memory
+        self._sources = sources
 
     async def run_once(self, *, user_id: UUID, run_id: UUID) -> RunStatus:
         run = await self._runtime.get_run(user_id=user_id, run_id=run_id)
@@ -76,7 +82,9 @@ class AgentRunWorker:
             phase="executive",
             label="正在理解并处理",
         )
-        config: RunnableConfig = {"configurable": {"thread_id": str(run.thread_id)}}
+        # LangGraph's thread_id identifies one checkpoint execution lifecycle.
+        # Business Thread history is separate; every Run gets an isolated checkpoint.
+        config: RunnableConfig = {"configurable": {"thread_id": str(run.id)}}
         try:
             if run.resume_payload is not None:
                 command: Command[Any] = Command(resume=run.resume_payload)
@@ -94,6 +102,33 @@ class AgentRunWorker:
                     "source_refs": [str(value) for value in current.source_ids],
                     "tool_results": [],
                 }
+                if self._agent_memory is not None:
+                    memory_context = await self._agent_memory.load_context(
+                        user_id=user_id, query=current.content
+                    )
+                    initial["prefetched_state"] = {
+                        "memory_context": memory_context.as_prompt_data()
+                    }
+                if self._sources is not None and current.source_ids:
+                    source_context: list[dict[str, str]] = []
+                    remaining = 12_000
+                    for source_id in current.source_ids[:5]:
+                        source = await self._sources.get(
+                            user_id=user_id, source_id=source_id
+                        )
+                        if source.extracted_text and remaining > 0:
+                            excerpt = source.extracted_text[:remaining]
+                            source_context.append(
+                                {
+                                    "source_id": str(source.id),
+                                    "title": source.title,
+                                    "content": excerpt,
+                                }
+                            )
+                            remaining -= len(excerpt)
+                    initial.setdefault("prefetched_state", {})[
+                        "source_context"
+                    ] = source_context
                 output = cast(dict[str, Any], await self._graph.ainvoke(initial, config))
             interrupts = output.get("__interrupt__")
             if interrupts:
@@ -108,10 +143,20 @@ class AgentRunWorker:
             response = output.get("final_response")
             if not isinstance(response, str) or not response.strip():
                 raise RuntimeError("Executive Graph ended without a response.")
+            if self._agent_memory is not None:
+                current = next(item for item in messages if item.id == run.input_message_id)
+                await self._agent_memory.form_from_user_input(
+                    user_id=user_id, run_id=run_id, text=current.content
+                )
             await self._runtime.complete_run(user_id=user_id, run_id=run_id, content=response)
             return RunStatus.COMPLETED
-        except Exception:
+        except Exception as exception:
+            error_code = (
+                "AGENT_BUDGET_EXCEEDED"
+                if isinstance(exception, AgentBudgetExceeded)
+                else "AGENT_EXECUTION_FAILED"
+            )
             await self._runtime.fail_run(
-                user_id=user_id, run_id=run_id, error_code="AGENT_EXECUTION_FAILED"
+                user_id=user_id, run_id=run_id, error_code=error_code
             )
             raise

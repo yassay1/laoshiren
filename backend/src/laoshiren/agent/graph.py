@@ -7,6 +7,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
 from laoshiren.agent.contracts import (
+    AgentBudgetExceeded,
     DecisionKind,
     ExecutiveDecision,
     GraphState,
@@ -57,7 +58,7 @@ class NullAgentEventSink:
 
 def _decision_dict(decision: ExecutiveDecision) -> dict[str, Any]:
     return {
-        "kind": decision.kind,
+        "kind": decision.kind.value,
         "content": decision.content,
         "tool_name": decision.tool_name,
         "tool_arguments": decision.tool_arguments,
@@ -72,6 +73,8 @@ def build_executive_graph(
     checkpointer: BaseCheckpointSaver[Any],
     event_sink: AgentEventSink | None = None,
     policy_matrix: ToolPolicy | None = None,
+    max_decisions: int = 12,
+    max_tool_calls: int = 8,
 ) -> CompiledStateGraph[GraphState, None, GraphState, GraphState]:
     """Build the deliberately small V1 Executive Graph."""
 
@@ -82,16 +85,25 @@ def build_executive_graph(
         return {
             "messages": list(state.get("messages", [])),
             "tool_results": list(state.get("tool_results", [])),
+            "decision_count": state.get("decision_count", 0),
+            "tool_call_count": state.get("tool_call_count", 0),
         }
 
     async def executive(state: GraphState) -> GraphState:
+        decision_count = state.get("decision_count", 0)
+        if decision_count >= max_decisions:
+            raise AgentBudgetExceeded("Executive decision budget exceeded.")
         decision = await model_gateway.decide(state=state, available_tools=tools.names())
         route = {
             DecisionKind.RESPOND: "respond",
             DecisionKind.ASK_USER: "ask_user",
             DecisionKind.CALL_TOOL: "policy",
         }[decision.kind]
-        return {"decision": _decision_dict(decision), "route": cast(Any, route)}
+        return {
+            "decision": _decision_dict(decision),
+            "route": cast(Any, route),
+            "decision_count": decision_count + 1,
+        }
 
     async def respond(state: GraphState) -> GraphState:
         content = state["decision"].get("content")
@@ -127,7 +139,7 @@ def build_executive_graph(
             "action_id": action_id,
             "tool_name": name,
             "arguments": decision.get("tool_arguments", {}),
-            "risk": definition.risk,
+            "risk": definition.risk.value,
         }
         policy_result = tool_policy.evaluate(definition)
         if policy_result.decision is PolicyDecision.DENY:
@@ -168,6 +180,9 @@ def build_executive_graph(
         }
 
     async def execute(state: GraphState) -> GraphState:
+        tool_call_count = state.get("tool_call_count", 0)
+        if tool_call_count >= max_tool_calls:
+            raise AgentBudgetExceeded("Executive tool-call budget exceeded.")
         action = state["pending_action"]
         arguments = action.get("arguments")
         if not isinstance(arguments, dict):
@@ -202,6 +217,7 @@ def build_executive_graph(
         return {
             "tool_results": [*state.get("tool_results", []), result.as_dict()],
             "route": "executive",
+            "tool_call_count": tool_call_count + 1,
         }
 
     graph = StateGraph(GraphState)
