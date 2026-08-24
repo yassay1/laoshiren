@@ -3,7 +3,10 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from laoshiren.application.memories.context import AgentMemoryApplicationService
+from laoshiren.application.memories.context import (
+    AgentMemoryApplicationService,
+    EmbeddingProviderError,
+)
 from laoshiren.application.memories.dto import MemoryDTO
 from laoshiren.domain.memories.entities import MemoryStatus, MemoryType
 
@@ -54,6 +57,11 @@ class FakeMemories:
         return memory_dto(str(values["content"]), values["memory_type"], 0.65)  # type: ignore[arg-type]
 
 
+class FailingEmbeddingProvider:
+    async def embed(self, text: str) -> list[float]:
+        raise EmbeddingProviderError("provider unavailable")
+
+
 async def test_context_is_bounded_and_separates_profile_from_relevant() -> None:
     memories = FakeMemories()
     service = AgentMemoryApplicationService(memories)  # type: ignore[arg-type]
@@ -80,3 +88,20 @@ async def test_only_explicit_memory_request_is_formed_and_is_idempotent_per_run(
     assert formed is not None
     assert formed.content == "新的长期事实"
     assert memories.created[0]["idempotency_key"] == f"agent-memory:{run_id}"
+
+
+async def test_embedding_failure_falls_back_without_failing_agent_memory() -> None:
+    memories = FakeMemories()
+    service = AgentMemoryApplicationService(
+        memories,  # type: ignore[arg-type]
+        embedding_provider=FailingEmbeddingProvider(),
+    )
+
+    context = await service.load_context(user_id=uuid4(), query="PostgreSQL")
+    formed = await service.form_from_user_input(
+        user_id=uuid4(), run_id=uuid4(), text="请记住：新的长期事实"
+    )
+
+    assert context.relevant
+    assert formed is not None
+    assert memories.created[-1]["embedding"] is None

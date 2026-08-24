@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     model_api_base: str = "https://api.deepseek.com"
     model_api_key: str = Field(default="", repr=False)
     model_timeout_seconds: float = 60.0
+    embedding_model_name: str = ""
+    embedding_api_base: str = ""
+    embedding_api_key: str = Field(default="", repr=False)
+    embedding_dimensions: int = 1536
+    embedding_timeout_seconds: float = 20.0
     automation_poll_seconds: float = 30.0
     run_lease_seconds: float = 60.0
     run_heartbeat_seconds: float = 15.0

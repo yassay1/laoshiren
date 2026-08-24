@@ -9,13 +9,17 @@ from laoshiren.application.automations.service import (
     AttentionApplicationService,
     AutomationApplicationService,
 )
-from laoshiren.application.memories.context import AgentMemoryApplicationService
+from laoshiren.application.memories.context import (
+    AgentMemoryApplicationService,
+    EmbeddingProvider,
+)
 from laoshiren.application.memories.service import MemoryApplicationService
 from laoshiren.application.personal_state.service import PersonalStateApplicationService
 from laoshiren.application.runtime.service import RuntimeApplicationService
 from laoshiren.application.sources.service import SourceApplicationService
 from laoshiren.config.settings import Settings, get_settings
 from laoshiren.infrastructure.ai.deepseek import DeepSeekExecutiveModelGateway
+from laoshiren.infrastructure.ai.embeddings import OpenAICompatibleEmbeddingProvider
 from laoshiren.infrastructure.ai.zhipu import ZhipuExecutiveModelGateway
 from laoshiren.infrastructure.notifications.recording import RecordingNotificationAdapter
 from laoshiren.infrastructure.persistence.checkpoints import PostgresCheckpointLifecycle
@@ -42,6 +46,7 @@ class Container:
     personal_state: PersonalStateApplicationService
     sources: SourceApplicationService
     memories: MemoryApplicationService
+    embedding_provider: EmbeddingProvider | None
     automations: AutomationApplicationService
     attention: AttentionApplicationService
     runtime: RuntimeApplicationService
@@ -83,6 +88,21 @@ def bootstrap() -> Container:
         batch_size=settings.source_batch_size,
     )
     memories = MemoryApplicationService(database.memory_unit_of_work)
+    embedding_provider: EmbeddingProvider | None = None
+    if (
+        settings.embedding_model_name
+        and settings.embedding_api_base
+        and settings.embedding_api_key
+    ):
+        if settings.embedding_dimensions != 1536:
+            raise ValueError("Embedding dimensions must match the pgvector schema (1536).")
+        embedding_provider = OpenAICompatibleEmbeddingProvider(
+            api_key=settings.embedding_api_key,
+            model=settings.embedding_model_name,
+            api_base=settings.embedding_api_base,
+            dimensions=settings.embedding_dimensions,
+            timeout_seconds=settings.embedding_timeout_seconds,
+        )
     notification_adapter = RecordingNotificationAdapter()
     automations = AutomationApplicationService(
         database.automation_unit_of_work, notification_adapter
@@ -105,6 +125,7 @@ def bootstrap() -> Container:
         personal_state=personal_state,
         sources=sources,
         memories=memories,
+        embedding_provider=embedding_provider,
         automations=automations,
         attention=attention,
         runtime=runtime,
@@ -138,7 +159,9 @@ def build_agent_worker(
     return AgentRunWorker(
         container.runtime,
         graph,
-        AgentMemoryApplicationService(container.memories),
+        AgentMemoryApplicationService(
+            container.memories, embedding_provider=container.embedding_provider
+        ),
         container.sources,
         worker_id=worker_id,
         lease_seconds=container.settings.run_lease_seconds,

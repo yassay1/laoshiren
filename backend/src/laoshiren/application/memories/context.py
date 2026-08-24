@@ -11,6 +11,10 @@ class EmbeddingProvider(Protocol):
     async def embed(self, text: str) -> list[float]: ...
 
 
+class EmbeddingProviderError(RuntimeError):
+    """Embedding infrastructure failed; callers may use lexical retrieval."""
+
+
 @dataclass(frozen=True, slots=True)
 class MemoryContext:
     profile: tuple[MemoryDTO, ...]
@@ -51,7 +55,10 @@ class AgentMemoryApplicationService:
         )
         embedding = None
         if self._embedding_provider is not None and query.strip():
-            embedding = await self._embedding_provider.embed(query.strip())
+            try:
+                embedding = await self._embedding_provider.embed(query.strip())
+            except EmbeddingProviderError:
+                embedding = None
         semantic = await self._memories.search(
             user_id=user_id,
             query=None if embedding is not None else query,
@@ -97,11 +104,12 @@ class AgentMemoryApplicationService:
         for memory in existing:
             if " ".join(memory.content.casefold().split()) == canonical:
                 return memory
-        embedding = (
-            await self._embedding_provider.embed(content)
-            if self._embedding_provider is not None
-            else None
-        )
+        embedding = None
+        if self._embedding_provider is not None:
+            try:
+                embedding = await self._embedding_provider.embed(content)
+            except EmbeddingProviderError:
+                embedding = None
         return await self._memories.create(
             user_id=user_id,
             memory_type=memory_type,
