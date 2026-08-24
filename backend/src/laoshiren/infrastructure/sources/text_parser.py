@@ -4,6 +4,8 @@ from multiprocessing import get_context
 from multiprocessing.connection import Connection
 from pathlib import PurePath
 from typing import cast
+from xml.etree import ElementTree
+from zipfile import BadZipFile, ZipFile
 
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
@@ -15,6 +17,31 @@ from laoshiren.application.sources.ports import (
 )
 
 type PdfWorkerResult = tuple[bool, str | list[str]]
+
+
+def _extract_docx_text(content: bytes, *, max_uncompressed_bytes: int) -> str:
+    try:
+        with ZipFile(BytesIO(content)) as archive:
+            try:
+                info = archive.getinfo("word/document.xml")
+            except KeyError as exception:
+                raise SourceParsingError("DOCX document body is missing.") from exception
+            if info.file_size > max_uncompressed_bytes:
+                raise SourceParsingError("DOCX exceeds the configured extraction limit.")
+            document = archive.read(info)
+    except BadZipFile as exception:
+        raise SourceParsingError("DOCX container is invalid.") from exception
+    try:
+        root = ElementTree.fromstring(document)
+    except ElementTree.ParseError as exception:
+        raise SourceParsingError("DOCX document XML is invalid.") from exception
+    namespace = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    paragraphs: list[str] = []
+    for paragraph in root.iter(f"{namespace}p"):
+        text = "".join(node.text or "" for node in paragraph.iter(f"{namespace}t"))
+        if text.strip():
+            paragraphs.append(text)
+    return "\n\n".join(paragraphs)
 
 
 def _extract_pdf_pages(
@@ -69,7 +96,7 @@ def _pdf_worker(
 
 
 class TextSourceParser:
-    """First-pass parser for UTF text, Markdown and text-based PDF files."""
+    """Bounded parser for UTF text, Markdown, text PDF and DOCX files."""
 
     def __init__(
         self,
@@ -98,6 +125,14 @@ class TextSourceParser:
             elif extension == ".pdf":
                 raw_pages = await self._parse_pdf_isolated(content)
                 page_numbers = list(range(1, len(raw_pages) + 1))
+            elif extension == ".docx":
+                raw_pages = [
+                    _extract_docx_text(
+                        content,
+                        max_uncompressed_bytes=self._max_extracted_characters * 8,
+                    )
+                ]
+                page_numbers = [None]
             else:
                 raise SourceParsingError("No parser is available for this Source type.")
         except (UnicodeError, PdfReadError) as exception:

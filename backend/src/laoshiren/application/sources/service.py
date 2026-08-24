@@ -52,7 +52,10 @@ ALLOWED_UPLOADS: dict[str, tuple[SourceType, set[str], tuple[bytes, ...]]] = {
     ".txt": (SourceType.OTHER, {"text/plain"}, ()),
     ".md": (SourceType.OTHER, {"text/markdown", "text/plain"}, ()),
 }
-PROCESSABLE_MIME_TYPES = ("text/plain", "text/markdown", "application/pdf")
+DOCX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+PROCESSABLE_MIME_TYPES = ("text/plain", "text/markdown", "application/pdf", DOCX_MIME_TYPE)
+PARSER_VERSION = "text-source-v2"
+CHUNK_VERSION = "character-overlap-v1"
 
 
 def build_source_chunks(
@@ -160,6 +163,7 @@ class SourceApplicationService:
         max_upload_bytes: int,
         parser: SourceParser | None = None,
         embedding_provider: EmbeddingProvider | None = None,
+        embedding_model_version: str | None = None,
         parse_timeout_seconds: float = 30.0,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
@@ -167,6 +171,7 @@ class SourceApplicationService:
         self._max_upload_bytes = max_upload_bytes
         self._parser = parser
         self._embedding_provider = embedding_provider
+        self._embedding_model_version = embedding_model_version
         if parse_timeout_seconds <= 0:
             raise ValueError("Source parse timeout must be positive.")
         self._parse_timeout_seconds = parse_timeout_seconds
@@ -233,7 +238,14 @@ class SourceApplicationService:
                 content_hash=content_hash,
                 size=size,
                 idempotency_key=idempotency_key,
+                metadata={
+                    "parser_version": PARSER_VERSION,
+                    "chunk_version": CHUNK_VERSION,
+                    "embedding_model_version": self._embedding_model_version,
+                },
             )
+            if mime_type not in PROCESSABLE_MIME_TYPES:
+                source.mark_failed(error_code="SOURCE_TYPE_UNSUPPORTED")
             async with self._unit_of_work_factory() as unit_of_work:
                 await unit_of_work.users.ensure_exists(user_id)
                 await unit_of_work.sources.add(source)
@@ -334,6 +346,18 @@ class SourceApplicationService:
         chunks = build_source_chunks_from_content(
             source_id=source_id, content=normalized
         )
+        chunks = [
+            replace(
+                chunk,
+                metadata={
+                    **chunk.metadata,
+                    "parser_version": PARSER_VERSION,
+                    "chunk_version": CHUNK_VERSION,
+                    "embedding_model_version": self._embedding_model_version,
+                },
+            )
+            for chunk in chunks
+        ]
         if self._embedding_provider is not None and chunks:
             try:
                 embeddings = await self._embedding_provider.embed_many(

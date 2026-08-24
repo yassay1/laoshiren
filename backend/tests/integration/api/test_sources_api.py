@@ -54,6 +54,8 @@ async def test_source_upload_link_and_query_flow() -> None:
             assert upload.json()["source_type"] == "PDF"
             assert upload.json()["size"] == 14
             assert upload.json()["replayed"] is False
+            assert upload.json()["metadata"]["parser_version"] == "text-source-v2"
+            assert upload.json()["metadata"]["chunk_version"] == "character-overlap-v1"
             source_id = UUID(upload.json()["id"])
             assert replay.status_code == 201
             assert replay.json()["id"] == str(source_id)

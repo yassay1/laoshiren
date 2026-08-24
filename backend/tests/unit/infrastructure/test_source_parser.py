@@ -1,6 +1,7 @@
 import asyncio
 from io import BytesIO
 from multiprocessing import active_children
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 from pypdf import PdfWriter
@@ -29,6 +30,35 @@ async def test_empty_text_source_is_rejected() -> None:
 
     with pytest.raises(SourceParsingError, match="no extractable text"):
         await parser.parse(filename="empty.txt", mime_type="text/plain", content=b"  \n")
+
+
+async def test_docx_text_is_extracted_without_losing_paragraph_boundaries() -> None:
+    content = BytesIO()
+    with ZipFile(content, "w", ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "word/document.xml",
+            """<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>First</w:t></w:r></w:p><w:p><w:r><w:t>Second</w:t></w:r></w:p></w:body></w:document>""",
+        )
+    parser = TextSourceParser()
+
+    parsed = await parser.parse(
+        filename="notes.docx",
+        mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        content=content.getvalue(),
+    )
+
+    assert parsed.text == "First\n\nSecond"
+
+
+async def test_invalid_docx_is_rejected_explicitly() -> None:
+    parser = TextSourceParser()
+
+    with pytest.raises(SourceParsingError, match="container is invalid"):
+        await parser.parse(
+            filename="broken.docx",
+            mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            content=b"PK\x03\x04not-a-zip",
+        )
 
 
 async def test_pdf_page_limit_is_enforced_before_extraction() -> None:

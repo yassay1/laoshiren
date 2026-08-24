@@ -84,6 +84,13 @@ async def test_source_evidence_uses_vector_similarity_and_preserves_page() -> No
                 ),
             ),
         )
+        assert not await service.complete_processing(
+            source_id=uploaded.id,
+            owner="semantic-worker",
+            parsed_content=ParsedSourceContent(
+                text="duplicate retry", pages=(ParsedSourcePage(1, "duplicate retry"),)
+            ),
+        )
 
         chunks = await service.get_context_chunks(
             user_id=user_id,
@@ -94,6 +101,18 @@ async def test_source_evidence_uses_vector_similarity_and_preserves_page() -> No
 
         assert chunks[0].content == "deadline is Friday"
         assert chunks[0].page_number == 2
+        async with container.database.engine.connect() as connection:
+            metadata = await connection.scalar(
+                text("SELECT metadata FROM source_chunks WHERE id = :chunk_id"),
+                {"chunk_id": chunks[0].id},
+            )
+            chunk_count = await connection.scalar(
+                text("SELECT count(*) FROM source_chunks WHERE source_id = :source_id"),
+                {"source_id": uploaded.id},
+            )
+        assert metadata["parser_version"] == "text-source-v2"
+        assert metadata["chunk_version"] == "character-overlap-v1"
+        assert chunk_count == 2
     finally:
         if source_id is not None:
             async with container.database.engine.begin() as connection:

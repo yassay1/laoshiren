@@ -92,6 +92,7 @@ def bootstrap() -> Container:
         ),
         parse_timeout_seconds=settings.source_parse_timeout_seconds,
         embedding_provider=embedding_provider,
+        embedding_model_version=settings.embedding_model_name or None,
     )
     source_worker = SourceProcessingWorker(
         sources,
