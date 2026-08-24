@@ -70,7 +70,7 @@ TXT/Markdown 使用 UTF-8（含 BOM）解析；PDF 使用 pypdf 提取文本。�
 
 `AutomationScheduler -> process_due -> SELECT FOR UPDATE SKIP LOCKED -> occurrence_key -> NotificationOutbox unique insert -> Automation advance/complete -> atomic outbox claim/lease -> commit -> NotificationPort -> owner-checked SUBMITTED/FAILED + next_attempt_at`。
 
-Scheduler 默认 30 秒轮询并在启动后立即执行一次。外部 adapter 调用已移出数据库事务；FAILED outbox 使用有上限指数退避并仅在 `next_attempt_at` 到期后重新领取，最多 3 次。claim lease 允许崩溃后接管，旧 owner 不能覆盖新结果。当前 NotificationPort 是 recording adapter，没有 HarmonyOS Push；Automation 与 Agent Run 仍保持边界，不会隐式启动 Executive Run。
+Scheduler 默认 30 秒轮询并在启动后立即执行一次。外部 adapter 调用已移出数据库事务；FAILED outbox 使用有上限指数退避并仅在 `next_attempt_at` 到期后重新领取，最多 3 次。claim lease 允许崩溃后接管，旧 owner 不能覆盖新结果。NotificationPort 强制接收 occurrence key 作为下游 idempotency key；专项测试覆盖“下游成功、数据库 ack 前崩溃”后的重复提交去重。当前实现仍是 recording adapter，没有 HarmonyOS Push；Automation 与 Agent Run 保持边界，不会隐式启动 Executive Run。
 
 ## 9. 新增或修改的数据表 / migration
 
@@ -146,7 +146,7 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。外部 adapter 
 - Embedding Gateway 已可配置，但部署环境仍需提供实际 embedding model/base/key；未配置时明确使用文本检索降级。
 - Memory formation 仍只覆盖显式中文触发语；回答风格和提醒偏好已有确定性 key-level supersede，但尚不是模型辅助的通用候选抽取和矛盾检测。
 - Source 已有解析资源限制与文本 Evidence chunks，但尚无 OCR、Office、图片理解、STT、页码级 provenance 和 semantic chunk retrieval。
-- Automation outbox 已有 claim/lease/backoff，但真实 Push adapter 仍须使用 occurrence_key 作为下游幂等键，才能覆盖“外部接收成功、ack 前崩溃”的窗口。
+- Automation outbox 和 Port 已强制 occurrence key 幂等契约；真实 Push adapter 仍需确认目标服务确实持久实现该键，而不是只接受参数。
 - RecordingNotificationAdapter 不是真实 Push adapter。
 - InProcessRunDispatcher 仍是本地低延迟唤醒机制；周期性 `RunDispatchScanner` 已让每个实例从数据库发现 QUEUED/过期 RUNNING Run。扫描为 at-least-once，执行唯一所有权仍由数据库 claim 保证；尚未引入独立 broker，因此空闲扫描存在最多一个 poll interval 的延迟。
 - Tool ledger 能防止已持久完成结果重放，并与现有 Application 幂等组成 at-least-once 安全链；对于“外部副作用成功、ledger complete 前崩溃”仍要求外部 Tool 使用下游 idempotency key，无法宣称任意外部系统 exactly-once。
@@ -205,7 +205,7 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。外部 adapter 
 
 ## 20. 下一阶段建议
 
-下一阶段 P0 应规定所有外部副作用 Tool/Push adapter 的下游 idempotency contract，并进一步隔离无法被 asyncio timeout 终止的解析线程。P1 配置实际 Embedding 服务并增加 Memory 通用 candidate extraction/矛盾检测 eval。P2 为 Source 增加页码 provenance、semantic chunk retrieval 与 OCR adapter。P3 接入真实 Push adapter 并增加 outbox 可观测指标。前端继续维持联调范围。
+下一阶段 P0 应规定未来外部副作用 Tool 的下游 idempotency contract，并进一步隔离无法被 asyncio timeout 终止的解析线程。P1 配置实际 Embedding 服务并增加 Memory 通用 candidate extraction/矛盾检测 eval。P2 为 Source 增加页码 provenance、semantic chunk retrieval 与 OCR adapter。P3 接入真实 Push adapter 并验证其持久幂等能力，增加 outbox 可观测指标。前端继续维持联调范围。
 
 ## 最终仓库与验证快照
 
@@ -223,13 +223,13 @@ ee596e5 feat: harden agent runtime and connect durable context
 测试汇总
 ruff: passed
 mypy strict: 100 source files passed
-pytest (not eval, database enabled): 56 passed
+pytest (not eval, database enabled): 58 passed
 Alembic 0013 downgrade/upgrade: passed
 真实模型 eval: not run
 HarmonyOS build/E2E: not run
 ```
 
-当前仍存在的 P0/P1：外部 Tool/Push 下游幂等契约、无法强制终止的 parser thread、实际 Embedding 服务配置、Memory 通用候选抽取/矛盾检测、Source 页码 provenance/OCR/semantic retrieval。
+当前仍存在的 P0/P1：未来外部 Tool 下游幂等契约、真实 Push 的持久幂等验证、无法强制终止的 parser thread、实际 Embedding 服务配置、Memory 通用候选抽取/矛盾检测、Source 页码 provenance/OCR/semantic retrieval。
 
 ## 2026-08-25 外部参考与可靠性增量
 
