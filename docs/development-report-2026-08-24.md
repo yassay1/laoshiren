@@ -56,6 +56,11 @@ TXT/Markdown 使用 UTF-8（含 BOM）解析；PDF 使用 pypdf 提取文本。�
 - create/resume/cancel 延续 DB unique key + RunOperation 约束；HarmonyOS retry 复用同一 create key。
 - Personal State 副作用 Tool 继续使用确定性 action_id 和 Application idempotency key，checkpoint 重放不会重复落业务状态。
 - worker 进程取消不会将 Run 错标 FAILED；遗留 RUNNING 在下次启动恢复。
+- 后续 P0 批次已增加数据库 Run lease：Worker 使用原子条件更新 claim QUEUED 或 lease 已过期的 RUNNING，并持久化 `claim_owner / lease_expires_at / heartbeat_at / attempt_count`。
+- Worker 默认每 15 秒 heartbeat、lease 默认 60 秒；未过期的 Run 不允许第二 Worker claim，过期后允许安全接管。
+- WAITING_USER、COMPLETED、FAILED、CANCELLED 会释放 lease；旧 owner 不能再写 interrupt 或终态。
+- create Thread/Run 及 Run operation 在 UoW 内使用 PostgreSQL transaction advisory lock 串行化相同 `user_id + idempotency_key`，并发首次请求稳定读取同一资源，不再依赖唯一约束异常。
+- Tool 执行新增 durable ledger；同一 `Run.id + action_id` 只有一个执行 owner，完成结果持久化后 Graph replay 直接复用，不再次调用 handler。
 
 ## 8. Automation 当前执行链
 
@@ -73,6 +78,16 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。FAILED outbox �
 
 已实际验证 `0008 downgrade -> 0007` 与 `upgrade -> head` 往返成功。Runtime recovery 和 Automation retry 沿用既有表、状态与索引，无额外 migration。
 
+后续新增 `20260824_0009_run_leases_tool_ledger.py`：
+
+- `agent_runs.claim_owner / lease_expires_at / heartbeat_at / attempt_count`
+- `ix_agent_runs_status_lease`
+- `tool_execution_status` enum
+- `tool_executions`：action identity、arguments hash、owner lease、attempt、status 与持久 ToolResult
+- `uq_tool_executions_action(run_id, action_id)` 与 status/lease claim index
+
+已实际验证 `0009 -> 0008 -> 0009` downgrade/upgrade 往返成功。
+
 ## 10. 新增 API / Tool / Worker / Adapter
 
 - API：Source response/OpenAPI 新增 extraction 三字段；上传新增 `.txt`、`.md` 类型。
@@ -86,12 +101,14 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。FAILED outbox �
 - `backend/src/laoshiren/agent/graph.py`：`build_executive_graph`，预算、HITL、Policy/Tool 路由。
 - `backend/src/laoshiren/workers/agent.py`：`AgentRunWorker.run_once`，Run checkpoint、Memory/Source context、formation 与终态映射。
 - `backend/src/laoshiren/application/runtime/service.py`：`recover_pending_runs`，启动恢复用例。
+- `backend/src/laoshiren/application/runtime/service.py`：`claim_run`、`renew_run_lease`、`claim_tool_execution`、`complete_tool_execution`，多实例执行所有权用例。
 - `backend/src/laoshiren/domain/runtime/entities.py`：`AgentRun.recover_after_crash`，恢复状态机。
 - `backend/src/laoshiren/application/memories/context.py`：`AgentMemoryApplicationService`，检索组装与显式形成。
 - `backend/src/laoshiren/application/sources/service.py`：上传校验、解析编排、处理状态持久化。
 - `backend/src/laoshiren/infrastructure/sources/text_parser.py`：TXT/Markdown/PDF parser adapter。
 - `backend/src/laoshiren/workers/automation.py`：持久状态 scheduler 生命周期。
 - `backend/src/laoshiren/infrastructure/persistence/repositories/automations.py`：due/outbox 并发 claim 与 retry 查询。
+- `backend/src/laoshiren/infrastructure/persistence/repositories/runtime.py`：Run 原子 lease claim、heartbeat 与 Tool ledger CAS。
 - `backend/src/laoshiren/bootstrap.py`：全部新增依赖组装。
 - `backend/src/laoshiren/main.py`：checkpoint、dispatcher、recovery、scheduler 的启动/停止顺序。
 - `apps/harmonyos/.../ChatRepository.ets`、`ChatViewModel.ets`：HITL payload 与 retry key。
@@ -100,13 +117,13 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。FAILED outbox �
 
 - 通过：ruff 全仓检查。
 - 通过：mypy strict，97 个 source files。
-- 通过：`RUN_DATABASE_TESTS=1 uv run pytest -q -m "not eval"`，36 passed。
+- 通过：`RUN_DATABASE_TESTS=1 uv run pytest -q -m "not eval"`，38 passed。
 - 通过：migration `0008 -> 0007 -> head` 往返。
 - 通过：OpenAPI 重新生成，`git diff --check`。
 - 未执行：`backend/evals/` 真实模型 eval；本轮避免依赖付费/不稳定模型调用。
 - 未执行：HarmonyOS 真机/模拟器构建与 E2E；本轮仅做最小 contract 修复，未投入前端体验测试。
 
-新增专项覆盖包括 Graph budget、Memory context/formation、Source text parsing、Automation scheduler lifecycle、Runtime restart recovery。既有测试继续覆盖 HITL interrupt/resume、checkpoint PostgreSQL、pgvector search、SSE Last-Event-ID、API idempotency、Tool/Application 与 Automation occurrence。
+新增专项覆盖包括 Graph budget、Memory context/formation、Source text parsing、Automation scheduler lifecycle、Runtime restart recovery、5 路并发 Thread/Run 幂等、Run lease 竞争/过期接管/旧 owner 拒绝、Tool ledger busy/cache replay。既有测试继续覆盖 HITL interrupt/resume、checkpoint PostgreSQL、pgvector search、SSE Last-Event-ID、Tool/Application 与 Automation occurrence。
 
 ## 13. 已修复问题
 
@@ -127,9 +144,9 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。FAILED outbox �
 - Source parsing 为同步 upload 路径；大 PDF 应迁移到持久 Source worker/claim，当前最大上传限制降低了风险但不等于后台处理。
 - Automation retry 尚无指数退避/`next_attempt_at`，会按 scheduler interval 重试，最多 3 次。
 - RecordingNotificationAdapter 不是真实 Push adapter。
-- InProcessRunDispatcher 本身非持久队列；数据库 recovery 提供单实例恢复，但没有多实例 lease/heartbeat/claim owner。
-- 并发首次使用同一 create idempotency key 时，数据库唯一约束防重复，但 loser 请求仍可能得到 IntegrityError，而不是稳定 replay response。
-- Tool 副作用通过 Application 幂等保护；通用 read/external Tool 的 durable execution ledger 尚未实现。
+- InProcessRunDispatcher 仍是本地唤醒机制，但数据库 Run lease 已成为执行所有权权威；尚未实现独立跨节点 wake-up broker，其他实例只能依赖启动恢复或未来轮询扫描。
+- Tool ledger 能防止已持久完成结果重放，并与现有 Application 幂等组成 at-least-once 安全链；对于“外部副作用成功、ledger complete 前崩溃”仍要求外部 Tool 使用下游 idempotency key，无法宣称任意外部系统 exactly-once。
+- Run heartbeat 目前由同一 asyncio 事件循环驱动；CPU 阻塞型 adapter 必须移出事件循环，否则可能发生 lease 误过期。
 
 ## 15. 与七份 v1.0 设计文档的差异
 
@@ -140,18 +157,18 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。FAILED outbox �
 
 ## 16. 当前技术债和风险
 
-最高风险是多实例 Runtime claim 与 Tool durable ledger 尚未形成；其次是 production embedding、Source background processing、Automation backoff 和真实通知 adapter。模型 Gateway prompt 仍是静态工具说明，新增 Tool 时需要同步维护。当前开发环境使用固定 Bearer auth，不适合生产。
+最高风险已从“没有执行所有权”下降为跨节点唤醒、外部副作用下游幂等和 heartbeat 运行隔离；其次是 production embedding、Source background processing、Automation backoff 和真实通知 adapter。模型 Gateway prompt 仍是静态工具说明，新增 Tool 时需要同步维护。当前开发环境使用固定 Bearer auth，不适合生产。
 
 ## 17. 当前项目完成度判断
 
-后端已经从“正常路径可演示”推进到“单实例可暂停、可重连、可重启恢复且有持久证据”的阶段。Personal State/Runtime 基础较完整；Memory/Source/Automation 已有真实纵向第一版，但仍处于可验证 MVP，而不是生产完备。HarmonyOS 仍只适合作为聊天联调壳。
+后端已经从“单实例可恢复”推进到“数据库协调的多 Worker claim、heartbeat、过期接管、Tool replay ledger 与并发幂等均有真实集成测试”的阶段。Personal State/Runtime 基础较完整；Memory/Source/Automation 已有真实纵向第一版，但仍处于可验证 MVP，而不是生产完备。HarmonyOS 仍只适合作为聊天联调壳。
 
 ## 18. 建议回来后重点人工审核的代码
 
 优先审核：
 
-1. `AgentRunWorker.run_once` 的 Run-ID checkpoint 与恢复语义。
-2. `recover_pending_runs` 在未来多实例部署下是否需要 lease 表。
+1. `AgentRunWorker.run_once` 的 Run-ID checkpoint、heartbeat task 与 lease 丢失语义。
+2. Run repository 的原子 claim 条件和 `recover_pending_runs` 仅恢复 expired lease 的边界。
 3. `AgentMemoryApplicationService` 的显式形成边界与 profile/semantic 分类。
 4. Source 同步解析是否符合当前部署延迟预算。
 5. Automation 外部调用持锁事务与 retry 策略；下一阶段应拆成短事务 claim/ack。
@@ -184,7 +201,7 @@ Scheduler 默认 30 秒轮询并在启动后立即执行一次。FAILED outbox �
 
 ## 20. 下一阶段建议
 
-P0 首先实现多实例 Run lease/heartbeat/claim、create idempotency 冲突 replay、durable Tool execution ledger。P1 接入可配置 EmbeddingProvider，增加 Memory candidate extraction/冲突 supersede eval。P2 把 Source parsing 移入持久 worker，并加入 chunk/evidence 表与 OCR adapter。P3 为 Automation outbox 增加 claim token、next_attempt_at、指数退避和真实 Push adapter。前端继续维持联调范围。
+下一阶段 P0 应增加跨节点 Run wake-up/定期 claim scanner，规定所有外部副作用 Tool 的下游 idempotency contract，并将 CPU/阻塞 adapter 隔离出 heartbeat event loop。P1 接入可配置 EmbeddingProvider，增加 Memory candidate extraction/冲突 supersede eval。P2 把 Source parsing 移入持久 worker，并加入 chunk/evidence 表与 OCR adapter。P3 为 Automation outbox 增加 claim token、next_attempt_at、指数退避和真实 Push adapter。前端继续维持联调范围。
 
 ## 最终仓库与验证快照
 
@@ -192,16 +209,17 @@ P0 首先实现多实例 Run lease/heartbeat/claim、create idempotency 冲突 r
 
 ```text
 git log --oneline
+6fd42bd feat: add leased run claims and durable tool ledger
 ee596e5 feat: harden agent runtime and connect durable context
 2dea15b chore: establish audited project baseline
 
 测试汇总
 ruff: passed
 mypy strict: 97 source files passed
-pytest (not eval, database enabled): 36 passed
+pytest (not eval, database enabled): 38 passed
 Alembic 0008 downgrade/upgrade: passed
 真实模型 eval: not run
 HarmonyOS build/E2E: not run
 ```
 
-当前仍存在的 P0/P1：多实例 Run claim/lease、create 并发幂等 replay、通用 durable Tool ledger、生产 EmbeddingProvider、Memory 冲突/supersede formation。
+当前仍存在的 P0/P1：跨节点 Run wake-up/scanner、外部 Tool 下游幂等契约与 heartbeat 隔离、生产 EmbeddingProvider、Memory 冲突/supersede formation。
