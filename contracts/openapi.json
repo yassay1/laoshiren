@@ -4262,6 +4262,26 @@
             ],
             "title": "Supersedes Id"
           },
+          "provenance_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provenance Run Id"
+          },
+          "source_message_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "title": "Source Message Ids"
+          },
           "status": {
             "$ref": "#/components/schemas/MemoryStatus"
           },
@@ -4311,6 +4331,8 @@
           "valid_until",
           "profile_key",
           "supersedes_id",
+          "provenance_run_id",
+          "source_message_ids",
           "status",
           "version",
           "created_at",
@@ -4440,33 +4462,6 @@
         ],
         "title": "MutationResponse"
       },
-      "OperationalStatusResponse": {
-        "properties": {
-          "status": {
-            "type": "string",
-            "title": "Status"
-          },
-          "checked_at": {
-            "type": "string",
-            "format": "date-time",
-            "title": "Checked At"
-          },
-          "backlogs": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "type": "object",
-            "title": "Backlogs"
-          }
-        },
-        "type": "object",
-        "required": [
-          "status",
-          "checked_at",
-          "backlogs"
-        ],
-        "title": "OperationalStatusResponse"
-      },
       "NotificationResponse": {
         "properties": {
           "id": {
@@ -4571,6 +4566,33 @@
           "FAILED"
         ],
         "title": "NotificationStatus"
+      },
+      "OperationalStatusResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "checked_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Checked At"
+          },
+          "backlogs": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Backlogs"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "checked_at",
+          "backlogs"
+        ],
+        "title": "OperationalStatusResponse"
       },
       "ProcessingStatus": {
         "type": "string",
