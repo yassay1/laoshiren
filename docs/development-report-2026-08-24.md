@@ -237,3 +237,28 @@ HarmonyOS build/E2E: not run
 本批次额外核对 LangGraph、OpenAI Agents SDK、AutoGen、LlamaIndex/Llama Agents、Dify、PostgreSQL、Celery、SQLAlchemy 与 Unstructured 的官方资料/官方仓库，记录见 `docs/research/agent-runtime-reference-research-2026-08-25.md`。采用数据库扫描 + 原子 claim、at-least-once + 显式幂等、Source 持久状态机；未照搬多 Agent、Redis/Celery/Temporal 等重型结构。
 
 Agent Graph 的两条 `ainvoke` 路径现均显式设置 `durability="sync"`。服务生命周期启动 `RunDispatchScanner` 和 `SourceProcessingScheduler`；停止顺序先停止业务 scheduler，再停止 dispatcher/checkpointer。专项测试证明重复扫描不会绕过 Run claim，Source 并发领取互斥、过期接管成功、旧 owner 结果拒绝。
+
+## 2026-08-25 Source Evidence 语义检索增量
+
+本增量把 Source 从顺序文本块推进为可引用的 Evidence 检索链：TXT/Markdown 生成无页码文本块，文本型 PDF 按真实页拆分并保留 `page_number`；全局 `char_start/char_end`、稳定 ordinal、页码和 chunk id 一起持久化。处理 Worker 在 READY 事务前批量生成 chunk embedding，Embedding Provider 失败时不阻塞 Source 入库，而是保留无向量 Evidence。
+
+当前实际链路为：`Source upload -> persistent claim/lease -> isolated parser -> ParsedSourceContent/pages -> bounded chunks -> batch embedding -> READY + chunks atomic commit -> current user query embedding -> pgvector cosine top-k -> bounded Agent context`。Agent 仅检索消息显式引用的 Source，并把 `source_id/chunk_id/page_number/title/content` 交给 Executive；没有配置或调用失败时先做文本匹配，未命中再按 ordinal 回退，因此不会因外部 embedding 服务故障丢失已提取内容。
+
+架构差异与决策：Embedding port 从 Memory 专属模块上移到 `application/ai/ports.py`，Memory 和 Source 共用同一抽象与 Infrastructure adapter；这避免了 Source 反向依赖 Memory。没有引入独立 RAG 框架或第二套向量服务。PDF 页级 provenance 已完成，OCR、Office、图片理解和 STT 仍按 v1.0 方向保留为后续 adapter。
+
+新增 migration `20260825_0014_source_chunk_evidence.py`：为 `source_chunks` 增加 nullable `page_number`、`vector(1536) embedding`，并创建 cosine HNSW 索引。已在真实 PostgreSQL/pgvector 测试库从 0013 升级到 0014。
+
+关键位置：
+
+- `application/sources/service.py`：`build_source_chunks_from_content`、`complete_processing`、`get_context_chunks`，负责页级切块、批量向量化、故障降级和语义/文本回退检索。
+- `application/ai/ports.py`：共享 `EmbeddingProvider.embed/embed_many` port。
+- `infrastructure/sources/text_parser.py`：`ParsedSourceContent` 与 PDF page 提取、总字符边界。
+- `infrastructure/persistence/repositories/sources.py`：pgvector cosine top-k、文本匹配和 Evidence 映射。
+- `workers/agent.py`：以当前用户问题检索引用 Source，并携带页码进入 Agent context。
+- `tests/integration/persistence/test_source_semantic_evidence.py`：验证真实 vector 排序与页码 provenance。
+
+本增量测试结果：ruff 全通过；mypy strict 106 个 source files 全通过；`RUN_DATABASE_TESTS=1 uv run pytest -q` 为 63 passed；Alembic 当前为 `20260825_0014 (head)`。真实模型 eval 与 HarmonyOS build/E2E 未执行，原因与本报告前述一致。
+
+建议人工聊天验证补充：上传至少两页、每页包含不同事实的可复制文本 PDF，引用 source_id 后询问仅第二页可回答的问题，例如“根据附件，最终截止日期是哪天？请说明依据页码。”期望回答使用第二页事实；随后询问第一页事实，验证检索结果切换。停用 embedding 配置并重启后重复提问，期望仍可通过文本/顺序回退回答而不使 Source 失败。
+
+当前仍存在的 P0/P1 已收敛为：未来外部 Tool 的下游幂等契约与 crash-window 验证、真实 Push adapter 持久幂等、实际 Embedding 服务部署验证、Memory 通用候选抽取/矛盾检测，以及 Source OCR/Office/图片/STT。Source 页码 provenance 与 semantic chunk retrieval 不再属于未实现项。
