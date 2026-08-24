@@ -3,7 +3,12 @@ from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
-from laoshiren.domain.sources.entities import Source, SourceRelationType, ThingSource
+from laoshiren.domain.sources.entities import (
+    Source,
+    SourceChunk,
+    SourceRelationType,
+    ThingSource,
+)
 
 
 class SourceRepository(Protocol):
@@ -42,6 +47,7 @@ class SourceRepository(Protocol):
         source_id: UUID,
         owner: str,
         extracted_text: str,
+        chunks: list[SourceChunk],
         now: datetime,
     ) -> bool: ...
 
@@ -54,6 +60,10 @@ class SourceRepository(Protocol):
         now: datetime,
         retry_at: datetime | None,
     ) -> bool: ...
+
+    async def list_chunks(
+        self, *, user_id: UUID, source_id: UUID, limit: int
+    ) -> list[SourceChunk]: ...
 
 
 class ObjectStorage(Protocol):

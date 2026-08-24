@@ -33,3 +33,13 @@ class SourceProcessingJobDTO:
     mime_type: str
     object_key: str
     attempt_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class SourceContextChunkDTO:
+    id: UUID
+    source_id: UUID
+    ordinal: int
+    content: str
+    char_start: int
+    char_end: int

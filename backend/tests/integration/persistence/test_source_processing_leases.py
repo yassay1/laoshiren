@@ -86,11 +86,17 @@ async def test_source_claim_is_exclusive_and_expired_lease_is_recoverable() -> N
             extracted_text="authoritative result",
         )
         current = await service.get(user_id=user_id, source_id=source.id)
+        context_chunks = await service.get_context_chunks(
+            user_id=user_id, source_id=source.id
+        )
 
         assert stale_complete is False
         assert completed is True
         assert current.processing_status is ProcessingStatus.READY
         assert current.extracted_text == "authoritative result"
+        assert [item.content for item in context_chunks] == ["authoritative result"]
+        assert context_chunks[0].char_start == 0
+        assert context_chunks[0].char_end == len("authoritative result")
     finally:
         async with container.database.engine.begin() as connection:
             if source_id is not None:

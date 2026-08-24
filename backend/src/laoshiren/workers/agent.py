@@ -201,16 +201,38 @@ class AgentRunWorker:
                         source = await self._sources.get(
                             user_id=user_id, source_id=source_id
                         )
-                        if source.extracted_text and remaining > 0:
+                        chunks = await self._sources.get_context_chunks(
+                            user_id=user_id,
+                            source_id=source_id,
+                            max_chunks=8,
+                            max_characters=remaining,
+                        )
+                        if not chunks and source.extracted_text and remaining > 0:
+                            # Compatibility for READY rows created before chunk migration.
                             excerpt = source.extracted_text[:remaining]
                             source_context.append(
                                 {
                                     "source_id": str(source.id),
+                                    "chunk_id": "",
+                                    "ordinal": "0",
                                     "title": source.title,
                                     "content": excerpt,
                                 }
                             )
                             remaining -= len(excerpt)
+                        for chunk in chunks:
+                            if remaining <= 0:
+                                break
+                            source_context.append(
+                                {
+                                    "source_id": str(source.id),
+                                    "chunk_id": str(chunk.id),
+                                    "ordinal": str(chunk.ordinal),
+                                    "title": source.title,
+                                    "content": chunk.content,
+                                }
+                            )
+                            remaining -= len(chunk.content)
                     initial.setdefault("prefetched_state", {})[
                         "source_context"
                     ] = source_context

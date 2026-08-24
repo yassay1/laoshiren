@@ -92,3 +92,15 @@ class ThingSource:
     relation_type: SourceRelationType
     relevance: float = 1.0
     created_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass(frozen=True, slots=True)
+class SourceChunk:
+    source_id: UUID
+    ordinal: int
+    content: str
+    char_start: int
+    char_end: int
+    id: UUID = field(default_factory=uuid4)
+    metadata: dict[str, object] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=utc_now)

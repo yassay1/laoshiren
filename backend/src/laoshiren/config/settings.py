@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     source_max_attempts: int = 3
     source_retry_base_seconds: float = 5.0
     source_retry_max_seconds: float = 300.0
+    source_parse_timeout_seconds: float = 30.0
+    source_max_extracted_characters: int = 200_000
+    source_max_pdf_pages: int = 200
+    source_max_pdf_page_characters: int = 20_000
 
 
 @lru_cache

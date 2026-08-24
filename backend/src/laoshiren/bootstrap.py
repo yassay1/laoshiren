@@ -62,7 +62,12 @@ def bootstrap() -> Container:
         database.personal_state_unit_of_work,
         storage,
         max_upload_bytes=settings.max_upload_bytes,
-        parser=TextSourceParser(),
+        parser=TextSourceParser(
+            max_extracted_characters=settings.source_max_extracted_characters,
+            max_pdf_pages=settings.source_max_pdf_pages,
+            max_pdf_page_characters=settings.source_max_pdf_page_characters,
+        ),
+        parse_timeout_seconds=settings.source_parse_timeout_seconds,
     )
     source_worker = SourceProcessingWorker(
         sources,

@@ -1,18 +1,25 @@
+import asyncio
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import PurePath
 from uuid import UUID, uuid4
 
 from laoshiren.application.personal_state.ports import PersonalStateUnitOfWork
-from laoshiren.application.sources.dto import SourceDTO, SourceProcessingJobDTO
+from laoshiren.application.sources.dto import (
+    SourceContextChunkDTO,
+    SourceDTO,
+    SourceProcessingJobDTO,
+)
 from laoshiren.application.sources.ports import (
     ObjectStorage,
     SourceParser,
+    SourceParsingError,
 )
 from laoshiren.domain.personal_state.entities import StateMutation, TimelineEvent, utc_now
 from laoshiren.domain.personal_state.exceptions import EntityNotFound
 from laoshiren.domain.sources.entities import (
     Source,
+    SourceChunk,
     SourceOrigin,
     SourceRelationType,
     SourceType,
@@ -41,6 +48,40 @@ ALLOWED_UPLOADS: dict[str, tuple[SourceType, set[str], tuple[bytes, ...]]] = {
     ".md": (SourceType.OTHER, {"text/markdown", "text/plain"}, ()),
 }
 PROCESSABLE_MIME_TYPES = ("text/plain", "text/markdown", "application/pdf")
+
+
+def build_source_chunks(
+    *, source_id: UUID, text: str, chunk_characters: int = 2_000, overlap: int = 200
+) -> list[SourceChunk]:
+    if chunk_characters <= 0 or not 0 <= overlap < chunk_characters:
+        raise ValueError("Source chunk and overlap limits are invalid.")
+    chunks: list[SourceChunk] = []
+    start = 0
+    ordinal = 0
+    while start < len(text):
+        hard_end = min(start + chunk_characters, len(text))
+        end = hard_end
+        if hard_end < len(text):
+            paragraph_end = text.rfind("\n\n", start, hard_end)
+            if paragraph_end > start + chunk_characters // 2:
+                end = paragraph_end
+        content = text[start:end].strip()
+        if content:
+            chunks.append(
+                SourceChunk(
+                    source_id=source_id,
+                    ordinal=ordinal,
+                    content=content,
+                    char_start=start,
+                    char_end=end,
+                    metadata={"evidence_type": "TEXT_SPAN"},
+                )
+            )
+            ordinal += 1
+        if end >= len(text):
+            break
+        start = max(end - overlap, start + 1)
+    return chunks
 
 
 def to_source_dto(source: Source, *, replayed: bool = False) -> SourceDTO:
@@ -72,11 +113,15 @@ class SourceApplicationService:
         *,
         max_upload_bytes: int,
         parser: SourceParser | None = None,
+        parse_timeout_seconds: float = 30.0,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._storage = storage
         self._max_upload_bytes = max_upload_bytes
         self._parser = parser
+        if parse_timeout_seconds <= 0:
+            raise ValueError("Source parse timeout must be positive.")
+        self._parse_timeout_seconds = parse_timeout_seconds
 
     async def upload(
         self,
@@ -185,11 +230,17 @@ class SourceApplicationService:
         if self._parser is None:
             raise RuntimeError("No Source parser is configured.")
         content = await self._storage.read(object_key=job.object_key)
-        return await self._parser.parse(
-            filename=job.title,
-            mime_type=job.mime_type,
-            content=content,
-        )
+        try:
+            return await asyncio.wait_for(
+                self._parser.parse(
+                    filename=job.title,
+                    mime_type=job.mime_type,
+                    content=content,
+                ),
+                timeout=self._parse_timeout_seconds,
+            )
+        except TimeoutError as exception:
+            raise SourceParsingError("Source parsing exceeded its time limit.") from exception
 
     async def renew_processing_lease(
         self,
@@ -227,6 +278,7 @@ class SourceApplicationService:
                 source_id=source_id,
                 owner=owner,
                 extracted_text=clean_text,
+                chunks=build_source_chunks(source_id=source_id, text=clean_text),
                 now=datetime.now(UTC),
             )
             if completed:
@@ -234,6 +286,44 @@ class SourceApplicationService:
             else:
                 await unit_of_work.rollback()
             return completed
+
+    async def get_context_chunks(
+        self,
+        *,
+        user_id: UUID,
+        source_id: UUID,
+        max_chunks: int = 8,
+        max_characters: int = 12_000,
+    ) -> list[SourceContextChunkDTO]:
+        if max_chunks <= 0 or max_characters <= 0:
+            raise ValueError("Source context limits must be positive.")
+        async with self._unit_of_work_factory() as unit_of_work:
+            source = await unit_of_work.sources.get(
+                user_id=user_id, source_id=source_id
+            )
+            if source is None:
+                raise EntityNotFound("Source was not found.")
+            chunks = await unit_of_work.sources.list_chunks(
+                user_id=user_id, source_id=source_id, limit=max_chunks
+            )
+        result: list[SourceContextChunkDTO] = []
+        remaining = max_characters
+        for chunk in chunks:
+            if remaining <= 0:
+                break
+            content = chunk.content[:remaining]
+            result.append(
+                SourceContextChunkDTO(
+                    id=chunk.id,
+                    source_id=chunk.source_id,
+                    ordinal=chunk.ordinal,
+                    content=content,
+                    char_start=chunk.char_start,
+                    char_end=min(chunk.char_start + len(content), chunk.char_end),
+                )
+            )
+            remaining -= len(content)
+        return result
 
     async def fail_processing(
         self,

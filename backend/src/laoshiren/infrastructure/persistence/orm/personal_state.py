@@ -204,6 +204,27 @@ class ThingSourceORM(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class SourceChunkORM(Base):
+    __tablename__ = "source_chunks"
+    __table_args__ = (
+        UniqueConstraint("source_id", "ordinal", name="uq_source_chunks_ordinal"),
+        Index("ix_source_chunks_source_ordinal", "source_id", "ordinal"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    source_id: Mapped[UUID] = mapped_column(
+        ForeignKey("sources.id", ondelete="CASCADE")
+    )
+    ordinal: Mapped[int] = mapped_column(Integer)
+    content: Mapped[str] = mapped_column(Text)
+    char_start: Mapped[int] = mapped_column(Integer)
+    char_end: Mapped[int] = mapped_column(Integer)
+    metadata_: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class MemoryORM(Base):
     __tablename__ = "long_term_memories"
     __table_args__ = (

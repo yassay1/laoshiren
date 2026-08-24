@@ -7,12 +7,26 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from laoshiren.domain.sources.entities import Source, ThingSource
+from laoshiren.domain.sources.entities import Source, SourceChunk, ThingSource
 from laoshiren.infrastructure.persistence.orm.personal_state import (
+    SourceChunkORM,
     SourceORM,
     ThingORM,
     ThingSourceORM,
 )
+
+
+def chunk_to_domain(model: SourceChunkORM) -> SourceChunk:
+    return SourceChunk(
+        id=model.id,
+        source_id=model.source_id,
+        ordinal=model.ordinal,
+        content=model.content,
+        char_start=model.char_start,
+        char_end=model.char_end,
+        metadata=model.metadata_,
+        created_at=model.created_at,
+    )
 
 
 def source_to_domain(model: SourceORM) -> Source:
@@ -197,6 +211,7 @@ class SqlAlchemySourceRepository:
         source_id: UUID,
         owner: str,
         extracted_text: str,
+        chunks: list[SourceChunk],
         now: datetime,
     ) -> bool:
         result = cast(
@@ -220,7 +235,24 @@ class SqlAlchemySourceRepository:
                 )
             ),
         )
-        return result.rowcount == 1
+        completed = result.rowcount == 1
+        if completed:
+            self._session.add_all(
+                [
+                    SourceChunkORM(
+                        id=chunk.id,
+                        source_id=chunk.source_id,
+                        ordinal=chunk.ordinal,
+                        content=chunk.content,
+                        char_start=chunk.char_start,
+                        char_end=chunk.char_end,
+                        metadata_=chunk.metadata,
+                        created_at=chunk.created_at,
+                    )
+                    for chunk in chunks
+                ]
+            )
+        return completed
 
     async def fail_processing(
         self,
@@ -252,3 +284,20 @@ class SqlAlchemySourceRepository:
             ),
         )
         return result.rowcount == 1
+
+    async def list_chunks(
+        self, *, user_id: UUID, source_id: UUID, limit: int
+    ) -> list[SourceChunk]:
+        models = (
+            await self._session.scalars(
+                select(SourceChunkORM)
+                .join(SourceORM, SourceORM.id == SourceChunkORM.source_id)
+                .where(
+                    SourceChunkORM.source_id == source_id,
+                    SourceORM.user_id == user_id,
+                )
+                .order_by(SourceChunkORM.ordinal)
+                .limit(limit)
+            )
+        ).all()
+        return [chunk_to_domain(model) for model in models]
