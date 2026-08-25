@@ -28,7 +28,7 @@ pytestmark = pytest.mark.asyncio
 
 class RespondGateway:
     async def decide(
-        self, *, state: GraphState, available_tools: tuple[str, ...]
+        self, *, state: GraphState, available_tools: tuple[str, ...], tool_manifest: str
     ) -> ExecutiveDecision:
         assert available_tools == ()
         return ExecutiveDecision(DecisionKind.RESPOND, content=f"收到：{state['current_input']}")
@@ -36,7 +36,7 @@ class RespondGateway:
 
 class SensitiveToolGateway:
     async def decide(
-        self, *, state: GraphState, available_tools: tuple[str, ...]
+        self, *, state: GraphState, available_tools: tuple[str, ...], tool_manifest: str
     ) -> ExecutiveDecision:
         assert available_tools == ("test.delete",)
         if state.get("tool_results"):
@@ -121,7 +121,7 @@ async def test_sensitive_tool_interrupts_and_resumes_after_confirmation() -> Non
 async def test_graph_stops_repeated_decisions_at_budget() -> None:
     class LoopGateway:
         async def decide(
-            self, *, state: GraphState, available_tools: tuple[str, ...]
+            self, *, state: GraphState, available_tools: tuple[str, ...], tool_manifest: str
         ) -> ExecutiveDecision:
             del state, available_tools
             return ExecutiveDecision(DecisionKind.CALL_TOOL, tool_name="missing")
@@ -152,7 +152,7 @@ async def test_graph_reuses_durable_cached_tool_result_without_handler_replay() 
 
     class Gateway:
         async def decide(
-            self, *, state: GraphState, available_tools: tuple[str, ...]
+            self, *, state: GraphState, available_tools: tuple[str, ...], tool_manifest: str
         ) -> ExecutiveDecision:
             del available_tools
             if state.get("tool_results"):

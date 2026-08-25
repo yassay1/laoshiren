@@ -114,3 +114,43 @@ class StateMutationDTO:
     reason: str
     source_id: UUID | None
     created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class UpcomingThingDTO:
+    thing_id: UUID
+    name: str
+    deadline_at: datetime
+    open_task_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class BlockedThingDTO:
+    thing_id: UUID
+    thing_name: str
+    description: str
+    severity: BlockerSeverity
+
+
+@dataclass(frozen=True, slots=True)
+class ActiveThingDTO:
+    thing_id: UUID
+    name: str
+    current_stage: str | None
+    open_task_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class RecentThingDTO:
+    thing_id: UUID
+    name: str
+    status: ThingStatus
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class StateOverviewDTO:
+    upcoming: tuple[UpcomingThingDTO, ...]
+    blocked: tuple[BlockedThingDTO, ...]
+    active: tuple[ActiveThingDTO, ...]
+    recent: tuple[RecentThingDTO, ...]

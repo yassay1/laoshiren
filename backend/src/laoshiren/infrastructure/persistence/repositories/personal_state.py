@@ -1,7 +1,8 @@
+from datetime import datetime
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,7 +16,7 @@ from laoshiren.domain.personal_state.entities import (
     ThingRelation,
     TimelineEvent,
 )
-from laoshiren.domain.personal_state.value_objects import ThingStatus
+from laoshiren.domain.personal_state.value_objects import BlockerStatus, TaskStatus, ThingStatus
 from laoshiren.infrastructure.persistence.orm.personal_state import (
     BlockerORM,
     StateMutationORM,
@@ -36,6 +37,7 @@ def thing_to_domain(model: ThingORM) -> Thing:
         status=model.status,
         current_stage=model.current_stage,
         deadline_at=model.deadline_at,
+        archived_at=model.archived_at,
         version=model.version,
         created_at=model.created_at,
         updated_at=model.updated_at,
@@ -156,6 +158,7 @@ class SqlAlchemyThingRepository:
                 status=thing.status,
                 current_stage=thing.current_stage,
                 deadline_at=thing.deadline_at,
+                archived_at=thing.archived_at,
                 version=thing.version,
                 created_at=thing.created_at,
                 updated_at=thing.updated_at,
@@ -198,12 +201,57 @@ class SqlAlchemyThingRepository:
                 status=thing.status,
                 current_stage=thing.current_stage,
                 deadline_at=thing.deadline_at,
+                archived_at=thing.archived_at,
                 version=thing.version,
                 updated_at=thing.updated_at,
             )
         )
         result = cast(CursorResult[Any], await self._session.execute(statement))
         return result.rowcount == 1
+
+    async def list_upcoming(
+        self, *, user_id: UUID, now: datetime, window_end: datetime, limit: int
+    ) -> list[Thing]:
+        statement = (
+            select(ThingORM)
+            .where(
+                ThingORM.user_id == user_id,
+                ThingORM.archived_at.is_(None),
+                ThingORM.deadline_at.is_not(None),
+                ThingORM.deadline_at >= now,
+                ThingORM.deadline_at <= window_end,
+            )
+            .order_by(ThingORM.deadline_at, ThingORM.id)
+            .limit(limit)
+        )
+        models = (await self._session.scalars(statement)).all()
+        return [thing_to_domain(model) for model in models]
+
+    async def list_active(self, *, user_id: UUID, limit: int) -> list[Thing]:
+        statement = (
+            select(ThingORM)
+            .where(
+                ThingORM.user_id == user_id,
+                ThingORM.archived_at.is_(None),
+                ThingORM.status.in_(
+                    [ThingStatus.ACTIVE, ThingStatus.BLOCKED, ThingStatus.WAITING]
+                ),
+            )
+            .order_by(ThingORM.updated_at.desc(), ThingORM.id.desc())
+            .limit(limit)
+        )
+        models = (await self._session.scalars(statement)).all()
+        return [thing_to_domain(model) for model in models]
+
+    async def list_recent(self, *, user_id: UUID, limit: int) -> list[Thing]:
+        statement = (
+            select(ThingORM)
+            .where(ThingORM.user_id == user_id, ThingORM.archived_at.is_(None))
+            .order_by(ThingORM.updated_at.desc(), ThingORM.id.desc())
+            .limit(limit)
+        )
+        models = (await self._session.scalars(statement)).all()
+        return [thing_to_domain(model) for model in models]
 
 
 class SqlAlchemyThingDateRepository:
@@ -331,6 +379,29 @@ class SqlAlchemyTaskRepository:
         )
         result = cast(CursorResult[Any], await self._session.execute(statement))
         return result.rowcount == 1
+
+    async def count_open(self, *, user_id: UUID, thing_ids: list[UUID]) -> dict[UUID, int]:
+        if not thing_ids:
+            return {}
+        statement = (
+            select(TaskORM.thing_id, func.count())
+            .join(ThingORM, ThingORM.id == TaskORM.thing_id)
+            .where(
+                TaskORM.thing_id.in_(thing_ids),
+                ThingORM.user_id == user_id,
+                TaskORM.status.in_(
+                    [
+                        TaskStatus.TODO,
+                        TaskStatus.IN_PROGRESS,
+                        TaskStatus.WAITING,
+                        TaskStatus.BLOCKED,
+                    ]
+                ),
+            )
+            .group_by(TaskORM.thing_id)
+        )
+        rows = (await self._session.execute(statement)).all()
+        return {row[0]: int(row[1]) for row in rows}
 
 
 class SqlAlchemyAuditRepository:
@@ -474,6 +545,22 @@ class SqlAlchemyBlockerRepository:
             ),
         )
         return result.rowcount == 1
+
+    async def list_open(self, *, user_id: UUID, limit: int) -> list[tuple[Blocker, str]]:
+        rows = (
+            await self._session.execute(
+                select(BlockerORM, ThingORM.name)
+                .join(ThingORM, ThingORM.id == BlockerORM.thing_id)
+                .where(
+                    BlockerORM.status == BlockerStatus.OPEN,
+                    ThingORM.user_id == user_id,
+                    ThingORM.archived_at.is_(None),
+                )
+                .order_by(BlockerORM.blocked_since.desc(), BlockerORM.id.desc())
+                .limit(limit)
+            )
+        ).all()
+        return [(blocker_to_domain(blocker), name) for blocker, name in rows]
 
 
 class SqlAlchemyThingRelationRepository:

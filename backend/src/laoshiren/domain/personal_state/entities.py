@@ -26,6 +26,7 @@ class Thing:
     status: ThingStatus = ThingStatus.PLANNING
     current_stage: str | None = None
     deadline_at: datetime | None = None
+    archived_at: datetime | None = None
     version: int = 1
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
@@ -58,6 +59,20 @@ class Thing:
         if update_current_stage:
             self.current_stage = current_stage.strip() if current_stage else None
         self.touch()
+
+    def archive(self) -> None:
+        if self.archived_at is not None:
+            return
+        self.archived_at = utc_now()
+        self.updated_at = self.archived_at
+        self.version += 1
+
+    def unarchive(self) -> None:
+        if self.archived_at is None:
+            return
+        self.archived_at = None
+        self.updated_at = utc_now()
+        self.version += 1
 
 
 @dataclass(slots=True)

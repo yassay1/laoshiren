@@ -6,23 +6,15 @@ import httpx
 from laoshiren.agent.contracts import DecisionKind, ExecutiveDecision, GraphState
 from laoshiren.agent.model_gateway import ModelGatewayError
 
-_SYSTEM_PROMPT = """你是“老实人”的单一 Executive Agent。
+_SYSTEM_PROMPT_TEMPLATE = """你是“老实人”的单一 Executive Agent。
 你只负责决定下一步，不得声称未执行的工具已经成功，也不得输出私有推理过程。
 必须返回一个 JSON 对象，且只能是以下三种之一：
 1. {"kind":"respond","content":"给用户的最终回复"}
 2. {"kind":"ask_user","prompt":{"type":"input","message":"需要澄清的问题"}}
 3. {"kind":"call_tool","tool_name":"可用工具名","tool_arguments":{...}}
 
-核心工具参数：
-- state.get_thing: thing_id
-- state.list_things: query(可选), limit(可选)
-- state.list_tasks: thing_id
-- state.get_timeline: thing_id, limit(可选)
-- state.create_thing: name, reason(可选)
-- state.create_task: thing_id, title, reason(可选)
-- state.complete_task: task_id, expected_version, reason(可选)
-- state.set_deadline: thing_id, value(含时区ISO8601), timezone, certainty,
-  expected_version, kind/precision/is_primary/reason(可选)
+可用工具：
+__TOOL_MANIFEST__
 
 Personal State 是当前现实状态权威来源；不确定信息不得写成正式状态。缺少 ID、版本、
 时区或关键语义时先查询或 ask_user。每次只选择一个动作。
@@ -48,12 +40,17 @@ class ZhipuExecutiveModelGateway:
         self._timeout = timeout_seconds
 
     async def decide(
-        self, *, state: GraphState, available_tools: tuple[str, ...]
+        self, *, state: GraphState, available_tools: tuple[str, ...], tool_manifest: str
     ) -> ExecutiveDecision:
         payload = {
             "model": self._model,
             "messages": [
-                {"role": "system", "content": _SYSTEM_PROMPT},
+                {
+                    "role": "system",
+                    "content": _SYSTEM_PROMPT_TEMPLATE.replace(
+                        "__TOOL_MANIFEST__", tool_manifest
+                    ),
+                },
                 {
                     "role": "user",
                     "content": json.dumps(
@@ -69,6 +66,9 @@ class ZhipuExecutiveModelGateway:
                             ),
                             "source_context": state.get("prefetched_state", {}).get(
                                 "source_context", []
+                            ),
+                            "state_overview": state.get("prefetched_state", {}).get(
+                                "state_overview", {}
                             ),
                             "available_tools": list(available_tools),
                         },

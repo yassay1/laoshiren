@@ -1,16 +1,21 @@
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from laoshiren.application.personal_state.dto import (
+    ActiveThingDTO,
+    BlockedThingDTO,
     BlockerDTO,
     MutationResultDTO,
+    RecentThingDTO,
     StateMutationDTO,
+    StateOverviewDTO,
     TaskDTO,
     ThingDateDTO,
     ThingDTO,
     ThingRelationDTO,
     TimelineEventDTO,
+    UpcomingThingDTO,
 )
 from laoshiren.application.personal_state.ports import PersonalStateUnitOfWork
 from laoshiren.domain.personal_state.entities import (
@@ -955,3 +960,211 @@ class PersonalStateApplicationService:
             await unit_of_work.audit.add_mutation(mutation)
             await unit_of_work.commit()
             return created
+
+    async def get_state_overview(
+        self,
+        *,
+        user_id: UUID,
+        now: datetime | None = None,
+        upcoming_days: int = 7,
+        upcoming_limit: int = 8,
+        blocked_limit: int = 5,
+        active_limit: int = 8,
+        recent_limit: int = 5,
+    ) -> StateOverviewDTO:
+        current = now or utc_now()
+        limits = (upcoming_days, upcoming_limit, blocked_limit, active_limit, recent_limit)
+        if any(value <= 0 for value in limits):
+            raise ValueError("State overview limits must be positive.")
+        window_end = current + timedelta(days=upcoming_days)
+        async with self._unit_of_work_factory() as unit_of_work:
+            upcoming_things = await unit_of_work.things.list_upcoming(
+                user_id=user_id, now=current, window_end=window_end, limit=upcoming_limit
+            )
+            active_things = await unit_of_work.things.list_active(
+                user_id=user_id, limit=active_limit
+            )
+            recent_things = await unit_of_work.things.list_recent(
+                user_id=user_id, limit=recent_limit
+            )
+            open_blockers = await unit_of_work.blockers.list_open(
+                user_id=user_id, limit=blocked_limit
+            )
+            counted_ids = [thing.id for thing in (*upcoming_things, *active_things)]
+            open_counts = (
+                await unit_of_work.tasks.count_open(user_id=user_id, thing_ids=counted_ids)
+                if counted_ids
+                else {}
+            )
+
+        upcoming = tuple(
+            UpcomingThingDTO(
+                thing_id=thing.id,
+                name=thing.name,
+                deadline_at=thing.deadline_at,
+                open_task_count=open_counts.get(thing.id, 0),
+            )
+            for thing in upcoming_things
+            if thing.deadline_at is not None
+        )
+        active = tuple(
+            ActiveThingDTO(
+                thing_id=thing.id,
+                name=thing.name,
+                current_stage=thing.current_stage,
+                open_task_count=open_counts.get(thing.id, 0),
+            )
+            for thing in active_things
+        )
+        blocked = tuple(
+            BlockedThingDTO(
+                thing_id=blocker.thing_id,
+                thing_name=thing_name,
+                description=blocker.description,
+                severity=blocker.severity,
+            )
+            for blocker, thing_name in open_blockers
+        )
+        recent = tuple(
+            RecentThingDTO(
+                thing_id=thing.id,
+                name=thing.name,
+                status=thing.status,
+                updated_at=thing.updated_at,
+            )
+            for thing in recent_things
+        )
+        return StateOverviewDTO(upcoming=upcoming, blocked=blocked, active=active, recent=recent)
+
+    async def archive_thing(
+        self,
+        *,
+        user_id: UUID,
+        thing_id: UUID,
+        expected_version: int,
+        action_id: str,
+        idempotency_key: str,
+        reason: str,
+        run_id: UUID | None = None,
+    ) -> MutationResultDTO:
+        return await self._change_archive(
+            user_id=user_id,
+            thing_id=thing_id,
+            expected_version=expected_version,
+            action_id=action_id,
+            idempotency_key=idempotency_key,
+            reason=reason,
+            run_id=run_id,
+            archive=True,
+        )
+
+    async def unarchive_thing(
+        self,
+        *,
+        user_id: UUID,
+        thing_id: UUID,
+        expected_version: int,
+        action_id: str,
+        idempotency_key: str,
+        reason: str,
+        run_id: UUID | None = None,
+    ) -> MutationResultDTO:
+        return await self._change_archive(
+            user_id=user_id,
+            thing_id=thing_id,
+            expected_version=expected_version,
+            action_id=action_id,
+            idempotency_key=idempotency_key,
+            reason=reason,
+            run_id=run_id,
+            archive=False,
+        )
+
+    async def _change_archive(
+        self,
+        *,
+        user_id: UUID,
+        thing_id: UUID,
+        expected_version: int,
+        action_id: str,
+        idempotency_key: str,
+        reason: str,
+        run_id: UUID | None,
+        archive: bool,
+    ) -> MutationResultDTO:
+        async with self._unit_of_work_factory() as unit_of_work:
+            previous = await unit_of_work.audit.get_mutation(
+                user_id=user_id, idempotency_key=idempotency_key
+            )
+            if previous is not None:
+                version = previous.after.get("version")
+                if not isinstance(version, int):
+                    raise RuntimeError("Stored archive mutation is missing its target version.")
+                return MutationResultDTO(
+                    mutation_id=previous.id,
+                    target_id=previous.target_id,
+                    target_version=version,
+                    replayed=True,
+                )
+
+            thing = await unit_of_work.things.get(user_id=user_id, thing_id=thing_id)
+            if thing is None:
+                raise EntityNotFound("Thing was not found.")
+            if thing.version != expected_version:
+                raise VersionConflict("Thing version is stale.")
+
+            before: dict[str, object] = {
+                "archived_at": (
+                    thing.archived_at.isoformat() if thing.archived_at is not None else None
+                ),
+                "version": thing.version,
+            }
+            if archive:
+                thing.archive()
+                mutation_type = "THING_ARCHIVED"
+                event_type = "THING_ARCHIVED"
+                title = f"归档事务：{thing.name}"
+            else:
+                thing.unarchive()
+                mutation_type = "THING_UNARCHIVED"
+                event_type = "THING_UNARCHIVED"
+                title = f"恢复事务：{thing.name}"
+            if not await unit_of_work.things.update(thing, expected_version=expected_version):
+                raise VersionConflict("Thing was updated concurrently.")
+
+            mutation = StateMutation(
+                user_id=user_id,
+                thing_id=thing.id,
+                run_id=run_id,
+                action_id=action_id,
+                mutation_type=mutation_type,
+                target_type="THING",
+                target_id=thing.id,
+                before=before,
+                after={
+                    "archived_at": (
+                        thing.archived_at.isoformat() if thing.archived_at is not None else None
+                    ),
+                    "version": thing.version,
+                },
+                reason=reason,
+                idempotency_key=idempotency_key,
+            )
+            await unit_of_work.audit.add_mutation(mutation)
+            await unit_of_work.flush()
+            await unit_of_work.audit.add_timeline_event(
+                TimelineEvent(
+                    user_id=user_id,
+                    thing_id=thing.id,
+                    event_type=event_type,
+                    title=title,
+                    occurred_at=thing.updated_at,
+                    mutation_id=mutation.id,
+                )
+            )
+            await unit_of_work.commit()
+            return MutationResultDTO(
+                mutation_id=mutation.id,
+                target_id=thing.id,
+                target_version=thing.version,
+            )

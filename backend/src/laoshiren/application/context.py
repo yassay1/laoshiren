@@ -1,6 +1,8 @@
+import json
 from dataclasses import dataclass
 from typing import Any
 
+from laoshiren.application.personal_state.dto import StateOverviewDTO
 from laoshiren.application.runtime.dto import MessageDTO
 
 
@@ -21,6 +23,7 @@ class AgentContextBuilder:
         summary_characters: int = 3_000,
         memory_characters: int = 5_000,
         source_characters: int = 8_000,
+        state_overview_characters: int = 3_000,
         recent_message_count: int = 20,
     ) -> None:
         limits = (
@@ -29,6 +32,7 @@ class AgentContextBuilder:
             summary_characters,
             memory_characters,
             source_characters,
+            state_overview_characters,
             recent_message_count,
         )
         if any(value <= 0 for value in limits):
@@ -38,6 +42,7 @@ class AgentContextBuilder:
         self._summary_characters = summary_characters
         self._memory_characters = memory_characters
         self._source_characters = source_characters
+        self._overview_characters = state_overview_characters
         self._recent_count = recent_message_count
 
     def build(
@@ -46,6 +51,7 @@ class AgentContextBuilder:
         messages: list[MessageDTO],
         memory_context: dict[str, Any] | None = None,
         source_context: list[dict[str, str]] | None = None,
+        state_overview: StateOverviewDTO | None = None,
     ) -> AgentContext:
         recent = self._recent_messages(messages)
         recent_ids = {str(message["id"]) for message in recent}
@@ -60,6 +66,13 @@ class AgentContextBuilder:
         bounded_sources = self._trim_sources(
             source_context or [], min(self._source_characters, max(0, remaining))
         )
+        bounded_overview = (
+            self._trim_overview(
+                overview_to_prompt_data(state_overview), self._overview_characters
+            )
+            if state_overview is not None
+            else {}
+        )
         prefetched: dict[str, Any] = {
             "memory_context": bounded_memory,
             "source_context": bounded_sources,
@@ -70,6 +83,8 @@ class AgentContextBuilder:
                 "character_budget": self._total,
             },
         }
+        if bounded_overview:
+            prefetched["state_overview"] = bounded_overview
         if summary:
             prefetched["thread_summary"] = summary
         return AgentContext(messages=recent, prefetched_state=prefetched)
@@ -158,3 +173,56 @@ class AgentContextBuilder:
                 result.append({**value, "content": trimmed})
                 remaining -= len(trimmed)
         return result
+
+    @staticmethod
+    def _trim_overview(data: dict[str, Any], budget: int) -> dict[str, Any]:
+        if not data:
+            return {}
+        if len(json.dumps(data, ensure_ascii=False, default=str)) <= budget:
+            return data
+        result: dict[str, Any] = {}
+        for section, items in data.items():
+            result[section] = []
+            for item in items:
+                result[section].append(item)
+                if len(json.dumps(result, ensure_ascii=False, default=str)) > budget:
+                    result[section].pop()
+                    return result
+        return result
+
+
+def overview_to_prompt_data(overview: StateOverviewDTO) -> dict[str, Any]:
+    return {
+        "upcoming": [
+            {
+                "name": item.name,
+                "deadline": item.deadline_at.isoformat(),
+                "open_tasks": item.open_task_count,
+            }
+            for item in overview.upcoming
+        ],
+        "blocked": [
+            {
+                "thing": item.thing_name,
+                "description": item.description,
+                "severity": item.severity.value,
+            }
+            for item in overview.blocked
+        ],
+        "active": [
+            {
+                "name": item.name,
+                "stage": item.current_stage,
+                "open_tasks": item.open_task_count,
+            }
+            for item in overview.active
+        ],
+        "recent": [
+            {
+                "name": item.name,
+                "status": item.status.value,
+                "updated_at": item.updated_at.isoformat(),
+            }
+            for item in overview.recent
+        ],
+    }

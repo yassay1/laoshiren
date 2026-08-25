@@ -1,3 +1,4 @@
+from datetime import datetime
 from types import TracebackType
 from typing import Protocol, Self
 from uuid import UUID
@@ -36,6 +37,14 @@ class ThingRepository(Protocol):
 
     async def update(self, thing: Thing, *, expected_version: int) -> bool: ...
 
+    async def list_upcoming(
+        self, *, user_id: UUID, now: datetime, window_end: datetime, limit: int
+    ) -> list[Thing]: ...
+
+    async def list_active(self, *, user_id: UUID, limit: int) -> list[Thing]: ...
+
+    async def list_recent(self, *, user_id: UUID, limit: int) -> list[Thing]: ...
+
 
 class ThingDateRepository(Protocol):
     async def add(self, thing_date: ThingDate) -> None: ...
@@ -59,6 +68,8 @@ class TaskRepository(Protocol):
     async def list_for_thing(self, *, user_id: UUID, thing_id: UUID) -> list[Task]: ...
 
     async def update(self, task: Task, *, expected_version: int) -> bool: ...
+
+    async def count_open(self, *, user_id: UUID, thing_ids: list[UUID]) -> dict[UUID, int]: ...
 
 
 class AuditRepository(Protocol):
@@ -92,6 +103,10 @@ class BlockerRepository(Protocol):
     async def list_for_thing(self, *, user_id: UUID, thing_id: UUID) -> list[Blocker]: ...
 
     async def update(self, blocker: Blocker, *, expected_version: int) -> bool: ...
+
+    async def list_open(
+        self, *, user_id: UUID, limit: int
+    ) -> list[tuple[Blocker, str]]: ...
 
 
 class ThingRelationRepository(Protocol):

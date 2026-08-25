@@ -16,6 +16,7 @@ from laoshiren.agent.model_gateway import ModelGatewayError
 from laoshiren.agent.tools import ToolReplayPolicy
 from laoshiren.application.context import AgentContextBuilder
 from laoshiren.application.memories.context import AgentMemoryApplicationService
+from laoshiren.application.personal_state.service import PersonalStateApplicationService
 from laoshiren.application.runtime.service import RuntimeApplicationService
 from laoshiren.application.sources.service import SourceApplicationService
 from laoshiren.domain.runtime.entities import RunEventType, RunStatus
@@ -146,6 +147,7 @@ class AgentRunWorker:
         agent_memory: AgentMemoryApplicationService | None = None,
         sources: SourceApplicationService | None = None,
         *,
+        personal_state: PersonalStateApplicationService | None = None,
         worker_id: str | None = None,
         lease_seconds: float = 60.0,
         heartbeat_seconds: float = 15.0,
@@ -155,6 +157,7 @@ class AgentRunWorker:
         self._graph = graph
         self._agent_memory = agent_memory
         self._sources = sources
+        self._personal_state = personal_state
         self._worker_id = worker_id or f"agent-worker-{uuid4()}"
         self._lease_seconds = lease_seconds
         self._heartbeat_seconds = heartbeat_seconds
@@ -280,10 +283,16 @@ class AgentRunWorker:
                                 }
                             )
                             remaining -= len(chunk.content)
+                state_overview = None
+                if self._personal_state is not None:
+                    state_overview = await self._personal_state.get_state_overview(
+                        user_id=user_id
+                    )
                 bounded_context = self._context_builder.build(
                     messages=messages,
                     memory_context=memory_prompt,
                     source_context=source_context,
+                    state_overview=state_overview,
                 )
                 initial["messages"] = bounded_context.messages
                 initial["prefetched_state"] = bounded_context.prefetched_state

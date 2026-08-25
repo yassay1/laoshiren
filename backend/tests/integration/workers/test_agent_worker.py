@@ -21,10 +21,11 @@ pytestmark = [
 
 class WorkerGateway:
     async def decide(
-        self, *, state: GraphState, available_tools: tuple[str, ...]
+        self, *, state: GraphState, available_tools: tuple[str, ...], tool_manifest: str
     ) -> ExecutiveDecision:
         assert "state.get_thing" in available_tools
         assert "state.set_deadline" in available_tools
+        assert "state.get_thing" in tool_manifest
         return ExecutiveDecision(
             DecisionKind.RESPOND,
             content=f"已处理：{state['current_input']}",

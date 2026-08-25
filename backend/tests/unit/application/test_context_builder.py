@@ -2,7 +2,15 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from laoshiren.application.context import AgentContextBuilder
+from laoshiren.application.personal_state.dto import (
+    ActiveThingDTO,
+    BlockedThingDTO,
+    RecentThingDTO,
+    StateOverviewDTO,
+    UpcomingThingDTO,
+)
 from laoshiren.application.runtime.dto import MessageDTO
+from laoshiren.domain.personal_state.value_objects import BlockerSeverity, ThingStatus
 from laoshiren.domain.runtime.entities import MessageRole
 
 
@@ -78,3 +86,41 @@ def test_profile_memory_precedes_relevant_memory_and_sources_are_bounded() -> No
     ]
     assert context.prefetched_state["memory_context"]["relevant"] == []
     assert len(context.prefetched_state["source_context"][0]["content"]) == 80
+
+
+def test_state_overview_is_injected_into_prefetched_state() -> None:
+    overview = StateOverviewDTO(
+        upcoming=(UpcomingThingDTO(uuid4(), "搬家", datetime.now(UTC), 2),),
+        blocked=(BlockedThingDTO(uuid4(), "搬家", "等报价", BlockerSeverity.HIGH),),
+        active=(ActiveThingDTO(uuid4(), "学车", "练习中", 1),),
+        recent=(RecentThingDTO(uuid4(), "搬家", ThingStatus.ACTIVE, datetime.now(UTC)),),
+    )
+
+    context = AgentContextBuilder().build(
+        messages=[message(1, size=10)], state_overview=overview
+    )
+
+    data = context.prefetched_state["state_overview"]
+    assert data["upcoming"][0]["name"] == "搬家"
+    assert data["upcoming"][0]["open_tasks"] == 2
+    assert data["blocked"][0]["severity"] == "HIGH"
+    assert data["active"][0]["stage"] == "练习中"
+    assert data["recent"][0]["status"] == "ACTIVE"
+
+
+def test_state_overview_is_trimmed_to_budget() -> None:
+    overview = StateOverviewDTO(
+        upcoming=tuple(
+            UpcomingThingDTO(uuid4(), f"事务-{index}", datetime.now(UTC), 1)
+            for index in range(30)
+        ),
+        blocked=(),
+        active=(),
+        recent=(),
+    )
+    builder = AgentContextBuilder(state_overview_characters=200)
+
+    context = builder.build(messages=[message(1, size=10)], state_overview=overview)
+
+    data = context.prefetched_state["state_overview"]
+    assert len(data["upcoming"]) < 30

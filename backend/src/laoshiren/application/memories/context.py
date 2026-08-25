@@ -130,6 +130,23 @@ class AgentMemoryApplicationService:
         )[:relevant_limit]
         return MemoryContext(tuple(profile), tuple(combined))
 
+    async def search(
+        self, *, user_id: UUID, query: str, limit: int = 8
+    ) -> tuple[MemoryDTO, ...]:
+        embedding = None
+        if self._embedding_provider is not None and query.strip():
+            try:
+                embedding = await self._embedding_provider.embed(query.strip())
+            except EmbeddingProviderError:
+                embedding = None
+        results = await self._memories.search(
+            user_id=user_id,
+            query=None if embedding is not None else query,
+            query_embedding=embedding,
+            limit=limit,
+        )
+        return tuple(results)
+
     async def form_from_user_input(
         self,
         *,

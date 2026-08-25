@@ -15,7 +15,12 @@ from laoshiren.agent.contracts import (
 )
 from laoshiren.agent.model_gateway import ExecutiveModelGateway
 from laoshiren.agent.policy import PolicyDecision, ToolPolicy
-from laoshiren.agent.tools import ToolExecutionContext, ToolRegistry, ToolReplayPolicy
+from laoshiren.agent.tools import (
+    ToolExecutionContext,
+    ToolRegistry,
+    ToolReplayPolicy,
+    build_tool_manifest,
+)
 
 ACTION_NAMESPACE = UUID("af195d42-065c-4a50-9eb3-6ea8e46b1928")
 
@@ -127,7 +132,11 @@ def build_executive_graph(
         decision_count = state.get("decision_count", 0)
         if decision_count >= max_decisions:
             raise AgentBudgetExceeded("Executive decision budget exceeded.")
-        decision = await model_gateway.decide(state=state, available_tools=tools.names())
+        decision = await model_gateway.decide(
+            state=state,
+            available_tools=tools.names(),
+            tool_manifest=build_tool_manifest(tools),
+        )
         route = {
             DecisionKind.RESPOND: "respond",
             DecisionKind.ASK_USER: "ask_user",

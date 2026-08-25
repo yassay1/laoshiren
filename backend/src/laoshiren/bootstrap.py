@@ -4,7 +4,12 @@ from uuid import uuid4
 
 from laoshiren.agent.graph import build_executive_graph
 from laoshiren.agent.model_gateway import ExecutiveModelGateway
-from laoshiren.agent.tools import ToolRegistry, register_personal_state_tools
+from laoshiren.agent.tools import (
+    ToolRegistry,
+    register_automation_tools,
+    register_memory_tools,
+    register_personal_state_tools,
+)
 from laoshiren.application.ai.ports import EmbeddingProvider
 from laoshiren.application.automations.service import (
     AttentionApplicationService,
@@ -153,6 +158,11 @@ def build_agent_worker(
     """Compose the Agent adapter only after the async checkpoint lifecycle has started."""
     tools = ToolRegistry()
     register_personal_state_tools(tools, container.personal_state)
+    register_automation_tools(tools, container.automations)
+    agent_memory = AgentMemoryApplicationService(
+        container.memories, embedding_provider=container.embedding_provider
+    )
+    register_memory_tools(tools, agent_memory)
     worker_id = f"agent-worker-{uuid4()}"
     graph = build_executive_graph(
         model_gateway=model_gateway,
@@ -168,10 +178,9 @@ def build_agent_worker(
     return AgentRunWorker(
         container.runtime,
         graph,
-        AgentMemoryApplicationService(
-            container.memories, embedding_provider=container.embedding_provider
-        ),
+        agent_memory,
         container.sources,
+        personal_state=container.personal_state,
         worker_id=worker_id,
         lease_seconds=container.settings.run_lease_seconds,
         heartbeat_seconds=container.settings.run_heartbeat_seconds,
