@@ -49,9 +49,13 @@ def create_app() -> FastAPI:
         await container.run_scanner.start()
         await container.source_scheduler.start()
         await container.automation_scheduler.start()
+        if container.memory_formation is not None:
+            await container.memory_formation.start()
         try:
             yield
         finally:
+            if container.memory_formation is not None:
+                await container.memory_formation.stop()
             await container.automation_scheduler.stop()
             await container.source_scheduler.stop()
             await container.run_scanner.stop()

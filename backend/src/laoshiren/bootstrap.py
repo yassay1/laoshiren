@@ -16,6 +16,7 @@ from laoshiren.application.automations.service import (
     AutomationApplicationService,
 )
 from laoshiren.application.memories.context import AgentMemoryApplicationService
+from laoshiren.application.memories.manager import MemoryManager
 from laoshiren.application.memories.service import MemoryApplicationService
 from laoshiren.application.personal_state.service import PersonalStateApplicationService
 from laoshiren.application.runtime.service import RuntimeApplicationService
@@ -24,6 +25,7 @@ from laoshiren.application.system.service import OperationalStatusApplicationSer
 from laoshiren.config.settings import Settings, get_settings
 from laoshiren.infrastructure.ai.deepseek import DeepSeekExecutiveModelGateway
 from laoshiren.infrastructure.ai.embeddings import OpenAICompatibleEmbeddingProvider
+from laoshiren.infrastructure.ai.memory_extractor import OpenAIMemoryExtractor
 from laoshiren.infrastructure.ai.zhipu import ZhipuExecutiveModelGateway
 from laoshiren.infrastructure.notifications.recording import RecordingNotificationAdapter
 from laoshiren.infrastructure.persistence.checkpoints import PostgresCheckpointLifecycle
@@ -40,6 +42,7 @@ from laoshiren.workers.agent import (
     RuntimeToolExecutionLedger,
 )
 from laoshiren.workers.automation import AutomationScheduler
+from laoshiren.workers.memory import MemoryFormationWorker
 from laoshiren.workers.runtime import RunDispatchScanner
 from laoshiren.workers.source import SourceProcessingScheduler, SourceProcessingWorker
 
@@ -64,6 +67,8 @@ class Container:
     run_scanner: RunDispatchScanner
     source_scheduler: SourceProcessingScheduler
     automation_scheduler: AutomationScheduler
+    memory_manager: MemoryManager | None
+    memory_formation: MemoryFormationWorker | None
 
 
 def bootstrap() -> Container:
@@ -132,6 +137,19 @@ def bootstrap() -> Container:
     automation_scheduler = AutomationScheduler(
         automations, interval_seconds=settings.automation_poll_seconds
     )
+    memory_manager: MemoryManager | None = None
+    memory_formation: MemoryFormationWorker | None = None
+    if settings.model_api_key:
+        extractor = OpenAIMemoryExtractor(
+            api_key=settings.model_api_key,
+            model=settings.model_name,
+            api_base=settings.model_api_base,
+            timeout_seconds=settings.model_timeout_seconds,
+        )
+        memory_manager = MemoryManager(
+            memories, extractor, embedding_provider=embedding_provider
+        )
+        memory_formation = MemoryFormationWorker(memory_manager, runtime)
     return Container(
         settings=settings,
         database=database,
@@ -149,6 +167,8 @@ def bootstrap() -> Container:
         run_scanner=run_scanner,
         source_scheduler=source_scheduler,
         automation_scheduler=automation_scheduler,
+        memory_manager=memory_manager,
+        memory_formation=memory_formation,
     )
 
 
@@ -162,7 +182,7 @@ def build_agent_worker(
     agent_memory = AgentMemoryApplicationService(
         container.memories, embedding_provider=container.embedding_provider
     )
-    register_memory_tools(tools, agent_memory)
+    register_memory_tools(tools, agent_memory, container.memory_manager)
     worker_id = f"agent-worker-{uuid4()}"
     graph = build_executive_graph(
         model_gateway=model_gateway,
@@ -181,6 +201,7 @@ def build_agent_worker(
         agent_memory,
         container.sources,
         personal_state=container.personal_state,
+        memory_formation=container.memory_formation,
         worker_id=worker_id,
         lease_seconds=container.settings.run_lease_seconds,
         heartbeat_seconds=container.settings.run_heartbeat_seconds,

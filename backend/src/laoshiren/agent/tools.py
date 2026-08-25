@@ -8,8 +8,10 @@ from uuid import UUID
 from laoshiren.agent.contracts import ToolResult, ToolStatus
 from laoshiren.application.automations.service import AutomationApplicationService
 from laoshiren.application.memories.context import AgentMemoryApplicationService
+from laoshiren.application.memories.manager import MemoryManager
 from laoshiren.application.personal_state.service import PersonalStateApplicationService
 from laoshiren.domain.automations.entities import AutomationType
+from laoshiren.domain.memories.entities import MemoryType
 from laoshiren.domain.personal_state.exceptions import (
     EntityNotFound,
     InvalidStateTransition,
@@ -838,7 +840,9 @@ def register_automation_tools(
 
 
 def register_memory_tools(
-    registry: ToolRegistry, memory: AgentMemoryApplicationService
+    registry: ToolRegistry,
+    memory: AgentMemoryApplicationService,
+    manager: MemoryManager | None = None,
 ) -> None:
     async def search(
         context: ToolExecutionContext, arguments: dict[str, Any]
@@ -866,6 +870,51 @@ def register_memory_tools(
             },
         )
 
+    async def remember(
+        context: ToolExecutionContext, arguments: dict[str, Any]
+    ) -> ToolResult:
+        if manager is None:
+            return ToolResult(
+                ToolStatus.NOT_FOUND,
+                "MEMORY_MANAGER_UNAVAILABLE",
+                "Memory manager is not configured.",
+            )
+        formed = await manager.remember(
+            user_id=context.user_id,
+            run_id=context.run_id,
+            content=str(arguments["content"]),
+            memory_type=MemoryType(str(arguments["memory_type"])),
+            thing_id=UUID(str(arguments["thing_id"])) if arguments.get("thing_id") else None,
+        )
+        return ToolResult(
+            ToolStatus.SUCCESS,
+            "MEMORY_REMEMBERED",
+            "Memory remembered.",
+            data={"id": str(formed.id), "type": formed.memory_type.value},
+        )
+
+    async def forget(
+        context: ToolExecutionContext, arguments: dict[str, Any]
+    ) -> ToolResult:
+        if manager is None:
+            return ToolResult(
+                ToolStatus.NOT_FOUND,
+                "MEMORY_MANAGER_UNAVAILABLE",
+                "Memory manager is not configured.",
+            )
+        memory = await manager.forget(
+            user_id=context.user_id,
+            memory_id=UUID(str(arguments["memory_id"])),
+            expected_version=int(arguments["expected_version"]),
+            idempotency_key=context.idempotency_key,
+        )
+        return ToolResult(
+            ToolStatus.SUCCESS,
+            "MEMORY_FORGOTTEN",
+            "Memory forgotten.",
+            data={"id": str(memory.id)},
+        )
+
     registry.register(
         ToolDefinition(
             "memory.search",
@@ -873,6 +922,26 @@ def register_memory_tools(
             ToolRisk.READ,
             search,
             required_arguments=("query",),
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            "memory.remember",
+            "Remember a long-term fact or preference from an explicit command.",
+            ToolRisk.REVERSIBLE_WRITE,
+            remember,
+            replay_policy=ToolReplayPolicy.IDEMPOTENT,
+            required_arguments=("content", "memory_type"),
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            "memory.forget",
+            "Forget a memory as a user data-control action.",
+            ToolRisk.SENSITIVE_WRITE,
+            forget,
+            replay_policy=ToolReplayPolicy.IDEMPOTENT,
+            required_arguments=("memory_id", "expected_version"),
         )
     )
 

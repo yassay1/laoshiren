@@ -15,11 +15,13 @@ from laoshiren.agent.graph import ToolOutcomeUnknown
 from laoshiren.agent.model_gateway import ModelGatewayError
 from laoshiren.agent.tools import ToolReplayPolicy
 from laoshiren.application.context import AgentContextBuilder
+from laoshiren.application.memories.candidate import is_explicit_memory_command
 from laoshiren.application.memories.context import AgentMemoryApplicationService
 from laoshiren.application.personal_state.service import PersonalStateApplicationService
 from laoshiren.application.runtime.service import RuntimeApplicationService
 from laoshiren.application.sources.service import SourceApplicationService
 from laoshiren.domain.runtime.entities import RunEventType, RunStatus
+from laoshiren.workers.memory import MemoryFormationEvent, MemoryFormationWorker
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +150,7 @@ class AgentRunWorker:
         sources: SourceApplicationService | None = None,
         *,
         personal_state: PersonalStateApplicationService | None = None,
+        memory_formation: MemoryFormationWorker | None = None,
         worker_id: str | None = None,
         lease_seconds: float = 60.0,
         heartbeat_seconds: float = 15.0,
@@ -158,6 +161,7 @@ class AgentRunWorker:
         self._agent_memory = agent_memory
         self._sources = sources
         self._personal_state = personal_state
+        self._memory_formation = memory_formation
         self._worker_id = worker_id or f"agent-worker-{uuid4()}"
         self._lease_seconds = lease_seconds
         self._heartbeat_seconds = heartbeat_seconds
@@ -335,20 +339,25 @@ class AgentRunWorker:
                     "worker_id": self._worker_id,
                 },
             )
-            if self._agent_memory is not None:
+            if self._memory_formation is not None:
                 current = next(item for item in messages if item.id == run.input_message_id)
-                try:
-                    await self._agent_memory.form_from_user_input(
-                        user_id=user_id,
-                        run_id=run_id,
-                        source_message_id=current.id,
-                        text=current.content,
-                    )
-                except Exception:
-                    logger.exception(
-                        "memory_formation_failed",
-                        extra={"run_id": str(run_id), "user_id": str(user_id)},
-                    )
+                tool_codes = tuple(
+                    str(result.get("code", ""))
+                    for result in output.get("tool_results", [])
+                    if result.get("status") == "SUCCESS"
+                )
+                event = MemoryFormationEvent(
+                    user_id=user_id,
+                    run_id=run_id,
+                    thread_id=run.thread_id,
+                    source_message_id=current.id,
+                    user_text=current.content,
+                    tool_result_codes=tool_codes,
+                )
+                if is_explicit_memory_command(current.content):
+                    await self._memory_formation.process(event)
+                else:
+                    await self._memory_formation.enqueue(event)
             return RunStatus.COMPLETED
         except Exception as exception:
             if isinstance(exception, AgentBudgetExceeded):
