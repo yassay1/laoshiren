@@ -48,14 +48,17 @@
 沿用 `ToolRisk` + `ToolReplayPolicy`。
 
 **读（READ / READ_ONLY）**
-- `state.search_things`、`state.get_blockers`、`state.get_dates`、`state.get_relations`、`state.get_state_history`
+- `state.get_blockers`、`state.get_dates`、`state.get_relations`、`state.get_state_history`
 - `memory.search`
 
 **写（REVERSIBLE_WRITE / IDEMPOTENT）**
-- `state.update_thing`、`state.transition_task`、`state.create_blocker`、`state.resolve_blocker`、`state.add_relation`、`state.create_automation`、`state.change_automation`
+- `state.update_thing`、`state.transition_task`、`state.create_blocker`、`state.resolve_blocker`、`state.add_relation`
+- `automation.create`、`automation.change`
 
 **敏感写（SENSITIVE_WRITE，需 HITL）**
 - `state.set_deadline`（已有）、`state.update_date`、`state.archive_thing`
+
+> 实现矫正：`state.search_things` 未新增（`state.list_things` 已覆盖关键词搜索）；automation 工具命名从 `state.*` 改为 `automation.*`（归属 AutomationApplicationService 而非 PersonalState）；`active` 概览状态集合为 `{ACTIVE, BLOCKED, WAITING}`（ThingStatus 无 IN_PROGRESS）。
 
 ## 6. 数据流
 
