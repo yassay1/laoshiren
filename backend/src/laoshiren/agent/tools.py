@@ -10,6 +10,8 @@ from laoshiren.application.automations.service import AutomationApplicationServi
 from laoshiren.application.memories.context import AgentMemoryApplicationService
 from laoshiren.application.memories.manager import MemoryManager
 from laoshiren.application.personal_state.service import PersonalStateApplicationService
+from laoshiren.application.search.service import SearchApplicationService, normalize_search_query
+from laoshiren.application.sources.service import SourceApplicationService
 from laoshiren.domain.automations.entities import AutomationType
 from laoshiren.domain.memories.entities import MemoryType
 from laoshiren.domain.personal_state.exceptions import (
@@ -25,6 +27,7 @@ from laoshiren.domain.personal_state.value_objects import (
     ThingRelationType,
     ThingStatus,
 )
+from laoshiren.domain.sources.entities import SourceRelationType
 
 ToolHandler = Callable[["ToolExecutionContext", dict[str, Any]], Awaitable[ToolResult]]
 
@@ -298,6 +301,8 @@ def register_personal_state_tools(
     async def set_deadline(
         context: ToolExecutionContext, arguments: dict[str, Any]
     ) -> ToolResult:
+        source_id_raw = arguments.get("source_id")
+        source_id = UUID(str(source_id_raw)) if source_id_raw else None
         result = await service.set_deadline(
             user_id=context.user_id,
             thing_id=UUID(str(arguments["thing_id"])),
@@ -312,6 +317,7 @@ def register_personal_state_tools(
             idempotency_key=idempotency_key(context),
             reason=str(arguments.get("reason", "Agent set deadline")),
             run_id=context.run_id,
+            source_id=source_id,
         )
         return ToolResult(
             ToolStatus.SUCCESS,
@@ -942,6 +948,238 @@ def register_memory_tools(
             forget,
             replay_policy=ToolReplayPolicy.IDEMPOTENT,
             required_arguments=("memory_id", "expected_version"),
+        )
+    )
+
+
+def register_source_tools(
+    registry: ToolRegistry, service: SourceApplicationService
+) -> None:
+    async def get_source(
+        context: ToolExecutionContext, arguments: dict[str, Any]
+    ) -> ToolResult:
+        source = await service.get(
+            user_id=context.user_id, source_id=UUID(str(arguments["source_id"]))
+        )
+        return ToolResult(
+            ToolStatus.SUCCESS,
+            "OK",
+            "Source loaded.",
+            data={
+                "id": str(source.id),
+                "title": source.title,
+                "source_type": source.source_type.value,
+                "processing_status": source.processing_status.value,
+                "mime_type": source.mime_type,
+                "size": source.size,
+                "extracted_text_preview": (source.extracted_text or "")[:500],
+            },
+        )
+
+    async def search_chunks(
+        context: ToolExecutionContext, arguments: dict[str, Any]
+    ) -> ToolResult:
+        source_id = UUID(str(arguments["source_id"]))
+        query = str(arguments.get("query", "")).strip() or None
+        chunks = await service.get_context_chunks(
+            user_id=context.user_id,
+            source_id=source_id,
+            query=query,
+            max_chunks=int(arguments.get("limit", 8)),
+            max_characters=int(arguments.get("max_characters", 12_000)),
+        )
+        return ToolResult(
+            ToolStatus.SUCCESS,
+            "OK",
+            "Source chunks loaded.",
+            data={
+                "source_id": str(source_id),
+                "items": [
+                    {
+                        "chunk_id": str(chunk.id),
+                        "ordinal": chunk.ordinal,
+                        "page_number": chunk.page_number,
+                        "content": chunk.content,
+                        "char_start": chunk.char_start,
+                        "char_end": chunk.char_end,
+                    }
+                    for chunk in chunks
+                ],
+            },
+        )
+
+    async def link_thing(
+        context: ToolExecutionContext, arguments: dict[str, Any]
+    ) -> ToolResult:
+        relation_type = SourceRelationType(
+            str(arguments.get("relation_type", SourceRelationType.REFERENCE.value))
+        )
+        created = await service.link_to_thing(
+            user_id=context.user_id,
+            thing_id=UUID(str(arguments["thing_id"])),
+            source_id=UUID(str(arguments["source_id"])),
+            relation_type=relation_type,
+            relevance=float(arguments.get("relevance", 1.0)),
+            action_id=context.action_id,
+            idempotency_key=context.idempotency_key,
+            reason=str(arguments.get("reason", "Agent linked Source to Thing.")),
+        )
+        return ToolResult(
+            ToolStatus.SUCCESS,
+            "SOURCE_LINKED",
+            "Source linked to Thing.",
+            data={"created": created},
+        )
+
+    async def list_for_thing(
+        context: ToolExecutionContext, arguments: dict[str, Any]
+    ) -> ToolResult:
+        sources = await service.list_for_thing(
+            user_id=context.user_id, thing_id=UUID(str(arguments["thing_id"]))
+        )
+        return ToolResult(
+            ToolStatus.SUCCESS,
+            "OK",
+            "Thing sources loaded.",
+            data={
+                "items": [
+                    {
+                        "id": str(item.id),
+                        "title": item.title,
+                        "processing_status": item.processing_status.value,
+                        "source_type": item.source_type.value,
+                    }
+                    for item in sources
+                ]
+            },
+        )
+
+    registry.register(
+        ToolDefinition(
+            "source.get",
+            "Read Source metadata and processing status.",
+            ToolRisk.READ,
+            get_source,
+            required_arguments=("source_id",),
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            "source.search_chunks",
+            "Retrieve relevant Source text chunks with optional semantic query.",
+            ToolRisk.READ,
+            search_chunks,
+            required_arguments=("source_id",),
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            "source.link_thing",
+            "Associate a Source with a Thing.",
+            ToolRisk.REVERSIBLE_WRITE,
+            link_thing,
+            replay_policy=ToolReplayPolicy.IDEMPOTENT,
+            required_arguments=("thing_id", "source_id"),
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            "source.list_for_thing",
+            "List Sources linked to a Thing.",
+            ToolRisk.READ,
+            list_for_thing,
+            required_arguments=("thing_id",),
+        )
+    )
+
+
+def register_search_tools(
+    registry: ToolRegistry,
+    service: SearchApplicationService | None,
+) -> None:
+    if service is None:
+        return
+
+    async def search_web(
+        context: ToolExecutionContext, arguments: dict[str, Any]
+    ) -> ToolResult:
+        query = normalize_search_query(str(arguments["query"]))
+        domains_raw = arguments.get("domains")
+        domains: tuple[str, ...] | None = None
+        if isinstance(domains_raw, list):
+            domains = tuple(str(item) for item in domains_raw if str(item).strip())
+        payload = await service.search_web(
+            user_id=context.user_id,
+            query=query,
+            limit=int(arguments["limit"]) if arguments.get("limit") is not None else None,
+            recency_days=(
+                int(arguments["recency_days"])
+                if arguments.get("recency_days") is not None
+                else None
+            ),
+            domains=domains,
+        )
+        urls = tuple(
+            str(item["url"])
+            for item in payload.get("items", [])
+            if isinstance(item, dict) and item.get("url")
+        )
+        return ToolResult(
+            ToolStatus.SUCCESS,
+            "OK",
+            "Web search completed.",
+            data=payload,
+            source_refs=urls,
+        )
+
+    async def search_official(
+        context: ToolExecutionContext, arguments: dict[str, Any]
+    ) -> ToolResult:
+        query = normalize_search_query(str(arguments["query"]))
+        domains_raw = arguments.get("official_domains")
+        domains: tuple[str, ...] | None = None
+        if isinstance(domains_raw, list):
+            domains = tuple(str(item) for item in domains_raw if str(item).strip())
+        payload = await service.search_official(
+            user_id=context.user_id,
+            query=query,
+            official_domains=domains,
+            limit=int(arguments["limit"]) if arguments.get("limit") is not None else None,
+            recency_days=(
+                int(arguments["recency_days"])
+                if arguments.get("recency_days") is not None
+                else None
+            ),
+        )
+        urls = tuple(
+            str(item["url"])
+            for item in payload.get("items", [])
+            if isinstance(item, dict) and item.get("url")
+        )
+        return ToolResult(
+            ToolStatus.SUCCESS,
+            "OK",
+            "Official-biased search completed.",
+            data=payload,
+            source_refs=urls,
+        )
+
+    registry.register(
+        ToolDefinition(
+            "search.web",
+            "Search the public web for background facts.",
+            ToolRisk.READ,
+            search_web,
+            required_arguments=("query",),
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            "search.official",
+            "Search with official-domain bias for deadlines, rules and policies.",
+            ToolRisk.READ,
+            search_official,
+            required_arguments=("query",),
         )
     )
 

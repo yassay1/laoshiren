@@ -14,12 +14,15 @@ from laoshiren.agent.contracts import AgentBudgetExceeded, GraphState, ToolStatu
 from laoshiren.agent.graph import ToolOutcomeUnknown
 from laoshiren.agent.model_gateway import ModelGatewayError
 from laoshiren.agent.tools import ToolReplayPolicy
+from laoshiren.application.automations.dto import AttentionCandidateDTO
+from laoshiren.application.automations.service import AttentionApplicationService
 from laoshiren.application.context import AgentContextBuilder
 from laoshiren.application.memories.candidate import is_explicit_memory_command
 from laoshiren.application.memories.context import AgentMemoryApplicationService
 from laoshiren.application.personal_state.service import PersonalStateApplicationService
 from laoshiren.application.runtime.service import RuntimeApplicationService
 from laoshiren.application.sources.service import SourceApplicationService
+from laoshiren.domain.automations.entities import AttentionFeedbackAction
 from laoshiren.domain.runtime.entities import RunEventType, RunStatus
 from laoshiren.workers.memory import MemoryFormationEvent, MemoryFormationWorker
 
@@ -150,6 +153,7 @@ class AgentRunWorker:
         sources: SourceApplicationService | None = None,
         *,
         personal_state: PersonalStateApplicationService | None = None,
+        attention: AttentionApplicationService | None = None,
         memory_formation: MemoryFormationWorker | None = None,
         worker_id: str | None = None,
         lease_seconds: float = 60.0,
@@ -161,6 +165,7 @@ class AgentRunWorker:
         self._agent_memory = agent_memory
         self._sources = sources
         self._personal_state = personal_state
+        self._attention = attention
         self._memory_formation = memory_formation
         self._worker_id = worker_id or f"agent-worker-{uuid4()}"
         self._lease_seconds = lease_seconds
@@ -287,16 +292,40 @@ class AgentRunWorker:
                                 }
                             )
                             remaining -= len(chunk.content)
+                thread = await self._runtime.get_thread(
+                    user_id=user_id, thread_id=run.thread_id
+                )
+                active_thing_context: dict[str, object] = {}
                 state_overview = None
                 if self._personal_state is not None:
+                    active_thing_context = await self._personal_state.get_agent_thing_prefetch(
+                        user_id=user_id,
+                        active_thing_id=thread.active_thing_id,
+                        query=current.content,
+                    )
                     state_overview = await self._personal_state.get_state_overview(
                         user_id=user_id
                     )
+                attention_items: tuple[AttentionCandidateDTO, ...] = ()
+                if self._attention is not None:
+                    attention_items = tuple(
+                        await self._attention.get_candidates(user_id=user_id, limit=5)
+                    )
+                    for candidate in attention_items[:3]:
+                        await self._attention.record_feedback(
+                            user_id=user_id,
+                            subject_type=candidate.subject_type,
+                            subject_id=candidate.subject_id,
+                            action=AttentionFeedbackAction.SURFACED,
+                            dismissed_until=None,
+                        )
                 bounded_context = self._context_builder.build(
                     messages=messages,
                     memory_context=memory_prompt,
                     source_context=source_context,
                     state_overview=state_overview,
+                    active_thing_context=active_thing_context,
+                    attention=attention_items,
                 )
                 initial["messages"] = bounded_context.messages
                 initial["prefetched_state"] = bounded_context.prefetched_state

@@ -29,7 +29,7 @@ dev = [
 addopts = "-ra"
 asyncio_mode = "auto"
 pythonpath = ["src", "."]
-testpaths = ["tests"]
+testpaths = ["tests", "tests/evals"]
 markers = [
     "database: requires the local PostgreSQL development database",
     "live_model: consumes a configured real model provider",

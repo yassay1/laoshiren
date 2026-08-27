@@ -48,6 +48,15 @@ class Settings(BaseSettings):
     source_max_extracted_characters: int = 200_000
     source_max_pdf_pages: int = 200
     source_max_pdf_page_characters: int = 20_000
+    search_provider: str = "recording"
+    search_api_key: str = Field(default="", repr=False)
+    search_api_base: str = "https://api.tavily.com"
+    search_timeout_seconds: float = 15.0
+    search_default_limit: int = 5
+    search_max_snippet_characters: int = 8_000
+    search_cache_ttl_seconds: int = 21_600
+    search_max_queries_per_run: int = 6
+    parallel_read_max: int = 4
 
 
 @lru_cache

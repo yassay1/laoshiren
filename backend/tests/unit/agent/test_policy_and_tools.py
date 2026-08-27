@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import cast
 from uuid import uuid4
 
 import pytest
@@ -22,8 +22,8 @@ pytestmark = pytest.mark.asyncio
 
 
 async def _unused_handler(
-    context: ToolExecutionContext, arguments: dict[str, Any]
-) -> Any:
+    context: ToolExecutionContext, arguments: dict[str, object]
+) -> object:
     raise AssertionError((context, arguments))
 
 
@@ -40,6 +40,49 @@ async def test_policy_matrix_is_deterministic() -> None:
     assert policy.evaluate(sensitive).decision is PolicyDecision.REQUIRE_CONFIRMATION
     assert policy.evaluate(irreversible).decision is PolicyDecision.REQUIRE_CONFIRMATION
     assert policy.evaluate(disabled).decision is PolicyDecision.DENY
+
+
+async def test_set_deadline_confirmed_without_source_requires_more_context() -> None:
+    policy = ToolPolicy()
+    definition = ToolDefinition(
+        "state.set_deadline",
+        "deadline",
+        ToolRisk.SENSITIVE_WRITE,
+        _unused_handler,
+        replay_policy=ToolReplayPolicy.IDEMPOTENT,
+    )
+    result = policy.evaluate(
+        definition,
+        arguments={
+            "thing_id": "00000000-0000-0000-0000-000000000001",
+            "certainty": "CONFIRMED",
+            "is_primary": True,
+        },
+    )
+    assert result.decision is PolicyDecision.REQUIRE_MORE_CONTEXT
+    assert result.code == "DEADLINE_NEEDS_VERIFICATION"
+
+
+async def test_set_deadline_with_source_allows_first_confirmed_write() -> None:
+    policy = ToolPolicy()
+    definition = ToolDefinition(
+        "state.set_deadline",
+        "deadline",
+        ToolRisk.SENSITIVE_WRITE,
+        _unused_handler,
+        replay_policy=ToolReplayPolicy.IDEMPOTENT,
+    )
+    result = policy.evaluate(
+        definition,
+        arguments={
+            "thing_id": "00000000-0000-0000-0000-000000000001",
+            "certainty": "CONFIRMED",
+            "is_primary": True,
+            "source_id": "00000000-0000-0000-0000-000000000002",
+        },
+    )
+    assert result.decision is PolicyDecision.ALLOW
+    assert result.code == "SOURCE_VERIFIED_DEADLINE"
 
 
 async def test_write_tool_requires_replay_contract_and_context_key_is_stable() -> None:
@@ -66,14 +109,14 @@ async def test_write_tool_requires_replay_contract_and_context_key_is_stable() -
 
 class RecordingPersonalStateService:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.calls: list[tuple[str, dict[str, object]]] = []
 
-    async def get_thing(self, **kwargs: Any) -> ThingDTO:
+    async def get_thing(self, **kwargs: object) -> ThingDTO:
         self.calls.append(("get_thing", kwargs))
         now = datetime.now(UTC)
         return ThingDTO(
-            id=kwargs["thing_id"],
-            user_id=kwargs["user_id"],
+            id=kwargs["thing_id"],  # type: ignore[index]
+            user_id=kwargs["user_id"],  # type: ignore[index]
             name="测试事务",
             status=ThingStatus.ACTIVE,
             current_stage=None,
@@ -83,9 +126,9 @@ class RecordingPersonalStateService:
             updated_at=now,
         )
 
-    async def complete_task(self, **kwargs: Any) -> MutationResultDTO:
+    async def complete_task(self, **kwargs: object) -> MutationResultDTO:
         self.calls.append(("complete_task", kwargs))
-        return MutationResultDTO(uuid4(), kwargs["task_id"], 4)
+        return MutationResultDTO(uuid4(), kwargs["task_id"], 4)  # type: ignore[index]
 
 
 async def test_tool_adapter_injects_runtime_identity_and_idempotency() -> None:

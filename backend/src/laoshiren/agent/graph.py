@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any, Protocol, cast
 from uuid import UUID, uuid5
 
@@ -11,9 +12,11 @@ from laoshiren.agent.contracts import (
     DecisionKind,
     ExecutiveDecision,
     GraphState,
+    ToolCallSpec,
     ToolStatus,
 )
 from laoshiren.agent.model_gateway import ExecutiveModelGateway
+from laoshiren.agent.parallel import count_search_tools_in_results, validate_parallel_batch
 from laoshiren.agent.policy import PolicyDecision, ToolPolicy
 from laoshiren.agent.tools import (
     ToolExecutionContext,
@@ -95,13 +98,44 @@ class NullAgentEventSink:
 
 
 def _decision_dict(decision: ExecutiveDecision) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "kind": decision.kind.value,
         "content": decision.content,
         "tool_name": decision.tool_name,
         "tool_arguments": decision.tool_arguments,
         "prompt": decision.prompt,
     }
+    if decision.tool_calls:
+        payload["tool_calls"] = [
+            {
+                "tool_name": spec.tool_name,
+                "tool_arguments": spec.tool_arguments,
+            }
+            for spec in decision.tool_calls
+        ]
+    return payload
+
+
+def _tool_specs_from_decision(decision: dict[str, Any]) -> tuple[ToolCallSpec, ...]:
+    raw_calls = decision.get("tool_calls")
+    if not isinstance(raw_calls, list):
+        return ()
+    specs: list[ToolCallSpec] = []
+    for item in raw_calls:
+        if not isinstance(item, dict):
+            continue
+        tool_name = item.get("tool_name")
+        if not isinstance(tool_name, str) or not tool_name:
+            continue
+        arguments = item.get("tool_arguments", {})
+        if not isinstance(arguments, dict):
+            arguments = {}
+        specs.append(ToolCallSpec(tool_name=tool_name, tool_arguments=arguments))
+    return tuple(specs)
+
+
+def _with_tool_name(result: dict[str, Any], tool_name: str) -> dict[str, Any]:
+    return {**result, "tool_name": tool_name}
 
 
 def build_executive_graph(
@@ -113,12 +147,14 @@ def build_executive_graph(
     policy_matrix: ToolPolicy | None = None,
     max_decisions: int = 12,
     max_tool_calls: int = 8,
+    parallel_read_max: int = 4,
+    search_max_per_run: int = 6,
     tool_ledger: ToolExecutionLedger | None = None,
 ) -> CompiledStateGraph[GraphState, None, GraphState, GraphState]:
     """Build the deliberately small V1 Executive Graph."""
 
     sink = event_sink or NullAgentEventSink()
-    tool_policy = policy_matrix or ToolPolicy()
+    tool_policy = policy_matrix or ToolPolicy(search_max_per_run=search_max_per_run)
 
     async def build_initial_context(state: GraphState) -> GraphState:
         return {
@@ -141,6 +177,7 @@ def build_executive_graph(
             DecisionKind.RESPOND: "respond",
             DecisionKind.ASK_USER: "ask_user",
             DecisionKind.CALL_TOOL: "policy",
+            DecisionKind.CALL_TOOLS: "parallel_policy",
         }[decision.kind]
         return {
             "decision": _decision_dict(decision),
@@ -174,27 +211,98 @@ def build_executive_graph(
                 "status": ToolStatus.NOT_FOUND,
                 "code": "TOOL_NOT_FOUND",
                 "message": "Tool is unavailable.",
+                "tool_name": name,
             }
             return {"tool_results": [*state.get("tool_results", []), result], "route": "executive"}
+        arguments = decision.get("tool_arguments", {})
+        if not isinstance(arguments, dict):
+            arguments = {}
         action_index = len(state.get("tool_results", []))
         action_id = str(uuid5(ACTION_NAMESPACE, f"{state['run_id']}:{action_index}:{name}"))
         pending = {
             "action_id": action_id,
             "tool_name": name,
-            "arguments": decision.get("tool_arguments", {}),
+            "arguments": arguments,
             "risk": definition.risk.value,
         }
-        policy_result = tool_policy.evaluate(definition)
+        policy_result = tool_policy.evaluate(
+            definition,
+            state=dict(state),
+            arguments=arguments,
+        )
         if policy_result.decision is PolicyDecision.DENY:
             denied = {
                 "status": ToolStatus.FAILED,
                 "code": policy_result.code,
                 "message": policy_result.message,
+                "tool_name": name,
             }
             return {"tool_results": [*state.get("tool_results", []), denied], "route": "executive"}
+        if policy_result.decision is PolicyDecision.REQUIRE_MORE_CONTEXT:
+            blocked = {
+                "status": ToolStatus.FAILED,
+                "code": policy_result.code,
+                "message": policy_result.message,
+                "tool_name": name,
+            }
+            return {"tool_results": [*state.get("tool_results", []), blocked], "route": "executive"}
         if policy_result.decision is PolicyDecision.REQUIRE_CONFIRMATION:
             return {"pending_action": pending, "route": "confirmation"}
         return {"pending_action": pending, "route": "execute"}
+
+    async def parallel_policy(state: GraphState) -> GraphState:
+        specs = _tool_specs_from_decision(state["decision"])
+        tool_results = list(state.get("tool_results", []))
+        validation = validate_parallel_batch(
+            registry=tools,
+            specs=specs,
+            tool_call_count=state.get("tool_call_count", 0),
+            max_tool_calls=max_tool_calls,
+            parallel_read_max=parallel_read_max,
+            search_count_in_run=count_search_tools_in_results(tool_results),
+            search_max_per_run=search_max_per_run,
+        )
+        if not validation.ok:
+            blocked = {
+                "status": ToolStatus.FAILED,
+                "code": validation.code,
+                "message": validation.message,
+            }
+            return {"tool_results": [*tool_results, blocked], "route": "executive"}
+
+        pending_batch: list[dict[str, Any]] = []
+        base_index = len(tool_results)
+        for index, spec in enumerate(validation.specs):
+            definition = tools.get(spec.tool_name)
+            if definition is None:
+                continue
+            policy_result = tool_policy.evaluate(
+                definition,
+                state=dict(state),
+                arguments=spec.tool_arguments,
+            )
+            if policy_result.decision is not PolicyDecision.ALLOW:
+                blocked = {
+                    "status": ToolStatus.FAILED,
+                    "code": policy_result.code,
+                    "message": policy_result.message,
+                    "tool_name": spec.tool_name,
+                }
+                return {"tool_results": [*tool_results, blocked], "route": "executive"}
+            action_id = str(
+                uuid5(
+                    ACTION_NAMESPACE,
+                    f"{state['run_id']}:{base_index}:batch:{index}:{spec.tool_name}",
+                )
+            )
+            pending_batch.append(
+                {
+                    "action_id": action_id,
+                    "tool_name": spec.tool_name,
+                    "arguments": spec.tool_arguments,
+                }
+            )
+        return {"pending_batch": pending_batch, "route": "parallel_execute"}
 
     async def confirmation(state: GraphState) -> GraphState:
         action = state["pending_action"]
@@ -216,24 +324,22 @@ def build_executive_graph(
             "status": ToolStatus.REQUIRES_CONFIRMATION,
             "code": "USER_DECLINED",
             "message": "User declined the sensitive action.",
+            "tool_name": action.get("tool_name"),
         }
         return {
             "tool_results": [*state.get("tool_results", []), declined],
             "route": "executive",
         }
 
-    async def execute(state: GraphState) -> GraphState:
-        tool_call_count = state.get("tool_call_count", 0)
-        if tool_call_count >= max_tool_calls:
-            raise AgentBudgetExceeded("Executive tool-call budget exceeded.")
-        action = state["pending_action"]
-        arguments = action.get("arguments")
-        if not isinstance(arguments, dict):
-            arguments = {}
+    async def _execute_one(
+        *,
+        state: GraphState,
+        action_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
         user_id = UUID(state["user_id"])
         run_id = UUID(state["run_id"])
-        action_id = str(action["action_id"])
-        tool_name = str(action["tool_name"])
         definition = tools.get(tool_name)
         replay_policy = (
             definition.replay_policy
@@ -257,11 +363,7 @@ def build_executive_graph(
                 idempotency_key=execution_context.idempotency_key,
             )
             if cached is not None:
-                return {
-                    "tool_results": [*state.get("tool_results", []), cached],
-                    "route": "executive",
-                    "tool_call_count": tool_call_count + 1,
-                }
+                return _with_tool_name(cached, tool_name)
             if not acquired:
                 raise ToolExecutionBusy("Tool execution is owned by another worker.")
         await sink.tool_started(
@@ -275,7 +377,7 @@ def build_executive_graph(
             context=execution_context,
             arguments=arguments,
         )
-        result_data = result.as_dict()
+        result_data = _with_tool_name(result.as_dict(), tool_name)
         if tool_ledger is not None:
             await tool_ledger.complete(
                 user_id=user_id,
@@ -292,10 +394,78 @@ def build_executive_graph(
             status=result.status,
             code=result.code,
         )
+        return result_data
+
+    async def execute(state: GraphState) -> GraphState:
+        tool_call_count = state.get("tool_call_count", 0)
+        if tool_call_count >= max_tool_calls:
+            raise AgentBudgetExceeded("Executive tool-call budget exceeded.")
+        action = state["pending_action"]
+        arguments = action.get("arguments")
+        if not isinstance(arguments, dict):
+            arguments = {}
+        result_data = await _execute_one(
+            state=state,
+            action_id=str(action["action_id"]),
+            tool_name=str(action["tool_name"]),
+            arguments=arguments,
+        )
         return {
             "tool_results": [*state.get("tool_results", []), result_data],
             "route": "executive",
             "tool_call_count": tool_call_count + 1,
+        }
+
+    async def parallel_execute(state: GraphState) -> GraphState:
+        batch = state.get("pending_batch", [])
+        if not isinstance(batch, list) or not batch:
+            raise ValueError("Parallel execution requires a pending batch.")
+        tool_call_count = state.get("tool_call_count", 0)
+        if tool_call_count + len(batch) > max_tool_calls:
+            raise AgentBudgetExceeded("Executive tool-call budget exceeded.")
+
+        async def run_action(action: dict[str, Any]) -> dict[str, Any]:
+            arguments = action.get("arguments")
+            if not isinstance(arguments, dict):
+                arguments = {}
+            return await _execute_one(
+                state=state,
+                action_id=str(action["action_id"]),
+                tool_name=str(action["tool_name"]),
+                arguments=arguments,
+            )
+
+        gathered = await asyncio.gather(
+            *(run_action(item) for item in batch),
+            return_exceptions=True,
+        )
+        batch_results: list[dict[str, Any]] = []
+        for index, item in enumerate(gathered):
+            action = batch[index]
+            tool_name = str(action["tool_name"])
+            if isinstance(item, BaseException):
+                batch_results.append(
+                    {
+                        "status": ToolStatus.FAILED.value,
+                        "code": "PARALLEL_TOOL_FAILED",
+                        "message": str(item),
+                        "tool_name": tool_name,
+                    }
+                )
+            else:
+                batch_results.append(item)
+
+        combined = {
+            "status": ToolStatus.SUCCESS.value,
+            "code": "PARALLEL_BATCH_OK",
+            "message": "Parallel read batch completed.",
+            "batch_tool_names": [str(action["tool_name"]) for action in batch],
+            "batch_results": batch_results,
+        }
+        return {
+            "tool_results": [*state.get("tool_results", []), *batch_results, combined],
+            "route": "executive",
+            "tool_call_count": tool_call_count + len(batch),
         }
 
     graph = StateGraph(GraphState)
@@ -304,8 +474,10 @@ def build_executive_graph(
     graph.add_node("respond", respond)
     graph.add_node("ask_user", ask_user)
     graph.add_node("policy", policy)
+    graph.add_node("parallel_policy", parallel_policy)
     graph.add_node("confirmation", confirmation)
     graph.add_node("execute", execute)
+    graph.add_node("parallel_execute", parallel_execute)
     graph.add_edge(START, "build_initial_context")
     graph.add_edge("build_initial_context", "executive")
     graph.add_conditional_edges("executive", lambda state: state["route"])
@@ -321,9 +493,15 @@ def build_executive_graph(
         },
     )
     graph.add_conditional_edges(
+        "parallel_policy",
+        lambda state: state["route"],
+        {"parallel_execute": "parallel_execute", "executive": "executive"},
+    )
+    graph.add_conditional_edges(
         "confirmation",
         lambda state: state["route"],
         {"execute": "execute", "executive": "executive"},
     )
     graph.add_edge("execute", "executive")
+    graph.add_edge("parallel_execute", "executive")
     return graph.compile(checkpointer=checkpointer)

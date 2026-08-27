@@ -230,6 +230,81 @@ class RuntimeApplicationService:
             await self._run_dispatcher.dispatch(user_id=user_id, run_id=run.id)
         return result
 
+    async def create_automation_run(
+        self,
+        *,
+        user_id: UUID,
+        automation_id: UUID,
+        thing_id: UUID | None,
+        title: str,
+        message: str,
+        occurrence_key: str,
+    ) -> RunDTO:
+        clean_title = title.strip()
+        clean_message = message.strip()
+        if not clean_title or not clean_message:
+            raise ValueError("Automation run title and message must not be empty.")
+        if not occurrence_key.strip():
+            raise ValueError("Automation occurrence_key must not be empty.")
+        thread_key = f"automation-inbox:{user_id}"
+        run_key = f"automation-run:{occurrence_key}"
+        content = f"[自动化提醒] {clean_title}\n{clean_message}"
+        async with self._unit_of_work_factory() as uow:
+            await uow.lock_idempotency(user_id=user_id, key=run_key)
+            existing = await uow.runs.get_by_idempotency(user_id=user_id, key=run_key)
+            if existing is not None:
+                return to_run_dto(existing, replayed=True)
+            thread = await uow.threads.get_by_idempotency(user_id=user_id, key=thread_key)
+            if thread is None:
+                await uow.users.ensure_exists(user_id)
+                thread = Thread(
+                    user_id=user_id,
+                    title="自动化",
+                    idempotency_key=thread_key,
+                    active_thing_id=thing_id,
+                )
+                await uow.threads.add(thread)
+                await uow.flush()
+            elif thing_id is not None:
+                thread.active_thing_id = thing_id
+            run = AgentRun(
+                user_id=user_id,
+                thread_id=thread.id,
+                trigger=RunTrigger.AUTOMATION,
+                idempotency_key=run_key,
+            )
+            input_message = Message(
+                user_id=user_id,
+                thread_id=thread.id,
+                role=MessageRole.SYSTEM_EVENT,
+                content=content,
+                run_id=run.id,
+                metadata={
+                    "automation_id": str(automation_id),
+                    "occurrence_key": occurrence_key,
+                    "thing_id": str(thing_id) if thing_id is not None else None,
+                },
+            )
+            run.input_message_id = input_message.id
+            await uow.runs.add(run)
+            await uow.flush()
+            await uow.messages.add(input_message)
+            await uow.runs.append_event(
+                run_id=run.id,
+                event_type=RunEventType.STATUS_UPDATED,
+                data={
+                    "status": RunStatus.QUEUED.value,
+                    "label": "自动化触发",
+                    "phase": "automation",
+                    "automation_id": str(automation_id),
+                },
+            )
+            await uow.commit()
+            result = to_run_dto(run)
+        if self._run_dispatcher is not None:
+            await self._run_dispatcher.dispatch(user_id=user_id, run_id=run.id)
+        return result
+
     async def get_run(self, *, user_id: UUID, run_id: UUID) -> RunDTO:
         async with self._unit_of_work_factory() as uow:
             run = await uow.runs.get(user_id=user_id, run_id=run_id)

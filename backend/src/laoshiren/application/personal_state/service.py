@@ -18,6 +18,11 @@ from laoshiren.application.personal_state.dto import (
     UpcomingThingDTO,
 )
 from laoshiren.application.personal_state.ports import PersonalStateUnitOfWork
+from laoshiren.application.personal_state.prefetch import (
+    ambiguous_thing_candidates,
+    thing_prefetch_payload,
+    thing_search_query_from_input,
+)
 from laoshiren.domain.personal_state.entities import (
     Blocker,
     StateMutation,
@@ -536,6 +541,7 @@ class PersonalStateApplicationService:
         idempotency_key: str,
         reason: str,
         run_id: UUID | None = None,
+        source_id: UUID | None = None,
     ) -> MutationResultDTO:
         if value.tzinfo is None:
             raise ValueError("Deadline must include timezone information.")
@@ -564,6 +570,10 @@ class PersonalStateApplicationService:
                 raise EntityNotFound("Thing was not found.")
             if thing.version != expected_version:
                 raise VersionConflict("Thing version is stale.")
+            if source_id is not None and await unit_of_work.sources.get(
+                user_id=user_id, source_id=source_id
+            ) is None:
+                raise EntityNotFound("Source was not found.")
 
             previous_deadline = thing.deadline_at
             thing_date = ThingDate(
@@ -574,6 +584,7 @@ class PersonalStateApplicationService:
                 precision=precision,
                 certainty=certainty,
                 is_primary=is_primary,
+                source_id=source_id,
             )
             if is_primary:
                 thing.set_primary_deadline(value)
@@ -602,6 +613,7 @@ class PersonalStateApplicationService:
                     "value": value.isoformat(),
                     "certainty": certainty.value,
                     "is_primary": is_primary,
+                    "source_id": str(source_id) if source_id is not None else None,
                     "thing_version": thing.version,
                 },
                 reason=reason,
@@ -1035,6 +1047,55 @@ class PersonalStateApplicationService:
             for thing in recent_things
         )
         return StateOverviewDTO(upcoming=upcoming, blocked=blocked, active=active, recent=recent)
+
+    async def get_agent_thing_prefetch(
+        self,
+        *,
+        user_id: UUID,
+        active_thing_id: UUID | None = None,
+        query: str | None = None,
+        candidate_limit: int = 5,
+    ) -> dict[str, object]:
+        """Bounded Thing prefetch for Executive context (Agent 设计 §13.1)."""
+        if candidate_limit <= 0:
+            raise ValueError("Thing prefetch candidate limit must be positive.")
+        if active_thing_id is not None:
+            return await self._build_thing_prefetch(
+                user_id=user_id, thing_id=active_thing_id, match_reason="active_thread"
+            )
+        normalized = (query or "").strip()
+        if len(normalized) < 2:
+            return {}
+        search_query = thing_search_query_from_input(normalized)
+        if len(search_query) < 2:
+            return {}
+        candidates = await self.get_things(
+            user_id=user_id, query=search_query, limit=candidate_limit
+        )
+        if len(candidates) == 1:
+            return await self._build_thing_prefetch(
+                user_id=user_id,
+                thing_id=candidates[0].id,
+                match_reason="query_match",
+            )
+        if len(candidates) > 1:
+            return ambiguous_thing_candidates(candidates)
+        return {}
+
+    async def _build_thing_prefetch(
+        self, *, user_id: UUID, thing_id: UUID, match_reason: str
+    ) -> dict[str, object]:
+        thing = await self.get_thing(user_id=user_id, thing_id=thing_id)
+        tasks = await self.get_tasks(user_id=user_id, thing_id=thing_id)
+        blockers = await self.get_blockers(user_id=user_id, thing_id=thing_id)
+        dates = await self.get_dates(user_id=user_id, thing_id=thing_id)
+        return thing_prefetch_payload(
+            thing=thing,
+            tasks=tasks,
+            blockers=blockers,
+            dates=dates,
+            match_reason=match_reason,
+        )
 
     async def archive_thing(
         self,

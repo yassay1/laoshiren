@@ -4,15 +4,15 @@ import pytest
 
 from laoshiren.agent.contracts import DecisionKind
 from laoshiren.agent.model_gateway import ModelGatewayError
-from laoshiren.infrastructure.ai.deepseek import DeepSeekExecutiveModelGateway
+from laoshiren.agent.parallel import parse_executive_decision
 
 
 def test_deepseek_gateway_parses_response_and_tool_decisions() -> None:
-    response = DeepSeekExecutiveModelGateway._parse_decision(
+    response = parse_executive_decision(
         {"kind": "respond", "content": " 已收到 "}, available_tools=()
     )
     thing_id = str(uuid4())
-    call = DeepSeekExecutiveModelGateway._parse_decision(
+    call = parse_executive_decision(
         {
             "kind": "call_tool",
             "tool_name": "state.get_thing",
@@ -28,7 +28,7 @@ def test_deepseek_gateway_parses_response_and_tool_decisions() -> None:
 
 def test_deepseek_gateway_rejects_unknown_tool() -> None:
     with pytest.raises(ModelGatewayError) as captured:
-        DeepSeekExecutiveModelGateway._parse_decision(
+        parse_executive_decision(
             {"kind": "call_tool", "tool_name": "system.shell"},
             available_tools=("state.get_thing",),
         )

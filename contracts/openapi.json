@@ -370,6 +370,166 @@
         }
       }
     },
+    "/api/v1/things/{thing_id}/archive": {
+      "post": {
+        "tags": [
+          "things"
+        ],
+        "summary": "Archive Thing",
+        "operationId": "archive_thing_api_v1_things__thing_id__archive_post",
+        "parameters": [
+          {
+            "name": "thing_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Thing Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200,
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArchiveThingRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MutationResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/things/{thing_id}/unarchive": {
+      "post": {
+        "tags": [
+          "things"
+        ],
+        "summary": "Unarchive Thing",
+        "operationId": "unarchive_thing_api_v1_things__thing_id__unarchive_post",
+        "parameters": [
+          {
+            "name": "thing_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Thing Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200,
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArchiveThingRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MutationResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/things/{thing_id}/dates": {
       "post": {
         "tags": [
@@ -2031,6 +2191,164 @@
         }
       }
     },
+    "/api/v1/state/overview": {
+      "get": {
+        "tags": [
+          "state"
+        ],
+        "summary": "Get State Overview",
+        "operationId": "get_state_overview_api_v1_state_overview_get",
+        "parameters": [
+          {
+            "name": "upcoming_days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 30,
+              "minimum": 1,
+              "default": 7,
+              "title": "Upcoming Days"
+            }
+          },
+          {
+            "name": "upcoming_limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 20,
+              "minimum": 1,
+              "default": 8,
+              "title": "Upcoming Limit"
+            }
+          },
+          {
+            "name": "blocked_limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 20,
+              "minimum": 1,
+              "default": 5,
+              "title": "Blocked Limit"
+            }
+          },
+          {
+            "name": "active_limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 20,
+              "minimum": 1,
+              "default": 8,
+              "title": "Active Limit"
+            }
+          },
+          {
+            "name": "recent_limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 20,
+              "minimum": 1,
+              "default": 5,
+              "title": "Recent Limit"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StateOverviewResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/today": {
+      "get": {
+        "tags": [
+          "today"
+        ],
+        "summary": "Get Today",
+        "operationId": "get_today_api_v1_today_get",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TodayResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/automations": {
       "get": {
         "tags": [
@@ -3280,6 +3598,63 @@
   },
   "components": {
     "schemas": {
+      "ActiveThingResponse": {
+        "properties": {
+          "thing_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Thing Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "current_stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Stage"
+          },
+          "open_task_count": {
+            "type": "integer",
+            "title": "Open Task Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "thing_id",
+          "name",
+          "current_stage",
+          "open_task_count"
+        ],
+        "title": "ActiveThingResponse"
+      },
+      "ArchiveThingRequest": {
+        "properties": {
+          "expected_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected Version"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "expected_version",
+          "reason"
+        ],
+        "title": "ArchiveThingRequest"
+      },
       "AttentionCandidateResponse": {
         "properties": {
           "subject_type": {
@@ -3569,6 +3944,34 @@
           "CONDITION_WATCH"
         ],
         "title": "AutomationType"
+      },
+      "BlockedThingResponse": {
+        "properties": {
+          "thing_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Thing Id"
+          },
+          "thing_name": {
+            "type": "string",
+            "title": "Thing Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/BlockerSeverity"
+          }
+        },
+        "type": "object",
+        "required": [
+          "thing_id",
+          "thing_name",
+          "description",
+          "severity"
+        ],
+        "title": "BlockedThingResponse"
       },
       "BlockerResponse": {
         "properties": {
@@ -4603,6 +5006,35 @@
         ],
         "title": "ProcessingStatus"
       },
+      "RecentThingResponse": {
+        "properties": {
+          "thing_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Thing Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ThingStatus"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "thing_id",
+          "name",
+          "status",
+          "updated_at"
+        ],
+        "title": "RecentThingResponse"
+      },
       "ResolveBlockerRequest": {
         "properties": {
           "expected_version": {
@@ -4906,6 +5338,18 @@
             "maxLength": 500,
             "minLength": 1,
             "title": "Reason"
+          },
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
           }
         },
         "type": "object",
@@ -5156,6 +5600,46 @@
           "created_at"
         ],
         "title": "StateMutationResponse"
+      },
+      "StateOverviewResponse": {
+        "properties": {
+          "upcoming": {
+            "items": {
+              "$ref": "#/components/schemas/UpcomingThingResponse"
+            },
+            "type": "array",
+            "title": "Upcoming"
+          },
+          "blocked": {
+            "items": {
+              "$ref": "#/components/schemas/BlockedThingResponse"
+            },
+            "type": "array",
+            "title": "Blocked"
+          },
+          "active": {
+            "items": {
+              "$ref": "#/components/schemas/ActiveThingResponse"
+            },
+            "type": "array",
+            "title": "Active"
+          },
+          "recent": {
+            "items": {
+              "$ref": "#/components/schemas/RecentThingResponse"
+            },
+            "type": "array",
+            "title": "Recent"
+          }
+        },
+        "type": "object",
+        "required": [
+          "upcoming",
+          "blocked",
+          "active",
+          "recent"
+        ],
+        "title": "StateOverviewResponse"
       },
       "TaskResponse": {
         "properties": {
@@ -5603,6 +6087,107 @@
           "created_at"
         ],
         "title": "TimelineEventResponse"
+      },
+      "TodayResponse": {
+        "properties": {
+          "attention": {
+            "items": {
+              "$ref": "#/components/schemas/AttentionCandidateResponse"
+            },
+            "type": "array",
+            "title": "Attention"
+          },
+          "upcoming": {
+            "items": {
+              "$ref": "#/components/schemas/UpcomingThingResponse"
+            },
+            "type": "array",
+            "title": "Upcoming"
+          },
+          "overdue": {
+            "items": {
+              "$ref": "#/components/schemas/UpcomingThingResponse"
+            },
+            "type": "array",
+            "title": "Overdue"
+          },
+          "due_today": {
+            "items": {
+              "$ref": "#/components/schemas/UpcomingThingResponse"
+            },
+            "type": "array",
+            "title": "Due Today"
+          },
+          "blocked": {
+            "items": {
+              "$ref": "#/components/schemas/BlockedThingResponse"
+            },
+            "type": "array",
+            "title": "Blocked"
+          },
+          "active": {
+            "items": {
+              "$ref": "#/components/schemas/ActiveThingResponse"
+            },
+            "type": "array",
+            "title": "Active"
+          },
+          "recent": {
+            "items": {
+              "$ref": "#/components/schemas/RecentThingResponse"
+            },
+            "type": "array",
+            "title": "Recent"
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Generated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "attention",
+          "upcoming",
+          "overdue",
+          "due_today",
+          "blocked",
+          "active",
+          "recent",
+          "generated_at"
+        ],
+        "title": "TodayResponse",
+        "description": "Aggregated read model for the Today product surface."
+      },
+      "UpcomingThingResponse": {
+        "properties": {
+          "thing_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Thing Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "deadline_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Deadline At"
+          },
+          "open_task_count": {
+            "type": "integer",
+            "title": "Open Task Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "thing_id",
+          "name",
+          "deadline_at",
+          "open_task_count"
+        ],
+        "title": "UpcomingThingResponse"
       },
       "UpdateDateRequest": {
         "properties": {

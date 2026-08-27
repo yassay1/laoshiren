@@ -3,22 +3,10 @@ from typing import Any
 
 import httpx
 
-from laoshiren.agent.contracts import DecisionKind, ExecutiveDecision, GraphState
+from laoshiren.agent.contracts import ExecutiveDecision, GraphState
 from laoshiren.agent.model_gateway import ModelGatewayError
-
-_SYSTEM_PROMPT_TEMPLATE = """你是“老实人”的单一 Executive Agent。
-你只负责决定下一步，不得声称未执行的工具已经成功，也不得输出私有推理过程。
-必须返回一个 JSON 对象，且只能是以下三种之一：
-1. {"kind":"respond","content":"给用户的最终回复"}
-2. {"kind":"ask_user","prompt":{"type":"input","message":"需要澄清的问题"}}
-3. {"kind":"call_tool","tool_name":"可用工具名","tool_arguments":{...}}
-
-可用工具：
-__TOOL_MANIFEST__
-
-Personal State 是当前现实状态权威来源；不确定信息不得写成正式状态。缺少 ID、版本、
-时区或关键语义时先查询或 ask_user。每次只选择一个动作。
-"""
+from laoshiren.agent.parallel import parse_executive_decision
+from laoshiren.agent.prompts import build_executive_user_payload, render_executive_system_prompt
 
 
 class ZhipuExecutiveModelGateway:
@@ -47,31 +35,14 @@ class ZhipuExecutiveModelGateway:
             "messages": [
                 {
                     "role": "system",
-                    "content": _SYSTEM_PROMPT_TEMPLATE.replace(
-                        "__TOOL_MANIFEST__", tool_manifest
-                    ),
+                    "content": render_executive_system_prompt(tool_manifest),
                 },
                 {
                     "role": "user",
                     "content": json.dumps(
-                        {
-                            "current_input": state.get("current_input", ""),
-                            "conversation": state.get("messages", []),
-                            "thread_summary": state.get("prefetched_state", {}).get(
-                                "thread_summary", ""
-                            ),
-                            "tool_results": state.get("tool_results", [])[-10:],
-                            "memory_context": state.get("prefetched_state", {}).get(
-                                "memory_context", {}
-                            ),
-                            "source_context": state.get("prefetched_state", {}).get(
-                                "source_context", []
-                            ),
-                            "state_overview": state.get("prefetched_state", {}).get(
-                                "state_overview", {}
-                            ),
-                            "available_tools": list(available_tools),
-                        },
+                        build_executive_user_payload(
+                            state=state, available_tools=available_tools
+                        ),
                         ensure_ascii=False,
                     ),
                 },
@@ -95,7 +66,7 @@ class ZhipuExecutiveModelGateway:
             decision = json.loads(content)
         except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
             raise RuntimeError("Zhipu returned an invalid decision payload.") from exc
-        return self._parse_decision(decision, available_tools=available_tools)
+        return parse_executive_decision(decision, available_tools=available_tools)
 
     @staticmethod
     def _raise_for_error(response: httpx.Response) -> None:
@@ -125,28 +96,3 @@ class ZhipuExecutiveModelGateway:
             "The model provider could not complete the request.",
             retryable=retryable,
         )
-
-    @staticmethod
-    def _parse_decision(
-        value: Any, *, available_tools: tuple[str, ...]
-    ) -> ExecutiveDecision:
-        if not isinstance(value, dict):
-            raise RuntimeError("Model decision must be an object.")
-        try:
-            kind = DecisionKind(str(value["kind"]))
-        except (KeyError, ValueError) as exc:
-            raise RuntimeError("Model decision kind is invalid.") from exc
-        if kind is DecisionKind.RESPOND:
-            return ExecutiveDecision(kind, content=str(value.get("content", "")).strip())
-        if kind is DecisionKind.ASK_USER:
-            prompt = value.get("prompt")
-            if not isinstance(prompt, dict):
-                raise RuntimeError("Model ask-user prompt must be an object.")
-            return ExecutiveDecision(kind, prompt=prompt)
-        tool_name = str(value.get("tool_name", ""))
-        if tool_name not in available_tools:
-            raise RuntimeError("Model selected an unavailable tool.")
-        arguments = value.get("tool_arguments", {})
-        if not isinstance(arguments, dict):
-            raise RuntimeError("Model tool arguments must be an object.")
-        return ExecutiveDecision(kind, tool_name=tool_name, tool_arguments=arguments)

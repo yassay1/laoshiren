@@ -2,6 +2,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Query, status
+from pydantic import BaseModel, Field
 
 from laoshiren.domain.personal_state.value_objects import ThingStatus
 from laoshiren.presentation.api.dependencies import (
@@ -104,8 +105,60 @@ async def update_thing(
     return ThingResponse.from_dto(thing)
 
 
+class ArchiveThingRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=500)
+
+
+@router.post("/{thing_id}/archive", response_model=MutationResponse)
+async def archive_thing(
+    thing_id: UUID,
+    request: ArchiveThingRequest,
+    container: ContainerDependency,
+    user_id: CurrentUserId,
+    idempotency_key: IdempotencyKey,
+) -> MutationResponse:
+    result = await container.personal_state.archive_thing(
+        user_id=user_id,
+        thing_id=thing_id,
+        expected_version=request.expected_version,
+        action_id="api.archive_thing",
+        idempotency_key=idempotency_key,
+        reason=request.reason,
+    )
+    return MutationResponse(
+        mutation_id=result.mutation_id,
+        target_id=result.target_id,
+        target_version=result.target_version,
+        replayed=result.replayed,
+    )
+
+
+@router.post("/{thing_id}/unarchive", response_model=MutationResponse)
+async def unarchive_thing(
+    thing_id: UUID,
+    request: ArchiveThingRequest,
+    container: ContainerDependency,
+    user_id: CurrentUserId,
+    idempotency_key: IdempotencyKey,
+) -> MutationResponse:
+    result = await container.personal_state.unarchive_thing(
+        user_id=user_id,
+        thing_id=thing_id,
+        expected_version=request.expected_version,
+        action_id="api.unarchive_thing",
+        idempotency_key=idempotency_key,
+        reason=request.reason,
+    )
+    return MutationResponse(
+        mutation_id=result.mutation_id,
+        target_id=result.target_id,
+        target_version=result.target_version,
+        replayed=result.replayed,
+    )
+
+
 @router.post("/{thing_id}/dates", response_model=MutationResponse)
-@router.post("/{thing_id}/deadline", response_model=MutationResponse, include_in_schema=False)
 async def set_deadline(
     thing_id: UUID,
     request: SetDeadlineRequest,
@@ -126,6 +179,7 @@ async def set_deadline(
         action_id="api.set_deadline",
         idempotency_key=idempotency_key,
         reason=request.reason,
+        source_id=request.source_id,
     )
     return MutationResponse(
         mutation_id=result.mutation_id,

@@ -7,6 +7,13 @@ class DecisionKind(StrEnum):
     RESPOND = "respond"
     ASK_USER = "ask_user"
     CALL_TOOL = "call_tool"
+    CALL_TOOLS = "call_tools"
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCallSpec:
+    tool_name: str
+    tool_arguments: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,6 +22,7 @@ class ExecutiveDecision:
     content: str | None = None
     tool_name: str | None = None
     tool_arguments: dict[str, Any] = field(default_factory=dict)
+    tool_calls: tuple[ToolCallSpec, ...] = ()
     prompt: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
@@ -24,6 +32,8 @@ class ExecutiveDecision:
             raise ValueError("An ask-user decision requires a prompt.")
         if self.kind is DecisionKind.CALL_TOOL and not self.tool_name:
             raise ValueError("A tool decision requires a tool name.")
+        if self.kind is DecisionKind.CALL_TOOLS and not self.tool_calls:
+            raise ValueError("A parallel tool decision requires at least one tool call.")
 
 
 class ToolStatus(StrEnum):
@@ -74,8 +84,16 @@ class GraphState(TypedDict, total=False):
     final_response: str
     decision_count: int
     tool_call_count: int
+    pending_batch: list[dict[str, Any]]
     route: Literal[
-        "respond", "ask_user", "policy", "confirmation", "execute", "executive"
+        "respond",
+        "ask_user",
+        "policy",
+        "parallel_policy",
+        "parallel_execute",
+        "confirmation",
+        "execute",
+        "executive",
     ]
 
 

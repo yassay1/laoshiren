@@ -7,7 +7,11 @@ from laoshiren.application.automations.dto import (
     AutomationDTO,
     NotificationDTO,
 )
-from laoshiren.application.automations.ports import AutomationUnitOfWork, NotificationPort
+from laoshiren.application.automations.ports import (
+    AutomationRunTrigger,
+    AutomationUnitOfWork,
+    NotificationPort,
+)
 from laoshiren.domain.automations.entities import (
     AttentionFeedbackAction,
     AttentionSubjectType,
@@ -61,10 +65,14 @@ def to_notification_dto(value: NotificationOutbox) -> NotificationDTO:
 
 class AutomationApplicationService:
     def __init__(
-        self, unit_of_work_factory: UnitOfWorkFactory, notification_port: NotificationPort
+        self,
+        unit_of_work_factory: UnitOfWorkFactory,
+        notification_port: NotificationPort,
+        run_trigger: AutomationRunTrigger | None = None,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._notification_port = notification_port
+        self._run_trigger = run_trigger
         self._dispatch_owner = f"automation-dispatch-{uuid4()}"
 
     async def create(
@@ -255,6 +263,15 @@ class AutomationApplicationService:
                     await unit_of_work.rollback()
                     break
                 await unit_of_work.commit()
+            run_triggered = False
+            if self._run_trigger is not None:
+                try:
+                    run_id = await self._run_trigger.trigger_from_notification(
+                        notification=notification
+                    )
+                    run_triggered = run_id is not None
+                except Exception:
+                    run_triggered = False
             try:
                 accepted = await self._notification_port.submit(
                     notification, idempotency_key=notification.occurrence_key
@@ -264,7 +281,7 @@ class AutomationApplicationService:
                 accepted = False
             else:
                 error_code = "ADAPTER_REJECTED"
-            if accepted:
+            if accepted or run_triggered:
                 notification.submitted()
             else:
                 next_attempt = notification.attempt_count + 1
@@ -286,7 +303,7 @@ class AutomationApplicationService:
                 )
                 if completed:
                     await unit_of_work.commit()
-                    submitted_count += int(accepted)
+                    submitted_count += int(accepted or run_triggered)
                 else:
                     await unit_of_work.rollback()
         return submitted_count

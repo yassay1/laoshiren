@@ -66,6 +66,7 @@ class SetDeadlineRequest(BaseModel):
     is_primary: bool = True
     expected_version: int = Field(ge=1)
     reason: str = Field(min_length=1, max_length=500)
+    source_id: UUID | None = None
 
 
 class ThingDateResponse(BaseModel):

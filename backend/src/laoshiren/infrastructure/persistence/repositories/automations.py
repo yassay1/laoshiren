@@ -29,6 +29,8 @@ from laoshiren.infrastructure.persistence.orm.personal_state import (
     ThingORM,
 )
 
+ATTENTION_SURFACE_COOLDOWN = timedelta(hours=4)
+
 
 def automation_to_domain(model: AutomationORM) -> Automation:
     return Automation(
@@ -334,6 +336,10 @@ class SqlAlchemyAttentionRepository:
             if item and (
                 item.acknowledged_at
                 or (item.dismissed_until and item.dismissed_until > now)
+                or (
+                    item.last_surfaced_at
+                    and now - item.last_surfaced_at < ATTENTION_SURFACE_COOLDOWN
+                )
             ):
                 continue
             assert thing.deadline_at is not None
@@ -369,6 +375,10 @@ class SqlAlchemyAttentionRepository:
             if item and (
                 item.acknowledged_at
                 or (item.dismissed_until and item.dismissed_until > now)
+                or (
+                    item.last_surfaced_at
+                    and now - item.last_surfaced_at < ATTENTION_SURFACE_COOLDOWN
+                )
             ):
                 continue
             too_long = blocker.blocked_since <= now - timedelta(hours=24)

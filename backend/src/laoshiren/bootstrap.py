@@ -4,11 +4,14 @@ from uuid import uuid4
 
 from laoshiren.agent.graph import build_executive_graph
 from laoshiren.agent.model_gateway import ExecutiveModelGateway
+from laoshiren.agent.policy import ToolPolicy
 from laoshiren.agent.tools import (
     ToolRegistry,
     register_automation_tools,
     register_memory_tools,
     register_personal_state_tools,
+    register_search_tools,
+    register_source_tools,
 )
 from laoshiren.application.ai.ports import EmbeddingProvider
 from laoshiren.application.automations.service import (
@@ -20,6 +23,7 @@ from laoshiren.application.memories.manager import MemoryManager
 from laoshiren.application.memories.service import MemoryApplicationService
 from laoshiren.application.personal_state.service import PersonalStateApplicationService
 from laoshiren.application.runtime.service import RuntimeApplicationService
+from laoshiren.application.search.service import SearchApplicationService
 from laoshiren.application.sources.service import SourceApplicationService
 from laoshiren.application.system.service import OperationalStatusApplicationService
 from laoshiren.config.settings import Settings, get_settings
@@ -27,6 +31,7 @@ from laoshiren.infrastructure.ai.deepseek import DeepSeekExecutiveModelGateway
 from laoshiren.infrastructure.ai.embeddings import OpenAICompatibleEmbeddingProvider
 from laoshiren.infrastructure.ai.memory_extractor import OpenAIMemoryExtractor
 from laoshiren.infrastructure.ai.zhipu import ZhipuExecutiveModelGateway
+from laoshiren.infrastructure.automation.run_trigger import RuntimeAutomationRunTrigger
 from laoshiren.infrastructure.notifications.recording import RecordingNotificationAdapter
 from laoshiren.infrastructure.persistence.checkpoints import PostgresCheckpointLifecycle
 from laoshiren.infrastructure.persistence.database import Database
@@ -34,6 +39,7 @@ from laoshiren.infrastructure.persistence.operational_status import (
     SqlAlchemyOperationalStatusAdapter,
 )
 from laoshiren.infrastructure.runtime.dispatcher import InProcessRunDispatcher
+from laoshiren.infrastructure.search.factory import build_web_search_port
 from laoshiren.infrastructure.sources.text_parser import TextSourceParser
 from laoshiren.infrastructure.storage.local import LocalObjectStorage
 from laoshiren.workers.agent import (
@@ -119,15 +125,17 @@ def bootstrap() -> Container:
     )
     memories = MemoryApplicationService(database.memory_unit_of_work)
     notification_adapter = RecordingNotificationAdapter()
-    automations = AutomationApplicationService(
-        database.automation_unit_of_work, notification_adapter
-    )
     attention = AttentionApplicationService(database.automation_unit_of_work)
     operational_status = OperationalStatusApplicationService(
         SqlAlchemyOperationalStatusAdapter(database.session_factory)
     )
     run_dispatcher = InProcessRunDispatcher()
     runtime = RuntimeApplicationService(database.runtime_unit_of_work, run_dispatcher)
+    automations = AutomationApplicationService(
+        database.automation_unit_of_work,
+        notification_adapter,
+        run_trigger=RuntimeAutomationRunTrigger(runtime),
+    )
     run_scanner = RunDispatchScanner(
         runtime,
         interval_seconds=settings.run_scan_seconds,
@@ -179,16 +187,29 @@ def build_agent_worker(
     tools = ToolRegistry()
     register_personal_state_tools(tools, container.personal_state)
     register_automation_tools(tools, container.automations)
+    register_source_tools(tools, container.sources)
     agent_memory = AgentMemoryApplicationService(
         container.memories, embedding_provider=container.embedding_provider
     )
     register_memory_tools(tools, agent_memory, container.memory_manager)
+    search_service = SearchApplicationService(
+        build_web_search_port(container.settings),
+        default_limit=container.settings.search_default_limit,
+        max_snippet_characters=container.settings.search_max_snippet_characters,
+        cache_ttl_seconds=container.settings.search_cache_ttl_seconds,
+    )
+    register_search_tools(tools, search_service)
     worker_id = f"agent-worker-{uuid4()}"
     graph = build_executive_graph(
         model_gateway=model_gateway,
         tools=tools,
         checkpointer=container.checkpoints.saver,
         event_sink=RuntimeAgentEventSink(container.runtime),
+        policy_matrix=ToolPolicy(
+            search_max_per_run=container.settings.search_max_queries_per_run
+        ),
+        parallel_read_max=container.settings.parallel_read_max,
+        search_max_per_run=container.settings.search_max_queries_per_run,
         tool_ledger=RuntimeToolExecutionLedger(
             container.runtime,
             owner=worker_id,
@@ -201,6 +222,7 @@ def build_agent_worker(
         agent_memory,
         container.sources,
         personal_state=container.personal_state,
+        attention=container.attention,
         memory_formation=container.memory_formation,
         worker_id=worker_id,
         lease_seconds=container.settings.run_lease_seconds,

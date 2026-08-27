@@ -31,9 +31,11 @@ from laoshiren.presentation.api.routers.runtime import (
     threads_router,
 )
 from laoshiren.presentation.api.routers.sources import router as sources_router
+from laoshiren.presentation.api.routers.state import router as state_router
 from laoshiren.presentation.api.routers.state_details import router as state_details_router
 from laoshiren.presentation.api.routers.tasks import router as tasks_router
 from laoshiren.presentation.api.routers.things import router as things_router
+from laoshiren.presentation.api.routers.today import router as today_router
 
 configure_asyncio_policy()
 
@@ -80,6 +82,8 @@ def create_app() -> FastAPI:
     app.include_router(sources_router, prefix=container.settings.api_v1_prefix)
     app.include_router(memories_router, prefix=container.settings.api_v1_prefix)
     app.include_router(state_details_router, prefix=container.settings.api_v1_prefix)
+    app.include_router(state_router, prefix=container.settings.api_v1_prefix)
+    app.include_router(today_router, prefix=container.settings.api_v1_prefix)
     app.include_router(automations_router, prefix=container.settings.api_v1_prefix)
     app.include_router(attention_router, prefix=container.settings.api_v1_prefix)
     app.include_router(threads_router, prefix=container.settings.api_v1_prefix)

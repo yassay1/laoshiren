@@ -109,3 +109,9 @@ class NotificationPort(Protocol):
     async def submit(
         self, notification: NotificationOutbox, *, idempotency_key: str
     ) -> bool: ...
+
+
+class AutomationRunTrigger(Protocol):
+    async def trigger_from_notification(
+        self, *, notification: NotificationOutbox
+    ) -> UUID | None: ...

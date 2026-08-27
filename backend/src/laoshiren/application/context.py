@@ -2,6 +2,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from laoshiren.application.automations.dto import AttentionCandidateDTO
 from laoshiren.application.personal_state.dto import StateOverviewDTO
 from laoshiren.application.runtime.dto import MessageDTO
 
@@ -24,6 +25,8 @@ class AgentContextBuilder:
         memory_characters: int = 5_000,
         source_characters: int = 8_000,
         state_overview_characters: int = 3_000,
+        active_thing_characters: int = 4_000,
+        attention_characters: int = 2_000,
         recent_message_count: int = 20,
     ) -> None:
         limits = (
@@ -33,6 +36,8 @@ class AgentContextBuilder:
             memory_characters,
             source_characters,
             state_overview_characters,
+            active_thing_characters,
+            attention_characters,
             recent_message_count,
         )
         if any(value <= 0 for value in limits):
@@ -43,6 +48,8 @@ class AgentContextBuilder:
         self._memory_characters = memory_characters
         self._source_characters = source_characters
         self._overview_characters = state_overview_characters
+        self._active_thing_characters = active_thing_characters
+        self._attention_characters = attention_characters
         self._recent_count = recent_message_count
 
     def build(
@@ -52,6 +59,8 @@ class AgentContextBuilder:
         memory_context: dict[str, Any] | None = None,
         source_context: list[dict[str, str]] | None = None,
         state_overview: StateOverviewDTO | None = None,
+        active_thing_context: dict[str, Any] | None = None,
+        attention: tuple[AttentionCandidateDTO, ...] | None = None,
     ) -> AgentContext:
         recent = self._recent_messages(messages)
         recent_ids = {str(message["id"]) for message in recent}
@@ -85,6 +94,16 @@ class AgentContextBuilder:
         }
         if bounded_overview:
             prefetched["state_overview"] = bounded_overview
+        bounded_active = self._trim_json_dict(
+            active_thing_context or {}, self._active_thing_characters
+        )
+        if bounded_active:
+            prefetched["active_thing_context"] = bounded_active
+        bounded_attention = self._trim_attention(
+            attention or (), self._attention_characters
+        )
+        if bounded_attention:
+            prefetched["attention_candidates"] = bounded_attention
         if summary:
             prefetched["thread_summary"] = summary
         return AgentContext(messages=recent, prefetched_state=prefetched)
@@ -175,6 +194,38 @@ class AgentContextBuilder:
         return result
 
     @staticmethod
+    def _trim_json_dict(data: dict[str, Any], budget: int) -> dict[str, Any]:
+        if not data:
+            return {}
+        if len(json.dumps(data, ensure_ascii=False, default=str)) <= budget:
+            return data
+        reduced: dict[str, Any] = dict(data)
+        for key in ("blockers", "primary_dates", "open_tasks", "candidates"):
+            items = reduced.get(key)
+            if isinstance(items, list) and items:
+                reduced[key] = items[: max(1, len(items) // 2)]
+                if len(json.dumps(reduced, ensure_ascii=False, default=str)) <= budget:
+                    return reduced
+        for key in ("blockers", "primary_dates"):
+            reduced.pop(key, None)
+        return reduced
+
+    @staticmethod
+    def _trim_attention(
+        values: tuple[AttentionCandidateDTO, ...], budget: int
+    ) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        used = 0
+        for item in values:
+            payload = attention_to_prompt_data(item)
+            cost = len(json.dumps(payload, ensure_ascii=False, default=str))
+            if used + cost > budget:
+                break
+            result.append(payload)
+            used += cost
+        return result
+
+    @staticmethod
     def _trim_overview(data: dict[str, Any], budget: int) -> dict[str, Any]:
         if not data:
             return {}
@@ -189,6 +240,24 @@ class AgentContextBuilder:
                     result[section].pop()
                     return result
         return result
+
+
+def attention_to_prompt_data(candidate: AttentionCandidateDTO) -> dict[str, Any]:
+    return {
+        "subject_type": candidate.subject_type.value,
+        "subject_id": str(candidate.subject_id),
+        "thing_id": str(candidate.thing_id),
+        "candidate_type": candidate.candidate_type,
+        "severity": candidate.severity,
+        "summary": candidate.summary,
+        "due_at": candidate.due_at.isoformat() if candidate.due_at is not None else None,
+        "next_eligible_at": (
+            candidate.next_eligible_at.isoformat()
+            if candidate.next_eligible_at is not None
+            else None
+        ),
+        "acknowledged": candidate.acknowledged,
+    }
 
 
 def overview_to_prompt_data(overview: StateOverviewDTO) -> dict[str, Any]:

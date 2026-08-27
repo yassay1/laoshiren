@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+from evals.acceptance import ACCEPTANCE_SCENARIOS
+
 
 @dataclass(frozen=True, slots=True)
 class LiveScenario:
@@ -8,8 +10,22 @@ class LiveScenario:
     expected: str
 
 
+def _live_from_acceptance(code: str) -> LiveScenario:
+    scenario = next(item for item in ACCEPTANCE_SCENARIOS if item.code == code)
+    return LiveScenario(
+        key=code.lower(),
+        prompt=scenario.prompt,
+        expected=scenario.expectation,
+    )
+
+
 SCENARIOS = (
     LiveScenario("direct_answer", "用一句话说明你能帮我做什么。", "non-empty direct answer"),
+    _live_from_acceptance("E01"),
+    _live_from_acceptance("E03"),
+    _live_from_acceptance("E09"),
+    _live_from_acceptance("E12"),
+    _live_from_acceptance("E13"),
     LiveScenario("create_thing", "创建一个 Thing：准备秋季旅行。", "create Thing tool"),
     LiveScenario("create_task", "创建任务：周五前订火车票。", "create task tool"),
     LiveScenario("complete_task", "把刚创建的订火车票任务标记为完成。", "complete task tool"),

@@ -5,19 +5,20 @@ import pytest
 
 from laoshiren.agent.contracts import DecisionKind
 from laoshiren.agent.model_gateway import ModelGatewayError
+from laoshiren.agent.parallel import parse_executive_decision
 from laoshiren.infrastructure.ai.zhipu import ZhipuExecutiveModelGateway
 
 
 def test_zhipu_gateway_parses_supported_decisions() -> None:
     tools = ("state.get_thing",)
-    response = ZhipuExecutiveModelGateway._parse_decision(
+    response = parse_executive_decision(
         {"kind": "respond", "content": " 已收到 "}, available_tools=tools
     )
-    ask = ZhipuExecutiveModelGateway._parse_decision(
+    ask = parse_executive_decision(
         {"kind": "ask_user", "prompt": {"type": "input", "message": "哪件事？"}},
         available_tools=tools,
     )
-    call = ZhipuExecutiveModelGateway._parse_decision(
+    call = parse_executive_decision(
         {
             "kind": "call_tool",
             "tool_name": "state.get_thing",
@@ -33,8 +34,8 @@ def test_zhipu_gateway_parses_supported_decisions() -> None:
 
 
 def test_zhipu_gateway_rejects_unavailable_tool() -> None:
-    with pytest.raises(RuntimeError, match="unavailable tool"):
-        ZhipuExecutiveModelGateway._parse_decision(
+    with pytest.raises(ModelGatewayError, match="unavailable tool"):
+        parse_executive_decision(
             {"kind": "call_tool", "tool_name": "system.shell", "tool_arguments": {}},
             available_tools=("state.get_thing",),
         )
