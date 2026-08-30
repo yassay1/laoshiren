@@ -15,10 +15,10 @@ def test_deepseek_gateway_parses_response_and_tool_decisions() -> None:
     call = parse_executive_decision(
         {
             "kind": "call_tool",
-            "tool_name": "state.get_thing",
+            "tool_name": "state_get_thing_context",
             "tool_arguments": {"thing_id": thing_id},
         },
-        available_tools=("state.get_thing",),
+        available_tools=("state_get_thing_context",),
     )
 
     assert response.kind is DecisionKind.RESPOND
@@ -30,6 +30,6 @@ def test_deepseek_gateway_rejects_unknown_tool() -> None:
     with pytest.raises(ModelGatewayError) as captured:
         parse_executive_decision(
             {"kind": "call_tool", "tool_name": "system.shell"},
-            available_tools=("state.get_thing",),
+            available_tools=("state_get_thing_context",),
         )
     assert captured.value.code == "MODEL_INVALID_RESPONSE"

@@ -2,6 +2,7 @@ from datetime import datetime
 
 from fastapi import APIRouter
 from pydantic import BaseModel
+from starlette.responses import PlainTextResponse
 
 from laoshiren.presentation.api.dependencies import ContainerDependency
 
@@ -27,3 +28,15 @@ async def readiness(container: ContainerDependency) -> OperationalStatusResponse
         checked_at=value.checked_at,
         backlogs=value.backlogs,
     )
+
+
+@router.get("/health/metrics", summary="Prometheus-style backlog metrics")
+async def metrics(container: ContainerDependency) -> PlainTextResponse:
+    value = await container.operational_status.get_status()
+    lines = [
+        "# HELP laoshiren_backlog Pending durable work backlogs.",
+        "# TYPE laoshiren_backlog gauge",
+    ]
+    for name, count in sorted(value.backlogs.items()):
+        lines.append(f'laoshiren_backlog{{name="{name}"}} {count}')
+    return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")

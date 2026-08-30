@@ -51,6 +51,415 @@
         }
       }
     },
+    "/api/v1/health/metrics": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Prometheus-style backlog metrics",
+        "operationId": "metrics_api_v1_health_metrics_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/huawei/login": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Huawei Login",
+        "operationId": "huawei_login_api_v1_auth_huawei_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HuaweiLoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/refresh": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Refresh Session",
+        "operationId": "refresh_session_api_v1_auth_refresh_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Logout",
+        "operationId": "logout_api_v1_auth_logout_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Get Me",
+        "operationId": "get_me_api_v1_me_get",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserProfileResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Delete Me",
+        "operationId": "delete_me_api_v1_me_delete",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices/register": {
+      "post": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "Register Device",
+        "operationId": "register_device_api_v1_devices_register_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceRegisterRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices/{device_id}/push-token": {
+      "put": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "Upsert Push Token",
+        "operationId": "upsert_push_token_api_v1_devices__device_id__push_token_put",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Device Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PushTokenRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "Delete Push Token",
+        "operationId": "delete_push_token_api_v1_devices__device_id__push_token_delete",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Device Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/things": {
       "get": {
         "tags": [
@@ -370,6 +779,86 @@
         }
       }
     },
+    "/api/v1/things/{thing_id}/merge": {
+      "post": {
+        "tags": [
+          "things"
+        ],
+        "summary": "Merge Thing",
+        "operationId": "merge_thing_api_v1_things__thing_id__merge_post",
+        "parameters": [
+          {
+            "name": "thing_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Thing Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200,
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MergeThingsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MutationResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/things/{thing_id}/archive": {
       "post": {
         "tags": [
@@ -666,6 +1155,147 @@
                     "$ref": "#/components/schemas/ThingDateResponse"
                   },
                   "title": "Response List Dates Api V1 Things  Thing Id  Dates Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/things/{thing_id}/context": {
+      "get": {
+        "tags": [
+          "things"
+        ],
+        "summary": "List Context Entries",
+        "operationId": "list_context_entries_api_v1_things__thing_id__context_get",
+        "parameters": [
+          {
+            "name": "thing_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Thing Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ThingContextEntryResponse"
+                  },
+                  "title": "Response List Context Entries Api V1 Things  Thing Id  Context Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "things"
+        ],
+        "summary": "Set Thing Context",
+        "operationId": "set_thing_context_api_v1_things__thing_id__context_put",
+        "parameters": [
+          {
+            "name": "thing_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Thing Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200,
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetThingContextRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MutationResponse"
                 }
               }
             }
@@ -1363,6 +1993,127 @@
               "title": "Thing Id"
             }
           },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200,
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTaskRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks": {
+      "get": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "List Standalone Tasks",
+        "operationId": "list_standalone_tasks_api_v1_tasks_get",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TaskResponse"
+                  },
+                  "title": "Response List Standalone Tasks Api V1 Tasks Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Create Standalone Task",
+        "operationId": "create_standalone_task_api_v1_tasks_post",
+        "parameters": [
           {
             "name": "Idempotency-Key",
             "in": "header",
@@ -3436,6 +4187,96 @@
         }
       }
     },
+    "/api/v1/runs/{run_id}/interactions/{interaction_id}/respond": {
+      "post": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Respond To Interaction",
+        "operationId": "respond_to_interaction_api_v1_runs__run_id__interactions__interaction_id__respond_post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "interaction_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Interaction Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200,
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InteractionResponseRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/runs/{run_id}/cancel": {
       "post": {
         "tags": [
@@ -3551,8 +4392,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "type": "string",
-                  "format": "uuid"
+                  "type": "string"
                 },
                 {
                   "type": "null"
@@ -3940,8 +4780,11 @@
         "type": "string",
         "enum": [
           "ONE_SHOT",
+          "ONCE",
           "RECURRING",
-          "CONDITION_WATCH"
+          "RELATIVE",
+          "CONDITION_WATCH",
+          "CONDITION"
         ],
         "title": "AutomationType"
       },
@@ -4082,8 +4925,7 @@
         "type": "string",
         "enum": [
           "OPEN",
-          "RESOLVED",
-          "IGNORED"
+          "RESOLVED"
         ],
         "title": "BlockerStatus"
       },
@@ -4097,6 +4939,18 @@
           "origin": {
             "$ref": "#/components/schemas/SourceOrigin",
             "default": "UPLOAD"
+          },
+          "message_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message Id"
           }
         },
         "type": "object",
@@ -4412,6 +5266,30 @@
             "maxLength": 300,
             "minLength": 1,
             "title": "Title"
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due At"
+          },
+          "recurrence_interval_days": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recurrence Interval Days"
           }
         },
         "type": "object",
@@ -4510,10 +5388,78 @@
       "DatePrecision": {
         "type": "string",
         "enum": [
+          "DATE_TIME",
           "DATE",
-          "DATETIME"
+          "MONTH"
         ],
         "title": "DatePrecision"
+      },
+      "DevicePlatform": {
+        "type": "string",
+        "enum": [
+          "HARMONYOS",
+          "OTHER"
+        ],
+        "title": "DevicePlatform"
+      },
+      "DeviceRegisterRequest": {
+        "properties": {
+          "device_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Device Id"
+          },
+          "timezone": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Timezone"
+          },
+          "platform": {
+            "$ref": "#/components/schemas/DevicePlatform",
+            "default": "HARMONYOS"
+          }
+        },
+        "type": "object",
+        "required": [
+          "device_id",
+          "timezone"
+        ],
+        "title": "DeviceRegisterRequest"
+      },
+      "DeviceResponse": {
+        "properties": {
+          "device_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Device Id"
+          },
+          "platform": {
+            "$ref": "#/components/schemas/DevicePlatform"
+          },
+          "timezone": {
+            "type": "string",
+            "title": "Timezone"
+          },
+          "active": {
+            "type": "boolean",
+            "title": "Active"
+          },
+          "last_seen_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Last Seen At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "device_id",
+          "platform",
+          "timezone",
+          "active",
+          "last_seen_at"
+        ],
+        "title": "DeviceResponse"
       },
       "HTTPValidationError": {
         "properties": {
@@ -4527,6 +5473,69 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "HuaweiLoginRequest": {
+        "properties": {
+          "id_token": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Id Token"
+          },
+          "device_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Device Id"
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timezone"
+          },
+          "platform": {
+            "$ref": "#/components/schemas/DevicePlatform",
+            "default": "HARMONYOS"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id_token"
+        ],
+        "title": "HuaweiLoginRequest"
+      },
+      "InteractionResponseRequest": {
+        "properties": {
+          "response": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Response"
+          },
+          "expected_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected Version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "response",
+          "expected_version"
+        ],
+        "title": "InteractionResponseRequest"
       },
       "LinkSourceRequest": {
         "properties": {
@@ -4566,6 +5575,31 @@
           "created"
         ],
         "title": "LinkSourceResponse"
+      },
+      "LoginResponse": {
+        "properties": {
+          "access_token": {
+            "type": "string",
+            "title": "Access Token"
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "User Id"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "access_token",
+          "user_id",
+          "expires_at"
+        ],
+        "title": "LoginResponse"
       },
       "MemoryResponse": {
         "properties": {
@@ -4762,6 +5796,39 @@
           "EPISODIC"
         ],
         "title": "MemoryType"
+      },
+      "MergeThingsRequest": {
+        "properties": {
+          "duplicate_thing_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Duplicate Thing Id"
+          },
+          "expected_canonical_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected Canonical Version"
+          },
+          "expected_duplicate_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected Duplicate Version"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "duplicate_thing_id",
+          "expected_canonical_version",
+          "expected_duplicate_version",
+          "reason"
+        ],
+        "title": "MergeThingsRequest"
       },
       "MessageResponse": {
         "properties": {
@@ -5006,6 +6073,28 @@
         ],
         "title": "ProcessingStatus"
       },
+      "PushTokenRequest": {
+        "properties": {
+          "push_token": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Push Token"
+          },
+          "provider": {
+            "type": "string",
+            "maxLength": 50,
+            "minLength": 1,
+            "title": "Provider",
+            "default": "HUAWEI"
+          }
+        },
+        "type": "object",
+        "required": [
+          "push_token"
+        ],
+        "title": "PushTokenRequest"
+      },
       "RecentThingResponse": {
         "properties": {
           "thing_id": {
@@ -5210,6 +6299,31 @@
             "type": "integer",
             "title": "Version"
           },
+          "last_event_sequence": {
+            "type": "integer",
+            "title": "Last Event Sequence"
+          },
+          "pending_interaction": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Interaction"
+          },
+          "budget_snapshot": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Budget Snapshot"
+          },
+          "active_time_used_ms": {
+            "type": "integer",
+            "title": "Active Time Used Ms"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -5268,6 +6382,10 @@
           "error_code",
           "attempt_count",
           "version",
+          "last_event_sequence",
+          "pending_interaction",
+          "budget_snapshot",
+          "active_time_used_ms",
           "created_at",
           "started_at",
           "completed_at",
@@ -5282,7 +6400,7 @@
         "enum": [
           "QUEUED",
           "RUNNING",
-          "WAITING_USER",
+          "WAITING_FOR_USER",
           "COMPLETED",
           "FAILED",
           "CANCELLED"
@@ -5301,10 +6419,19 @@
       "SetDeadlineRequest": {
         "properties": {
           "kind": {
-            "type": "string",
-            "maxLength": 50,
-            "minLength": 1,
-            "title": "Kind"
+            "$ref": "#/components/schemas/ThingDateType"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
           },
           "value": {
             "type": "string",
@@ -5363,6 +6490,71 @@
           "reason"
         ],
         "title": "SetDeadlineRequest"
+      },
+      "SetThingContextRequest": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Label"
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Content"
+          },
+          "entry_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Id"
+          },
+          "expected_version": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Version"
+          },
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "label",
+          "content",
+          "reason"
+        ],
+        "title": "SetThingContextRequest"
       },
       "SourceOrigin": {
         "type": "string",
@@ -5648,9 +6840,21 @@
             "format": "uuid",
             "title": "Id"
           },
-          "thing_id": {
+          "user_id": {
             "type": "string",
             "format": "uuid",
+            "title": "User Id"
+          },
+          "thing_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Thing Id"
           },
           "title": {
@@ -5676,6 +6880,101 @@
             ],
             "title": "Completed At"
           },
+          "due_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due At"
+          },
+          "recurrence_interval_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recurrence Interval Days"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "user_id",
+          "thing_id",
+          "title",
+          "status",
+          "version",
+          "completed_at",
+          "due_at",
+          "recurrence_interval_days",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "TaskResponse"
+      },
+      "TaskStatus": {
+        "type": "string",
+        "enum": [
+          "TODO",
+          "DONE",
+          "CANCELLED"
+        ],
+        "title": "TaskStatus"
+      },
+      "ThingContextEntryResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "thing_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Thing Id"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          },
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -5691,26 +6990,14 @@
         "required": [
           "id",
           "thing_id",
-          "title",
-          "status",
+          "label",
+          "content",
+          "source_id",
           "version",
-          "completed_at",
           "created_at",
           "updated_at"
         ],
-        "title": "TaskResponse"
-      },
-      "TaskStatus": {
-        "type": "string",
-        "enum": [
-          "TODO",
-          "IN_PROGRESS",
-          "WAITING",
-          "BLOCKED",
-          "DONE",
-          "CANCELLED"
-        ],
-        "title": "TaskStatus"
+        "title": "ThingContextEntryResponse"
       },
       "ThingDateResponse": {
         "properties": {
@@ -5725,8 +7012,18 @@
             "title": "Thing Id"
           },
           "kind": {
-            "type": "string",
-            "title": "Kind"
+            "$ref": "#/components/schemas/ThingDateType"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
           },
           "value": {
             "type": "string",
@@ -5779,6 +7076,7 @@
           "id",
           "thing_id",
           "kind",
+          "label",
           "value",
           "timezone_name",
           "precision",
@@ -5790,6 +7088,15 @@
           "updated_at"
         ],
         "title": "ThingDateResponse"
+      },
+      "ThingDateType": {
+        "type": "string",
+        "enum": [
+          "DEADLINE",
+          "EVENT",
+          "MILESTONE"
+        ],
+        "title": "ThingDateType"
       },
       "ThingRelationCreatedResponse": {
         "properties": {
@@ -5897,6 +7204,18 @@
             ],
             "title": "Deadline At"
           },
+          "merged_into_thing_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Merged Into Thing Id"
+          },
           "version": {
             "type": "integer",
             "title": "Version"
@@ -5920,6 +7239,7 @@
           "status",
           "current_stage",
           "deadline_at",
+          "merged_into_thing_id",
           "version",
           "created_at",
           "updated_at"
@@ -5929,14 +7249,9 @@
       "ThingStatus": {
         "type": "string",
         "enum": [
-          "PLANNING",
           "ACTIVE",
-          "BLOCKED",
-          "WAITING",
-          "PAUSED",
           "COMPLETED",
-          "CANCELLED",
-          "ARCHIVED"
+          "CANCELLED"
         ],
         "title": "ThingStatus"
       },
@@ -6393,6 +7708,39 @@
           "reason"
         ],
         "title": "UpdateThingRequest"
+      },
+      "UserProfileResponse": {
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "User Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/UserStatus"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "user_id",
+          "status",
+          "created_at"
+        ],
+        "title": "UserProfileResponse"
+      },
+      "UserStatus": {
+        "type": "string",
+        "enum": [
+          "ACTIVE",
+          "DELETING",
+          "DELETED"
+        ],
+        "title": "UserStatus"
       },
       "ValidationError": {
         "properties": {

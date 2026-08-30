@@ -105,17 +105,13 @@ class TextSourceParser:
         max_pdf_pages: int = 200,
         max_pdf_page_characters: int = 20_000,
     ) -> None:
-        if min(
-            max_extracted_characters, max_pdf_pages, max_pdf_page_characters
-        ) <= 0:
+        if min(max_extracted_characters, max_pdf_pages, max_pdf_page_characters) <= 0:
             raise ValueError("Source parser limits must be positive.")
         self._max_extracted_characters = max_extracted_characters
         self._max_pdf_pages = max_pdf_pages
         self._max_pdf_page_characters = max_pdf_page_characters
 
-    async def parse(
-        self, *, filename: str, mime_type: str, content: bytes
-    ) -> ParsedSourceContent:
+    async def parse(self, *, filename: str, mime_type: str, content: bytes) -> ParsedSourceContent:
         del mime_type
         extension = PurePath(filename).suffix.lower()
         try:
@@ -147,17 +143,13 @@ class TextSourceParser:
             page_text = "\n".join(line.rstrip() for line in raw.splitlines()).strip()
             page_text = page_text[:remaining]
             if page_text:
-                normalized_pages.append(
-                    ParsedSourcePage(page_number=page_number, text=page_text)
-                )
+                normalized_pages.append(ParsedSourcePage(page_number=page_number, text=page_text))
                 remaining -= len(page_text)
         pages = tuple(normalized_pages)
         normalized = "\n\n".join(page.text for page in pages)
         if not normalized:
             raise SourceParsingError("Source contains no extractable text.")
-        return ParsedSourceContent(
-            text=normalized, pages=pages
-        )
+        return ParsedSourceContent(text=normalized, pages=pages)
 
     async def _parse_pdf_isolated(self, content: bytes) -> list[str]:
         context = get_context("spawn")

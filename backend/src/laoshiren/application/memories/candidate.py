@@ -34,14 +34,27 @@ class MemoryCandidate:
             raise ValueError("Memory candidate content must not be empty.")
         if not 0 <= self.importance <= 1 or not 0 <= self.confidence <= 1:
             raise ValueError("Memory importance and confidence must be between 0 and 1.")
-        if self.action in {
-            MemoryCandidateAction.UPDATE,
-            MemoryCandidateAction.MERGE,
-            MemoryCandidateAction.SUPERSEDE,
-        } and self.target_memory_id is None:
-            raise ValueError(
-                f"Memory action {self.action.value} requires a target memory id."
-            )
+        if (
+            self.action
+            in {
+                MemoryCandidateAction.UPDATE,
+                MemoryCandidateAction.MERGE,
+                MemoryCandidateAction.SUPERSEDE,
+            }
+            and self.target_memory_id is None
+        ):
+            raise ValueError(f"Memory action {self.action.value} requires a target memory id.")
+
+
+def profile_key_for(content: str) -> str:
+    value = content.casefold()
+    if any(word in value for word in ("回答", "回复", "简洁", "详细", "语气")):
+        return "preference:response_style"
+    if "提醒" in value:
+        return "preference:reminder"
+    if any(word in value for word in ("中文", "英文", "语言")):
+        return "preference:language"
+    return "preference:general"
 
 
 _STATE_AUTHORITY_TERMS = ("截止日期", "deadline", "任务状态", "thing 状态")

@@ -3,7 +3,7 @@ import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import text
@@ -30,7 +30,7 @@ async def test_source_claim_is_exclusive_and_expired_lease_is_recoverable() -> N
     app = create_app()
     container = app.state.container
     service = container.sources
-    user_id = UUID(container.settings.dev_user_id)
+    user_id = uuid4()
     source_id = None
     object_key = None
     try:
@@ -45,10 +45,16 @@ async def test_source_claim_is_exclusive_and_expired_lease_is_recoverable() -> N
 
         first, second = await asyncio.gather(
             service.claim_next_processing(
-                owner="source-worker-a", lease_seconds=60, max_attempts=3
+                owner="source-worker-a",
+                user_id=user_id,
+                lease_seconds=60,
+                max_attempts=3,
             ),
             service.claim_next_processing(
-                owner="source-worker-b", lease_seconds=60, max_attempts=3
+                owner="source-worker-b",
+                user_id=user_id,
+                lease_seconds=60,
+                max_attempts=3,
             ),
         )
         claimed = first or second
@@ -70,7 +76,10 @@ async def test_source_claim_is_exclusive_and_expired_lease_is_recoverable() -> N
             )
 
         takeover = await service.claim_next_processing(
-            owner=takeover_owner, lease_seconds=60, max_attempts=3
+            owner=takeover_owner,
+            user_id=user_id,
+            lease_seconds=60,
+            max_attempts=3,
         )
         assert takeover is not None
         assert takeover.id == source.id
@@ -92,9 +101,7 @@ async def test_source_claim_is_exclusive_and_expired_lease_is_recoverable() -> N
             ),
         )
         current = await service.get(user_id=user_id, source_id=source.id)
-        context_chunks = await service.get_context_chunks(
-            user_id=user_id, source_id=source.id
-        )
+        context_chunks = await service.get_context_chunks(user_id=user_id, source_id=source.id)
 
         assert stale_complete is False
         assert completed is True

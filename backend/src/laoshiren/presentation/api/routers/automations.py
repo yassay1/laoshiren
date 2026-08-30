@@ -67,9 +67,7 @@ async def get_automation(
     container: ContainerDependency,
     user_id: CurrentUserId,
 ) -> AutomationResponse:
-    value = await container.automations.get(
-        user_id=user_id, automation_id=automation_id
-    )
+    value = await container.automations.get(user_id=user_id, automation_id=automation_id)
     return AutomationResponse.from_dto(value)
 
 

@@ -37,3 +37,18 @@ class LocalObjectStorage:
 
     async def read(self, *, object_key: str) -> bytes:
         return await asyncio.to_thread(self._resolve(object_key).read_bytes)
+
+    async def list_object_keys(self) -> list[str]:
+        def _walk() -> list[str]:
+            if not self._root.exists():
+                return []
+            keys: list[str] = []
+            for path in self._root.rglob("*"):
+                if not path.is_file():
+                    continue
+                if path.name.endswith(".uploading"):
+                    continue
+                keys.append(path.relative_to(self._root).as_posix())
+            return keys
+
+        return await asyncio.to_thread(_walk)

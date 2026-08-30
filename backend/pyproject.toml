@@ -15,6 +15,7 @@ dependencies = [
     "psycopg[binary,pool]>=3.2,<4.0",
     "sqlalchemy>=2.0.52",
     "pypdf>=6.16.2",
+    "redis>=6.0,<7.0",
 ]
 
 [dependency-groups]
@@ -33,6 +34,10 @@ testpaths = ["tests", "tests/evals"]
 markers = [
     "database: requires the local PostgreSQL development database",
     "live_model: consumes a configured real model provider",
+    "gate_a: Backend Freeze Gate A — live user journey (requires RUN_MODEL_EVALS)",
+    "gate_b: Backend Freeze Gate B — safety and consistency",
+    "gate_c: Backend Freeze Gate C — resilience and recovery",
+    "gate_d: Backend Freeze Gate D — agent quality evals",
 ]
 
 [tool.ruff]

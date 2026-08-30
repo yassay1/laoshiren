@@ -1,13 +1,13 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from laoshiren.domain.sources.entities import Source, SourceChunk, ThingSource
+from laoshiren.domain.sources.entities import ProcessingStatus, Source, SourceChunk, ThingSource
 from laoshiren.infrastructure.persistence.orm.personal_state import (
     SourceChunkORM,
     SourceORM,
@@ -55,6 +55,7 @@ def source_to_domain(model: SourceORM) -> Source:
         processing_attempt_count=model.processing_attempt_count,
         next_processing_attempt_at=model.next_processing_attempt_at,
         idempotency_key=model.idempotency_key,
+        deleted_at=model.deleted_at,
         created_at=model.created_at,
     )
 
@@ -88,11 +89,26 @@ class SqlAlchemySourceRepository:
                 processing_attempt_count=source.processing_attempt_count,
                 next_processing_attempt_at=source.next_processing_attempt_at,
                 idempotency_key=source.idempotency_key,
+                deleted_at=source.deleted_at,
                 created_at=source.created_at,
             )
         )
 
+    async def get_by_id(self, source_id: UUID) -> Source | None:
+        model = await self._session.scalar(select(SourceORM).where(SourceORM.id == source_id))
+        return source_to_domain(model) if model is not None else None
+
     async def get(self, *, user_id: UUID, source_id: UUID) -> Source | None:
+        model = await self._session.scalar(
+            select(SourceORM).where(
+                SourceORM.id == source_id,
+                SourceORM.user_id == user_id,
+                SourceORM.deleted_at.is_(None),
+            )
+        )
+        return source_to_domain(model) if model is not None else None
+
+    async def get_including_deleted(self, *, user_id: UUID, source_id: UUID) -> Source | None:
         model = await self._session.scalar(
             select(SourceORM).where(SourceORM.id == source_id, SourceORM.user_id == user_id)
         )
@@ -100,9 +116,7 @@ class SqlAlchemySourceRepository:
 
     async def get_by_idempotency(self, *, user_id: UUID, key: str) -> Source | None:
         model = await self._session.scalar(
-            select(SourceORM).where(
-                SourceORM.user_id == user_id, SourceORM.idempotency_key == key
-            )
+            select(SourceORM).where(SourceORM.user_id == user_id, SourceORM.idempotency_key == key)
         )
         return source_to_domain(model) if model is not None else None
 
@@ -126,7 +140,11 @@ class SqlAlchemySourceRepository:
             select(SourceORM)
             .join(ThingSourceORM, ThingSourceORM.source_id == SourceORM.id)
             .join(ThingORM, ThingORM.id == ThingSourceORM.thing_id)
-            .where(ThingSourceORM.thing_id == thing_id, ThingORM.user_id == user_id)
+            .where(
+                ThingSourceORM.thing_id == thing_id,
+                ThingORM.user_id == user_id,
+                SourceORM.deleted_at.is_(None),
+            )
             .order_by(SourceORM.created_at.desc(), SourceORM.id.desc())
         )
         models = (await self._session.scalars(statement)).all()
@@ -136,32 +154,35 @@ class SqlAlchemySourceRepository:
         self,
         *,
         owner: str,
+        user_id: UUID | None,
         now: datetime,
         lease_expires_at: datetime,
         supported_mime_types: tuple[str, ...],
         max_attempts: int,
     ) -> Source | None:
-        candidate = (
-            select(SourceORM.id)
-            .where(
-                SourceORM.mime_type.in_(supported_mime_types),
-                SourceORM.processing_attempt_count < max_attempts,
-                or_(
-                    and_(
-                        SourceORM.processing_status == "PENDING",
-                        or_(
-                            SourceORM.processing_lease_expires_at.is_(None),
-                            SourceORM.processing_lease_expires_at <= now,
-                        ),
-                    ),
-                    and_(
-                        SourceORM.processing_status == "FAILED",
-                        SourceORM.next_processing_attempt_at.is_not(None),
-                        SourceORM.next_processing_attempt_at <= now,
+        statement = select(SourceORM.id).where(
+            SourceORM.deleted_at.is_(None),
+            SourceORM.mime_type.in_(supported_mime_types),
+            SourceORM.processing_attempt_count < max_attempts,
+            or_(
+                and_(
+                    SourceORM.processing_status == "PENDING",
+                    or_(
+                        SourceORM.processing_lease_expires_at.is_(None),
+                        SourceORM.processing_lease_expires_at <= now,
                     ),
                 ),
-            )
-            .order_by(SourceORM.created_at, SourceORM.id)
+                and_(
+                    SourceORM.processing_status == "FAILED",
+                    SourceORM.next_processing_attempt_at.is_not(None),
+                    SourceORM.next_processing_attempt_at <= now,
+                ),
+            ),
+        )
+        if user_id is not None:
+            statement = statement.where(SourceORM.user_id == user_id)
+        candidate = (
+            statement.order_by(SourceORM.created_at, SourceORM.id)
             .limit(1)
             .with_for_update(skip_locked=True)
             .scalar_subquery()
@@ -312,14 +333,63 @@ class SqlAlchemySourceRepository:
                 SourceChunkORM.ordinal,
             )
         elif query_text is not None:
-            statement = statement.where(
-                SourceChunkORM.content.ilike(f"%{query_text}%")
-            ).order_by(SourceChunkORM.ordinal)
+            statement = statement.where(SourceChunkORM.content.ilike(f"%{query_text}%")).order_by(
+                SourceChunkORM.ordinal
+            )
         else:
             statement = statement.order_by(SourceChunkORM.ordinal)
-        models = (
-            await self._session.scalars(
-                statement.limit(limit)
-            )
-        ).all()
+        models = (await self._session.scalars(statement.limit(limit))).all()
         return [chunk_to_domain(model) for model in models]
+
+    async def search_for_user(
+        self,
+        *,
+        user_id: UUID,
+        query: str,
+        thing_id: UUID | None,
+        limit: int,
+    ) -> list[Source]:
+        statement = select(SourceORM).where(
+            SourceORM.user_id == user_id,
+            SourceORM.deleted_at.is_(None),
+        )
+        if thing_id is not None:
+            statement = statement.join(
+                ThingSourceORM, ThingSourceORM.source_id == SourceORM.id
+            ).where(ThingSourceORM.thing_id == thing_id)
+        normalized = query.strip()
+        if normalized:
+            statement = statement.where(
+                or_(
+                    SourceORM.title.ilike(f"%{normalized}%"),
+                    SourceORM.extracted_text.ilike(f"%{normalized}%"),
+                )
+            )
+        statement = statement.order_by(SourceORM.created_at.desc(), SourceORM.id.desc()).limit(
+            limit
+        )
+        models = (await self._session.scalars(statement)).all()
+        return [source_to_domain(model) for model in models]
+
+    async def mark_deleted(self, *, user_id: UUID, source_id: UUID) -> Source | None:
+        model = await self._session.scalar(
+            select(SourceORM).where(
+                SourceORM.id == source_id,
+                SourceORM.user_id == user_id,
+                SourceORM.deleted_at.is_(None),
+            )
+        )
+        if model is None:
+            return None
+        now = datetime.now(UTC)
+        model.deleted_at = now
+        model.extracted_text = None
+        model.processing_status = ProcessingStatus.FAILED
+        model.processing_error = "SOURCE_DELETED"
+        await self._session.flush()
+        return source_to_domain(model)
+
+    async def purge_chunks(self, *, source_id: UUID) -> None:
+        await self._session.execute(
+            delete(SourceChunkORM).where(SourceChunkORM.source_id == source_id)
+        )

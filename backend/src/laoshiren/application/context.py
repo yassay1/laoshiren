@@ -24,6 +24,7 @@ class AgentContextBuilder:
         summary_characters: int = 3_000,
         memory_characters: int = 5_000,
         source_characters: int = 8_000,
+        attachment_characters: int = 4_000,
         state_overview_characters: int = 3_000,
         active_thing_characters: int = 4_000,
         attention_characters: int = 2_000,
@@ -35,6 +36,7 @@ class AgentContextBuilder:
             summary_characters,
             memory_characters,
             source_characters,
+            attachment_characters,
             state_overview_characters,
             active_thing_characters,
             attention_characters,
@@ -47,6 +49,7 @@ class AgentContextBuilder:
         self._summary_characters = summary_characters
         self._memory_characters = memory_characters
         self._source_characters = source_characters
+        self._attachment_characters = attachment_characters
         self._overview_characters = state_overview_characters
         self._active_thing_characters = active_thing_characters
         self._attention_characters = attention_characters
@@ -58,6 +61,7 @@ class AgentContextBuilder:
         messages: list[MessageDTO],
         memory_context: dict[str, Any] | None = None,
         source_context: list[dict[str, str]] | None = None,
+        attachment_context: list[dict[str, str]] | None = None,
         state_overview: StateOverviewDTO | None = None,
         active_thing_context: dict[str, Any] | None = None,
         attention: tuple[AttentionCandidateDTO, ...] | None = None,
@@ -75,16 +79,20 @@ class AgentContextBuilder:
         bounded_sources = self._trim_sources(
             source_context or [], min(self._source_characters, max(0, remaining))
         )
+        remaining -= sum(len(str(item.get("content", ""))) for item in bounded_sources)
+        bounded_attachments = self._trim_sources(
+            attachment_context or [],
+            min(self._attachment_characters, max(0, remaining)),
+        )
         bounded_overview = (
-            self._trim_overview(
-                overview_to_prompt_data(state_overview), self._overview_characters
-            )
+            self._trim_overview(overview_to_prompt_data(state_overview), self._overview_characters)
             if state_overview is not None
             else {}
         )
         prefetched: dict[str, Any] = {
             "memory_context": bounded_memory,
             "source_context": bounded_sources,
+            "attachment_context": bounded_attachments,
             "context_stats": {
                 "durable_message_count_loaded": len(messages),
                 "recent_message_count": len(recent),
@@ -99,13 +107,20 @@ class AgentContextBuilder:
         )
         if bounded_active:
             prefetched["active_thing_context"] = bounded_active
-        bounded_attention = self._trim_attention(
-            attention or (), self._attention_characters
-        )
+        bounded_attention = self._trim_attention(attention or (), self._attention_characters)
         if bounded_attention:
             prefetched["attention_candidates"] = bounded_attention
         if summary:
             prefetched["thread_summary"] = summary
+        # This is deliberately appended after Memory/Source context.  Model
+        # consumers must treat it as the current-reality authority whenever a
+        # remembered assertion conflicts with durable Personal State.
+        prefetched["current_reality"] = {
+            "state_overview": bounded_overview,
+            "active_thing_context": bounded_active,
+            "attention_candidates": bounded_attention,
+            "attachment_context": bounded_attachments,
+        }
         return AgentContext(messages=recent, prefetched_state=prefetched)
 
     def _recent_messages(self, messages: list[MessageDTO]) -> list[dict[str, Any]]:
@@ -159,9 +174,7 @@ class AgentContextBuilder:
             for item in items:
                 if not isinstance(item, dict):
                     continue
-                cost = len(str(item.get("content", ""))) + len(
-                    str(item.get("summary", ""))
-                )
+                cost = len(str(item.get("content", ""))) + len(str(item.get("summary", "")))
                 if cost > remaining:
                     break
                 result[group].append(item)
@@ -178,9 +191,7 @@ class AgentContextBuilder:
         )
 
     @staticmethod
-    def _trim_sources(
-        values: list[dict[str, str]], budget: int
-    ) -> list[dict[str, str]]:
+    def _trim_sources(values: list[dict[str, str]], budget: int) -> list[dict[str, str]]:
         result: list[dict[str, str]] = []
         remaining = budget
         for value in values:

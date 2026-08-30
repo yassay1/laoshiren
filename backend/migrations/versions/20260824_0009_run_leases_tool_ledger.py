@@ -14,9 +14,7 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     op.add_column("agent_runs", sa.Column("claim_owner", sa.String(200)))
-    op.add_column(
-        "agent_runs", sa.Column("lease_expires_at", sa.DateTime(timezone=True))
-    )
+    op.add_column("agent_runs", sa.Column("lease_expires_at", sa.DateTime(timezone=True)))
     op.add_column("agent_runs", sa.Column("heartbeat_at", sa.DateTime(timezone=True)))
     op.add_column(
         "agent_runs",
@@ -28,9 +26,7 @@ def upgrade() -> None:
         ["status", "lease_expires_at"],
     )
 
-    status = postgresql.ENUM(
-        "RUNNING", "SUCCEEDED", "FAILED", name="tool_execution_status"
-    )
+    status = postgresql.ENUM("RUNNING", "SUCCEEDED", "FAILED", name="tool_execution_status")
     status.create(op.get_bind(), checkfirst=True)
     status_column = postgresql.ENUM(
         "RUNNING",
@@ -50,9 +46,7 @@ def upgrade() -> None:
         sa.Column("result", postgresql.JSONB()),
         sa.Column("claim_owner", sa.String(200), nullable=False),
         sa.Column("lease_expires_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column(
-            "attempt_count", sa.Integer(), nullable=False, server_default="1"
-        ),
+        sa.Column("attempt_count", sa.Integer(), nullable=False, server_default="1"),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.ForeignKeyConstraint(["run_id"], ["agent_runs.id"]),
@@ -69,9 +63,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_index("ix_tool_executions_status_lease", table_name="tool_executions")
     op.drop_table("tool_executions")
-    postgresql.ENUM(name="tool_execution_status").drop(
-        op.get_bind(), checkfirst=True
-    )
+    postgresql.ENUM(name="tool_execution_status").drop(op.get_bind(), checkfirst=True)
     op.drop_index("ix_agent_runs_status_lease", table_name="agent_runs")
     op.drop_column("agent_runs", "attempt_count")
     op.drop_column("agent_runs", "heartbeat_at")

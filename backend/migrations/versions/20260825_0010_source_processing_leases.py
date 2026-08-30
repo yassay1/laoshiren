@@ -13,12 +13,8 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     op.add_column("sources", sa.Column("processing_claim_owner", sa.String(200)))
-    op.add_column(
-        "sources", sa.Column("processing_lease_expires_at", sa.DateTime(timezone=True))
-    )
-    op.add_column(
-        "sources", sa.Column("processing_heartbeat_at", sa.DateTime(timezone=True))
-    )
+    op.add_column("sources", sa.Column("processing_lease_expires_at", sa.DateTime(timezone=True)))
+    op.add_column("sources", sa.Column("processing_heartbeat_at", sa.DateTime(timezone=True)))
     op.add_column(
         "sources",
         sa.Column(
@@ -28,9 +24,7 @@ def upgrade() -> None:
             server_default="0",
         ),
     )
-    op.add_column(
-        "sources", sa.Column("next_processing_attempt_at", sa.DateTime(timezone=True))
-    )
+    op.add_column("sources", sa.Column("next_processing_attempt_at", sa.DateTime(timezone=True)))
     op.create_index(
         "ix_sources_processing_claim",
         "sources",

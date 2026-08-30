@@ -7,7 +7,11 @@ from sqlalchemy import text
 
 from laoshiren.application.personal_state.service import PersonalStateApplicationService
 from laoshiren.domain.personal_state.exceptions import VersionConflict
-from laoshiren.domain.personal_state.value_objects import DateCertainty, DatePrecision
+from laoshiren.domain.personal_state.value_objects import (
+    DateCertainty,
+    DatePrecision,
+    ThingDateType,
+)
 from laoshiren.infrastructure.persistence.database import Database
 
 pytestmark = [
@@ -38,10 +42,10 @@ async def test_complete_task_is_atomic_idempotent_and_versioned() -> None:
         deadline = await service.set_deadline(
             user_id=user_id,
             thing_id=thing.id,
-            kind="SUBMISSION_DEADLINE",
+            kind=ThingDateType.DEADLINE,
             value=deadline_value,
             timezone_name="Asia/Shanghai",
-            precision=DatePrecision.DATETIME,
+            precision=DatePrecision.DATE_TIME,
             certainty=DateCertainty.CONFIRMED,
             is_primary=True,
             expected_version=thing.version,
@@ -52,10 +56,10 @@ async def test_complete_task_is_atomic_idempotent_and_versioned() -> None:
         deadline_replay = await service.set_deadline(
             user_id=user_id,
             thing_id=thing.id,
-            kind="SUBMISSION_DEADLINE",
+            kind=ThingDateType.DEADLINE,
             value=deadline_value,
             timezone_name="Asia/Shanghai",
-            precision=DatePrecision.DATETIME,
+            precision=DatePrecision.DATE_TIME,
             certainty=DateCertainty.CONFIRMED,
             is_primary=True,
             expected_version=thing.version,

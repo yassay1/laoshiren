@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laoshiren.local/schemas/agent-ephemeral-frame.schema.json",
+  "title": "Laoshiren Agent Ephemeral Frame",
+  "type": "object",
+  "required": ["run_id", "frame_type", "emitted_at", "data"],
+  "properties": {
+    "run_id": { "type": "string", "minLength": 1 },
+    "frame_type": { "enum": ["assistant.delta", "stream.reset"] },
+    "emitted_at": { "type": "string", "format": "date-time" },
+    "data": { "type": "object" }
+  },
+  "additionalProperties": false
+}

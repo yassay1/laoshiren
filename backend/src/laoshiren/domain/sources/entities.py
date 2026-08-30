@@ -63,6 +63,7 @@ class Source:
     processing_heartbeat_at: datetime | None = None
     processing_attempt_count: int = 0
     next_processing_attempt_at: datetime | None = None
+    deleted_at: datetime | None = None
     created_at: datetime = field(default_factory=utc_now)
 
     def mark_ready(self, *, extracted_text: str) -> None:
@@ -83,6 +84,14 @@ class Source:
         self.processing_lease_expires_at = None
         self.processing_heartbeat_at = None
         self.next_processing_attempt_at = None
+
+    def mark_deleted(self) -> None:
+        if self.deleted_at is not None:
+            return
+        self.deleted_at = utc_now()
+        self.extracted_text = None
+        self.processing_status = ProcessingStatus.FAILED
+        self.processing_error = "SOURCE_DELETED"
 
 
 @dataclass(slots=True)

@@ -16,10 +16,13 @@ from laoshiren.presentation.api.schemas.personal_state import (
     CreateTaskRequest,
     CreateThingRelationRequest,
     CreateThingRequest,
+    MergeThingsRequest,
     MutationResponse,
     SetDeadlineRequest,
+    SetThingContextRequest,
     StateMutationResponse,
     TaskResponse,
+    ThingContextEntryResponse,
     ThingDateResponse,
     ThingRelationCreatedResponse,
     ThingRelationResponse,
@@ -80,6 +83,32 @@ async def get_thing(
 ) -> ThingResponse:
     thing = await container.personal_state.get_thing(user_id=user_id, thing_id=thing_id)
     return ThingResponse.from_dto(thing)
+
+
+@router.post("/{thing_id}/merge", response_model=MutationResponse)
+async def merge_thing(
+    thing_id: UUID,
+    request: MergeThingsRequest,
+    container: ContainerDependency,
+    user_id: CurrentUserId,
+    idempotency_key: IdempotencyKey,
+) -> MutationResponse:
+    result = await container.personal_state.merge_things(
+        user_id=user_id,
+        canonical_thing_id=thing_id,
+        duplicate_thing_id=request.duplicate_thing_id,
+        expected_canonical_version=request.expected_canonical_version,
+        expected_duplicate_version=request.expected_duplicate_version,
+        action_id="api.merge_things",
+        idempotency_key=idempotency_key,
+        reason=request.reason,
+    )
+    return MutationResponse(
+        mutation_id=result.mutation_id,
+        target_id=result.target_id,
+        target_version=result.target_version,
+        replayed=result.replayed,
+    )
 
 
 @router.patch("/{thing_id}", response_model=ThingResponse)
@@ -170,6 +199,7 @@ async def set_deadline(
         user_id=user_id,
         thing_id=thing_id,
         kind=request.kind,
+        label=request.label,
         value=request.value,
         timezone_name=request.timezone,
         precision=request.precision,
@@ -200,6 +230,42 @@ async def list_dates(
         user_id=user_id, thing_id=thing_id, limit=limit
     )
     return [ThingDateResponse.from_dto(thing_date) for thing_date in dates]
+
+
+@router.get("/{thing_id}/context", response_model=list[ThingContextEntryResponse])
+async def list_context_entries(
+    thing_id: UUID, container: ContainerDependency, user_id: CurrentUserId
+) -> list[ThingContextEntryResponse]:
+    entries = await container.personal_state.get_context_entries(user_id=user_id, thing_id=thing_id)
+    return [ThingContextEntryResponse.from_dto(entry) for entry in entries]
+
+
+@router.put("/{thing_id}/context", response_model=MutationResponse)
+async def set_thing_context(
+    thing_id: UUID,
+    request: SetThingContextRequest,
+    container: ContainerDependency,
+    user_id: CurrentUserId,
+    idempotency_key: IdempotencyKey,
+) -> MutationResponse:
+    result = await container.personal_state.set_thing_context(
+        user_id=user_id,
+        thing_id=thing_id,
+        label=request.label,
+        content=request.content,
+        entry_id=request.entry_id,
+        expected_version=request.expected_version,
+        source_id=request.source_id,
+        action_id="api.set_thing_context",
+        idempotency_key=idempotency_key,
+        reason=request.reason,
+    )
+    return MutationResponse(
+        mutation_id=result.mutation_id,
+        target_id=result.target_id,
+        target_version=result.target_version,
+        replayed=result.replayed,
+    )
 
 
 @router.get("/{thing_id}/timeline", response_model=list[TimelineEventResponse])
@@ -238,9 +304,7 @@ async def list_blockers(
     container: ContainerDependency,
     user_id: CurrentUserId,
 ) -> list[BlockerResponse]:
-    blockers = await container.personal_state.get_blockers(
-        user_id=user_id, thing_id=thing_id
-    )
+    blockers = await container.personal_state.get_blockers(user_id=user_id, thing_id=thing_id)
     return [BlockerResponse.from_dto(blocker) for blocker in blockers]
 
 
@@ -276,9 +340,7 @@ async def list_relations(
     container: ContainerDependency,
     user_id: CurrentUserId,
 ) -> list[ThingRelationResponse]:
-    relations = await container.personal_state.get_relations(
-        user_id=user_id, thing_id=thing_id
-    )
+    relations = await container.personal_state.get_relations(user_id=user_id, thing_id=thing_id)
     return [ThingRelationResponse.from_dto(relation) for relation in relations]
 
 
@@ -361,6 +423,8 @@ async def create_task(
         user_id=user_id,
         thing_id=thing_id,
         title=request.title,
+        due_at=request.due_at,
+        recurrence_interval_days=request.recurrence_interval_days,
         action_id="api.create_task",
         idempotency_key=idempotency_key,
         reason="User created Task through Product API.",

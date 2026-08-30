@@ -11,9 +11,7 @@ async def test_openai_compatible_embedding_response_is_validated() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v1/embeddings"
         assert request.headers["Authorization"] == "Bearer secret"
-        return httpx.Response(
-            200, json={"data": [{"index": 0, "embedding": [0.1, 0.2, 0.3]}]}
-        )
+        return httpx.Response(200, json={"data": [{"index": 0, "embedding": [0.1, 0.2, 0.3]}]})
 
     provider = OpenAICompatibleEmbeddingProvider(
         api_key="secret",

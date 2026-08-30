@@ -24,31 +24,58 @@ class RunTrigger(StrEnum):
 class RunStatus(StrEnum):
     QUEUED = "QUEUED"
     RUNNING = "RUNNING"
-    WAITING_USER = "WAITING_USER"
+    WAITING_FOR_USER = "WAITING_FOR_USER"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
 
 
 class RunEventType(StrEnum):
+    RUN_QUEUED = "run.queued"
     RUN_STARTED = "run.started"
-    ASSISTANT_DELTA = "assistant.delta"
-    ASSISTANT_MESSAGE = "assistant.message"
+    ASSISTANT_STARTED = "assistant.started"
+    ASSISTANT_COMPLETED = "assistant.completed"
     TOOL_STARTED = "tool.started"
     TOOL_COMPLETED = "tool.completed"
     TOOL_FAILED = "tool.failed"
-    STATUS_UPDATED = "status.updated"
-    INTERRUPT_REQUIRED = "interrupt.required"
+    HITL_REQUESTED = "hitl.requested"
+    RUN_WAITING_FOR_USER = "run.waiting_for_user"
+    RUN_RESUMED = "run.resumed"
     RUN_COMPLETED = "run.completed"
     RUN_FAILED = "run.failed"
-    HEARTBEAT = "heartbeat"
+    RUN_CANCELLED = "run.cancelled"
 
 
 class ToolExecutionStatus(StrEnum):
-    RUNNING = "RUNNING"
+    IN_PROGRESS = "IN_PROGRESS"
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
-    UNKNOWN = "UNKNOWN"
+    UNKNOWN_OUTCOME = "UNKNOWN_OUTCOME"
+
+
+class DurableJobKind(StrEnum):
+    AGENT_RUN = "AGENT_RUN"
+    FILE_PROCESSING = "FILE_PROCESSING"
+    FILE_PURGE = "FILE_PURGE"
+    MEMORY_FORMATION = "MEMORY_FORMATION"
+    AUTOMATION_OCCURRENCE = "AUTOMATION_OCCURRENCE"
+    PUSH_DELIVERY = "PUSH_DELIVERY"
+    ACCOUNT_DELETION = "ACCOUNT_DELETION"
+
+
+class DurableJobStatus(StrEnum):
+    READY = "READY"
+    CLAIMED = "CLAIMED"
+    PAUSED = "PAUSED"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+class RunInteractionStatus(StrEnum):
+    PENDING = "PENDING"
+    RESOLVED = "RESOLVED"
+    CANCELLED = "CANCELLED"
 
 
 TERMINAL_RUN_STATUSES = {
@@ -111,6 +138,11 @@ class AgentRun:
     attempt_count: int = 0
     version: int = 1
     event_sequence: int = 0
+    active_time_used_ms: int = 0
+    active_started_at: datetime | None = None
+    terminal_output: dict[str, Any] | None = None
+    graph_terminal_at: datetime | None = None
+    budget_snapshot: dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=utc_now)
     started_at: datetime | None = None
     completed_at: datetime | None = None
@@ -122,6 +154,7 @@ class AgentRun:
         now = utc_now()
         self.status = RunStatus.RUNNING
         self.started_at = self.started_at or now
+        self.active_started_at = self.active_started_at or now
         self.current_phase = phase
         self.status_label = label
         self.updated_at = now
@@ -131,25 +164,29 @@ class AgentRun:
         """Return an abandoned in-flight Run to the durable dispatch queue."""
         if self.status is not RunStatus.RUNNING:
             raise ValueError("Only a running Run can be recovered.")
+        now = utc_now()
+        self._pause_active_time(now)
         self.status = RunStatus.QUEUED
         self.current_phase = "recovering"
         self.status_label = "Recovering after service restart"
         self._release_claim()
-        self.updated_at = utc_now()
+        self.updated_at = now
         self.version += 1
 
     def wait_for_user(self, *, interrupt_id: UUID, payload: dict[str, Any]) -> None:
         if self.status is not RunStatus.RUNNING:
             raise ValueError("Only a running Run can wait for user input.")
-        self.status = RunStatus.WAITING_USER
+        now = utc_now()
+        self._pause_active_time(now)
+        self.status = RunStatus.WAITING_FOR_USER
         self.interrupt_id = interrupt_id
         self.interrupt = payload
         self._release_claim()
-        self.updated_at = utc_now()
+        self.updated_at = now
         self.version += 1
 
     def resume(self, *, interrupt_id: UUID, response: dict[str, Any]) -> None:
-        if self.status is not RunStatus.WAITING_USER:
+        if self.status is not RunStatus.WAITING_FOR_USER:
             raise ValueError("Only a Run waiting for user input can resume.")
         if self.interrupt_id != interrupt_id:
             raise ValueError("Interrupt id does not match the active interrupt.")
@@ -166,6 +203,7 @@ class AgentRun:
         if self.status is not RunStatus.RUNNING:
             raise ValueError("Only a running Run can complete.")
         now = utc_now()
+        self._pause_active_time(now)
         self.status = RunStatus.COMPLETED
         self.final_message_id = final_message_id
         self.completed_at = now
@@ -173,10 +211,23 @@ class AgentRun:
         self.updated_at = now
         self.version += 1
 
+    def accept_terminal_output(self, output: dict[str, Any]) -> None:
+        if self.status is not RunStatus.RUNNING:
+            raise ValueError("Only a running Run can accept terminal graph output.")
+        if self.terminal_output is not None:
+            if self.terminal_output != output:
+                raise ValueError("Run already has different terminal graph output.")
+            return
+        self.terminal_output = dict(output)
+        self.graph_terminal_at = utc_now()
+        self.updated_at = self.graph_terminal_at
+        self.version += 1
+
     def fail(self, *, error_code: str) -> None:
         if self.status in TERMINAL_RUN_STATUSES:
             raise ValueError("A terminal Run cannot fail again.")
         now = utc_now()
+        self._pause_active_time(now)
         self.status = RunStatus.FAILED
         self.error_code = error_code
         self.completed_at = now
@@ -188,6 +239,7 @@ class AgentRun:
         if self.status in TERMINAL_RUN_STATUSES:
             raise ValueError("A terminal Run cannot be cancelled.")
         now = utc_now()
+        self._pause_active_time(now)
         self.status = RunStatus.CANCELLED
         self.completed_at = now
         self._release_claim()
@@ -200,6 +252,13 @@ class AgentRun:
         self.lease_expires_at = None
         self.heartbeat_at = None
 
+    def _pause_active_time(self, now: datetime) -> None:
+        if self.active_started_at is None:
+            return
+        elapsed_ms = max(0, int((now - self.active_started_at).total_seconds() * 1000))
+        self.active_time_used_ms += elapsed_ms
+        self.active_started_at = None
+
 
 @dataclass(frozen=True, slots=True)
 class RunEvent:
@@ -207,8 +266,35 @@ class RunEvent:
     sequence: int
     event_type: RunEventType
     data: dict[str, Any]
+    visibility: str = "CLIENT"
+    schema_version: int = 1
     id: UUID = field(default_factory=uuid4)
     occurred_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass(slots=True)
+class RunInteraction:
+    user_id: UUID
+    run_id: UUID
+    interaction_type: str
+    request_payload: dict[str, Any]
+    id: UUID = field(default_factory=uuid4)
+    action_id: str | None = None
+    status: RunInteractionStatus = RunInteractionStatus.PENDING
+    response_payload: dict[str, Any] | None = None
+    created_at: datetime = field(default_factory=utc_now)
+    resolved_at: datetime | None = None
+
+    def resolve(self, response: dict[str, Any]) -> None:
+        if self.status is RunInteractionStatus.RESOLVED:
+            if self.response_payload != response:
+                raise ValueError("Interaction was already resolved differently.")
+            return
+        if self.status is not RunInteractionStatus.PENDING:
+            raise ValueError("Only a pending Interaction can be resolved.")
+        self.status = RunInteractionStatus.RESOLVED
+        self.response_payload = dict(response)
+        self.resolved_at = utc_now()
 
 
 @dataclass(slots=True)
@@ -225,6 +311,63 @@ class ToolExecution:
     idempotency_key: str | None = None
     id: UUID = field(default_factory=uuid4)
     result: dict[str, Any] | None = None
+    receipt: dict[str, Any] | None = None
+    error_code: str | None = None
+    provider_idempotency_key: str | None = None
+    provider_request_id: str | None = None
     attempt_count: int = 1
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass(slots=True)
+class DurableJob:
+    user_id: UUID
+    kind: DurableJobKind
+    dedupe_key: str
+    payload: dict[str, Any]
+    id: UUID = field(default_factory=uuid4)
+    status: DurableJobStatus = DurableJobStatus.READY
+    priority: int = 0
+    available_at: datetime = field(default_factory=utc_now)
+    delivery_attempt: int = 0
+    max_delivery_attempts: int = 5
+    claimed_by: str | None = None
+    claim_epoch: int = 0
+    lease_until: datetime | None = None
+    last_error_code: str | None = None
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+
+    def __post_init__(self) -> None:
+        if not self.dedupe_key.strip():
+            raise ValueError("Durable Job dedupe key must not be empty.")
+        if self.available_at.tzinfo is None:
+            raise ValueError("Durable Job availability must include timezone information.")
+        if self.max_delivery_attempts < 1:
+            raise ValueError("Durable Job must allow at least one delivery attempt.")
+
+    def claim(self, *, owner: str, lease_until: datetime) -> None:
+        if self.status is not DurableJobStatus.READY:
+            raise ValueError("Only a ready Durable Job can be claimed.")
+        if not owner.strip() or lease_until.tzinfo is None:
+            raise ValueError("Durable Job claim requires an owner and aware lease.")
+        self.status = DurableJobStatus.CLAIMED
+        self.claimed_by = owner
+        self.claim_epoch += 1
+        self.delivery_attempt += 1
+        self.lease_until = lease_until
+        self.updated_at = utc_now()
+
+    def settle(self, status: DurableJobStatus) -> None:
+        if status not in {
+            DurableJobStatus.PAUSED,
+            DurableJobStatus.COMPLETED,
+            DurableJobStatus.FAILED,
+            DurableJobStatus.CANCELLED,
+        }:
+            raise ValueError("Durable Job can only settle to a non-running status.")
+        self.status = status
+        self.claimed_by = None
+        self.lease_until = None
+        self.updated_at = utc_now()

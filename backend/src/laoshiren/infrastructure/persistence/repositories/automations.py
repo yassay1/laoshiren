@@ -46,6 +46,8 @@ def automation_to_domain(model: AutomationORM) -> Automation:
         task_id=model.task_id,
         source_id=model.source_id,
         recurrence_interval_seconds=model.recurrence_interval_seconds,
+        definition_revision=model.definition_revision,
+        misfire_policy=model.misfire_policy,
         status=model.status,
         last_triggered_at=model.last_triggered_at,
         version=model.version,
@@ -93,6 +95,8 @@ class SqlAlchemyAutomationRepository:
                 task_id=automation.task_id,
                 source_id=automation.source_id,
                 recurrence_interval_seconds=automation.recurrence_interval_seconds,
+                definition_revision=automation.definition_revision,
+                misfire_policy=automation.misfire_policy,
                 status=automation.status,
                 last_triggered_at=automation.last_triggered_at,
                 version=automation.version,
@@ -157,6 +161,7 @@ class SqlAlchemyAutomationRepository:
                     status=automation.status,
                     next_trigger_at=automation.next_trigger_at,
                     last_triggered_at=automation.last_triggered_at,
+                    definition_revision=automation.definition_revision,
                     version=automation.version,
                     updated_at=automation.updated_at,
                 )
@@ -164,9 +169,7 @@ class SqlAlchemyAutomationRepository:
         )
         return result.rowcount == 1
 
-    async def get_operation(
-        self, *, user_id: UUID, key: str
-    ) -> tuple[UUID, int] | None:
+    async def get_operation(self, *, user_id: UUID, key: str) -> tuple[UUID, int] | None:
         row = (
             await self._session.execute(
                 select(
@@ -275,23 +278,21 @@ class SqlAlchemyNotificationOutboxRepository:
                     NotificationOutboxORM.id == notification.id,
                     NotificationOutboxORM.claim_owner == owner,
                 )
-            .values(
-                status=notification.status,
-                attempt_count=notification.attempt_count,
-                submitted_at=notification.submitted_at,
-                error_code=notification.error_code,
-                updated_at=notification.updated_at,
-                claim_owner=notification.claim_owner,
-                lease_expires_at=notification.lease_expires_at,
-                next_attempt_at=notification.next_attempt_at,
-            )
+                .values(
+                    status=notification.status,
+                    attempt_count=notification.attempt_count,
+                    submitted_at=notification.submitted_at,
+                    error_code=notification.error_code,
+                    updated_at=notification.updated_at,
+                    claim_owner=notification.claim_owner,
+                    lease_expires_at=notification.lease_expires_at,
+                    next_attempt_at=notification.next_attempt_at,
+                )
             ),
         )
         return result.rowcount == 1
 
-    async def list_for_user(
-        self, *, user_id: UUID, limit: int
-    ) -> list[NotificationOutbox]:
+    async def list_for_user(self, *, user_id: UUID, limit: int) -> list[NotificationOutbox]:
         models = (
             await self._session.scalars(
                 select(NotificationOutboxORM)
@@ -315,10 +316,9 @@ class SqlAlchemyAttentionRepository:
                 select(AttentionFeedbackORM).where(AttentionFeedbackORM.user_id == user_id)
             )
         ).all()
-        feedback = {
-            (item.subject_type, item.subject_id): item for item in feedback_models
-        }
+        feedback = {(item.subject_type, item.subject_id): item for item in feedback_models}
         candidates: list[AttentionCandidate] = []
+        freshness: dict[tuple[AttentionSubjectType, UUID], datetime] = {}
         things = (
             await self._session.scalars(
                 select(ThingORM).where(
@@ -326,7 +326,7 @@ class SqlAlchemyAttentionRepository:
                     ThingORM.deadline_at.is_not(None),
                     ThingORM.deadline_at <= now + timedelta(hours=due_soon_hours),
                     ThingORM.status.not_in(
-                        [ThingStatus.COMPLETED, ThingStatus.CANCELLED, ThingStatus.ARCHIVED]
+                        [ThingStatus.COMPLETED, ThingStatus.CANCELLED]
                     ),
                 )
             )
@@ -363,6 +363,7 @@ class SqlAlchemyAttentionRepository:
                     acknowledged=bool(item and item.acknowledged_at),
                 )
             )
+            freshness[(AttentionSubjectType.DEADLINE, thing.id)] = thing.updated_at
         blockers = (
             await self._session.scalars(
                 select(BlockerORM)
@@ -396,9 +397,11 @@ class SqlAlchemyAttentionRepository:
                     acknowledged=bool(item and item.acknowledged_at),
                 )
             )
+            freshness[(AttentionSubjectType.BLOCKER, blocker.id)] = blocker.updated_at
         candidates.sort(
             key=lambda item: (
                 0 if item.severity == "high" else 1,
+                -freshness[(item.subject_type, item.subject_id)].timestamp(),
                 item.due_at or now,
                 str(item.subject_id),
             )

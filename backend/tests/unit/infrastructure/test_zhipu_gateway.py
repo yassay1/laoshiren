@@ -10,7 +10,7 @@ from laoshiren.infrastructure.ai.zhipu import ZhipuExecutiveModelGateway
 
 
 def test_zhipu_gateway_parses_supported_decisions() -> None:
-    tools = ("state.get_thing",)
+    tools = ("state_get_thing_context",)
     response = parse_executive_decision(
         {"kind": "respond", "content": " 已收到 "}, available_tools=tools
     )
@@ -21,7 +21,7 @@ def test_zhipu_gateway_parses_supported_decisions() -> None:
     call = parse_executive_decision(
         {
             "kind": "call_tool",
-            "tool_name": "state.get_thing",
+            "tool_name": "state_get_thing_context",
             "tool_arguments": {"thing_id": str(uuid4())},
         },
         available_tools=tools,
@@ -30,14 +30,14 @@ def test_zhipu_gateway_parses_supported_decisions() -> None:
     assert response.kind is DecisionKind.RESPOND
     assert response.content == "已收到"
     assert ask.kind is DecisionKind.ASK_USER
-    assert call.tool_name == "state.get_thing"
+    assert call.tool_name == "state_get_thing_context"
 
 
 def test_zhipu_gateway_rejects_unavailable_tool() -> None:
     with pytest.raises(ModelGatewayError, match="unavailable tool"):
         parse_executive_decision(
             {"kind": "call_tool", "tool_name": "system.shell", "tool_arguments": {}},
-            available_tools=("state.get_thing",),
+            available_tools=("state_get_thing_context",),
         )
 
 

@@ -1,23 +1,46 @@
 from datetime import datetime
 from types import TracebackType
-from typing import Protocol, Self
+from typing import TYPE_CHECKING, Protocol, Self
 from uuid import UUID
 
+from laoshiren.application.files.ports import FileRepository
 from laoshiren.application.sources.ports import SourceRepository
 from laoshiren.domain.personal_state.entities import (
     Blocker,
     StateMutation,
     Task,
     Thing,
+    ThingContextEntry,
     ThingDate,
     ThingRelation,
     TimelineEvent,
 )
-from laoshiren.domain.personal_state.value_objects import ThingStatus
+from laoshiren.domain.personal_state.value_objects import ThingDateType, ThingStatus
+
+if TYPE_CHECKING:
+    from laoshiren.application.automations.ports import (
+        AutomationRepository,
+        PushEndpointRepository,
+    )
+    from laoshiren.application.identity.ports import (
+        BusinessSessionRepository,
+        DeviceRepository,
+    )
+    from laoshiren.application.memories.ports import MemoryRepository, MemorySuppressionRepository
+    from laoshiren.application.runtime.ports import DurableJobRepository, MessageRepository
+    from laoshiren.domain.identity.entities import User
 
 
 class UserRepository(Protocol):
     async def ensure_exists(self, user_id: UUID) -> None: ...
+
+    async def get(self, *, user_id: UUID) -> "User | None": ...
+
+    async def get_by_external_subject(self, *, external_subject: str) -> "User | None": ...
+
+    async def add(self, user: "User") -> None: ...
+
+    async def update(self, user: "User") -> None: ...
 
 
 class ThingRepository(Protocol):
@@ -37,6 +60,17 @@ class ThingRepository(Protocol):
 
     async def update(self, thing: Thing, *, expected_version: int) -> bool: ...
 
+    async def rebind_merged_references(
+        self, *, duplicate_thing_id: UUID, canonical_thing_id: UUID
+    ) -> None: ...
+
+
+    async def detach_tasks(self, *, thing_id: UUID) -> None: ...
+
+    async def delete_owned_components(self, *, thing_id: UUID) -> None: ...
+
+    async def get_including_deleted(self, *, user_id: UUID, thing_id: UUID) -> Thing | None: ...
+
     async def list_upcoming(
         self, *, user_id: UUID, now: datetime, window_end: datetime, limit: int
     ) -> list[Thing]: ...
@@ -49,7 +83,7 @@ class ThingRepository(Protocol):
 class ThingDateRepository(Protocol):
     async def add(self, thing_date: ThingDate) -> None: ...
 
-    async def unset_primary(self, *, thing_id: UUID, kind: str) -> None: ...
+    async def unset_primary(self, *, thing_id: UUID, kind: ThingDateType) -> None: ...
 
     async def list_for_thing(
         self, *, user_id: UUID, thing_id: UUID, limit: int
@@ -60,12 +94,24 @@ class ThingDateRepository(Protocol):
     async def update(self, thing_date: ThingDate, *, expected_version: int) -> bool: ...
 
 
+class ThingContextEntryRepository(Protocol):
+    async def add(self, entry: ThingContextEntry) -> None: ...
+
+    async def get(self, *, user_id: UUID, entry_id: UUID) -> ThingContextEntry | None: ...
+
+    async def list_for_thing(self, *, user_id: UUID, thing_id: UUID) -> list[ThingContextEntry]: ...
+
+    async def update(self, entry: ThingContextEntry, *, expected_version: int) -> bool: ...
+
+
 class TaskRepository(Protocol):
     async def add(self, task: Task) -> None: ...
 
     async def get(self, *, user_id: UUID, task_id: UUID) -> Task | None: ...
 
     async def list_for_thing(self, *, user_id: UUID, thing_id: UUID) -> list[Task]: ...
+
+    async def list_standalone(self, *, user_id: UUID) -> list[Task]: ...
 
     async def update(self, task: Task, *, expected_version: int) -> bool: ...
 
@@ -104,28 +150,36 @@ class BlockerRepository(Protocol):
 
     async def update(self, blocker: Blocker, *, expected_version: int) -> bool: ...
 
-    async def list_open(
-        self, *, user_id: UUID, limit: int
-    ) -> list[tuple[Blocker, str]]: ...
+    async def list_open(self, *, user_id: UUID, limit: int) -> list[tuple[Blocker, str]]: ...
 
 
 class ThingRelationRepository(Protocol):
     async def add(self, relation: ThingRelation) -> bool: ...
 
-    async def list_for_thing(
-        self, *, user_id: UUID, thing_id: UUID
-    ) -> list[ThingRelation]: ...
+    async def list_for_thing(self, *, user_id: UUID, thing_id: UUID) -> list[ThingRelation]: ...
 
 
 class PersonalStateUnitOfWork(Protocol):
     users: UserRepository
+    devices: "DeviceRepository"
+    business_sessions: "BusinessSessionRepository"
+    messages: "MessageRepository"
     things: ThingRepository
     tasks: TaskRepository
     dates: ThingDateRepository
+    context_entries: ThingContextEntryRepository
     audit: AuditRepository
     sources: SourceRepository
+    files: FileRepository
+    durable_jobs: "DurableJobRepository"
+    memories: "MemoryRepository"
+    memory_suppressions: "MemorySuppressionRepository"
+    automations: "AutomationRepository"
+    push_endpoints: "PushEndpointRepository"
     blockers: BlockerRepository
     relations: ThingRelationRepository
+
+    async def lock_idempotency(self, *, user_id: UUID, key: str) -> None: ...
 
     async def __aenter__(self) -> Self: ...
 

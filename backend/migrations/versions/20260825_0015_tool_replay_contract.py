@@ -16,9 +16,7 @@ def upgrade() -> None:
         "tool_executions",
         sa.Column("replay_safe", sa.Boolean(), nullable=False, server_default=sa.true()),
     )
-    op.add_column(
-        "tool_executions", sa.Column("idempotency_key", sa.String(300))
-    )
+    op.add_column("tool_executions", sa.Column("idempotency_key", sa.String(300)))
 
 
 def downgrade() -> None:

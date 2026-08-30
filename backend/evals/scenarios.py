@@ -29,9 +29,7 @@ SCENARIOS = (
     LiveScenario("create_thing", "创建一个 Thing：准备秋季旅行。", "create Thing tool"),
     LiveScenario("create_task", "创建任务：周五前订火车票。", "create task tool"),
     LiveScenario("complete_task", "把刚创建的订火车票任务标记为完成。", "complete task tool"),
-    LiveScenario(
-        "multi_tool", "创建‘搬家’事项，并在里面创建‘联系搬家公司’任务。", "two tools"
-    ),
+    LiveScenario("multi_tool", "创建‘搬家’事项，并在里面创建‘联系搬家公司’任务。", "two tools"),
     LiveScenario("clarification", "帮我把那个重要的事情办了。", "clarification interrupt"),
     LiveScenario("hitl", "删除我刚才创建的搬家事项。", "confirmation interrupt"),
     LiveScenario(

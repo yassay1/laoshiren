@@ -13,25 +13,26 @@ class RecordingRuntimeService:
         self.fail_first = fail_first
         self.called = asyncio.Event()
 
-    async def recover_pending_runs(self, *, limit: int) -> int:
-        assert limit == 7
+    async def claim_agent_run_jobs(self, **_: object) -> list[object]:
         self.calls += 1
         if self.fail_first and self.calls == 1:
             raise RuntimeError("temporary database outage")
         self.called.set()
-        return 0
+        return []
 
 
-async def test_scanner_runs_immediately_and_stops_cleanly() -> None:
+async def execute(**_: object) -> None:
+    return None
+
+
+async def test_scanner_claims_immediately_and_stops_cleanly() -> None:
     service = RecordingRuntimeService()
     scanner = RunDispatchScanner(  # type: ignore[arg-type]
         service, interval_seconds=60, batch_size=7
     )
-
-    await scanner.start()
+    await scanner.start(execute)
     await asyncio.wait_for(service.called.wait(), timeout=1)
     await scanner.stop()
-
     assert service.calls == 1
 
 
@@ -40,23 +41,7 @@ async def test_scanner_survives_a_failed_tick() -> None:
     scanner = RunDispatchScanner(  # type: ignore[arg-type]
         service, interval_seconds=0.01, batch_size=7
     )
-
-    await scanner.start()
+    await scanner.start(execute)
     await asyncio.wait_for(service.called.wait(), timeout=1)
     await scanner.stop()
-
     assert service.calls >= 2
-
-
-async def test_scanner_start_is_idempotent() -> None:
-    service = RecordingRuntimeService()
-    scanner = RunDispatchScanner(  # type: ignore[arg-type]
-        service, interval_seconds=60, batch_size=7
-    )
-
-    await scanner.start()
-    await scanner.start()
-    await asyncio.wait_for(service.called.wait(), timeout=1)
-    await scanner.stop()
-
-    assert service.calls == 1

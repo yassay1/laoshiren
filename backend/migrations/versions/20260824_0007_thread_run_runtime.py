@@ -84,12 +84,8 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("user_id", "idempotency_key", name="uq_agent_runs_user_key"),
     )
-    op.create_index(
-        "ix_agent_runs_thread_created", "agent_runs", ["thread_id", "created_at"]
-    )
-    op.create_index(
-        "ix_agent_runs_status_updated", "agent_runs", ["status", "updated_at"]
-    )
+    op.create_index("ix_agent_runs_thread_created", "agent_runs", ["thread_id", "created_at"])
+    op.create_index("ix_agent_runs_status_updated", "agent_runs", ["status", "updated_at"])
 
     op.create_table(
         "messages",
@@ -99,9 +95,7 @@ def upgrade() -> None:
         sa.Column("role", message_role, nullable=False),
         sa.Column("content", sa.Text(), nullable=False),
         sa.Column("run_id", sa.Uuid(), nullable=True),
-        sa.Column(
-            "source_ids", postgresql.ARRAY(postgresql.UUID(as_uuid=True)), nullable=False
-        ),
+        sa.Column("source_ids", postgresql.ARRAY(postgresql.UUID(as_uuid=True)), nullable=False),
         sa.Column("metadata", postgresql.JSONB(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.ForeignKeyConstraint(["run_id"], ["agent_runs.id"]),
@@ -109,9 +103,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["user_id"], ["users.id"]),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index(
-        "ix_messages_thread_created", "messages", ["thread_id", "created_at"]
-    )
+    op.create_index("ix_messages_thread_created", "messages", ["thread_id", "created_at"])
 
     op.create_table(
         "run_events",
@@ -125,9 +117,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("run_id", "sequence", name="uq_run_events_sequence"),
     )
-    op.create_index(
-        "ix_run_events_run_sequence", "run_events", ["run_id", "sequence"]
-    )
+    op.create_index("ix_run_events_run_sequence", "run_events", ["run_id", "sequence"])
 
     op.create_table(
         "run_operations",

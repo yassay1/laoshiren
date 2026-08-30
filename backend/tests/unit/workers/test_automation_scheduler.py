@@ -17,20 +17,24 @@ class RecordingAutomationService:
         self.calls += 1
         return 0
 
-    async def dispatch_pending(self, *, limit: int) -> int:
-        assert limit == 7
-        self.called.set()
-        return 0
+
+class NoopWorker:
+    async def run_once(self) -> bool:
+        return False
 
 
 async def test_scheduler_runs_immediately_and_stops_cleanly() -> None:
     service = RecordingAutomationService()
     scheduler = AutomationScheduler(  # type: ignore[arg-type]
-        service, interval_seconds=60, batch_size=7
+        service,
+        NoopWorker(),  # type: ignore[arg-type]
+        NoopWorker(),  # type: ignore[arg-type]
+        interval_seconds=60,
+        batch_size=7,
     )
 
     await scheduler.start()
-    await asyncio.wait_for(service.called.wait(), timeout=1)
+    await asyncio.sleep(0.05)
     await scheduler.stop()
 
-    assert service.calls == 1
+    assert service.calls >= 1

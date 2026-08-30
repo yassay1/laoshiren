@@ -1,9 +1,13 @@
 from collections.abc import Callable
 from datetime import datetime
+from typing import cast
 from uuid import UUID
 
+from laoshiren.application.memories import write_ops as memory_write_ops
 from laoshiren.application.memories.dto import MemoryDTO
 from laoshiren.application.memories.ports import MemoryUnitOfWork
+from laoshiren.application.memories.retrieval import hybrid_search_memories
+from laoshiren.application.personal_state.ports import PersonalStateUnitOfWork
 from laoshiren.domain.memories.entities import Memory, MemoryStatus, MemoryType
 from laoshiren.domain.personal_state.exceptions import EntityNotFound, VersionConflict
 
@@ -76,40 +80,12 @@ class MemoryApplicationService:
             raise ValueError("Memory profile key must not exceed 100 characters.")
 
         async with self._unit_of_work_factory() as unit_of_work:
-            if normalized_profile_key:
-                await unit_of_work.lock_idempotency(
-                    user_id=user_id, key=f"memory-profile:{normalized_profile_key}"
-                )
-            previous = await unit_of_work.memories.get_by_idempotency(
-                user_id=user_id, key=idempotency_key
-            )
-            if previous is not None:
-                return to_memory_dto(previous, replayed=True)
-            await unit_of_work.users.ensure_exists(user_id)
-            if thing_id is not None and await unit_of_work.things.get(
-                user_id=user_id, thing_id=thing_id
-            ) is None:
-                raise EntityNotFound("Thing was not found.")
-            for source_id in source_ids:
-                if await unit_of_work.sources.get(user_id=user_id, source_id=source_id) is None:
-                    raise EntityNotFound("Source was not found.")
-            superseded = None
-            if normalized_profile_key:
-                superseded = await unit_of_work.memories.get_active_profile(
-                    user_id=user_id, profile_key=normalized_profile_key
-                )
-                if superseded is not None:
-                    expected_version = superseded.version
-                    superseded.supersede()
-                    if not await unit_of_work.memories.update(
-                        superseded, expected_version=expected_version
-                    ):
-                        raise VersionConflict("PROFILE Memory was updated concurrently.")
-            memory = Memory(
+            outcome = await memory_write_ops.apply_create_memory(
+                cast(PersonalStateUnitOfWork, unit_of_work),
                 user_id=user_id,
                 memory_type=memory_type,
-                content=normalized_content,
-                summary=normalized_summary,
+                content=content,
+                summary=summary,
                 importance=importance,
                 confidence=confidence,
                 idempotency_key=idempotency_key,
@@ -118,14 +94,67 @@ class MemoryApplicationService:
                 valid_from=valid_from,
                 valid_until=valid_until,
                 embedding=embedding,
-                profile_key=normalized_profile_key,
-                supersedes_id=superseded.id if superseded is not None else None,
+                profile_key=profile_key,
                 provenance_run_id=provenance_run_id,
                 source_message_ids=source_message_ids,
             )
-            await unit_of_work.memories.add(memory)
             await unit_of_work.commit()
-            return to_memory_dto(memory)
+            memory = await unit_of_work.memories.get(
+                user_id=user_id, memory_id=UUID(str(outcome.data["id"]))
+            )
+            if memory is None:
+                raise RuntimeError("Memory creation did not persist.")
+            return to_memory_dto(memory, replayed=outcome.replayed)
+
+    async def create_if_allowed(
+        self,
+        *,
+        user_id: UUID,
+        memory_type: MemoryType,
+        content: str,
+        summary: str,
+        importance: float,
+        confidence: float,
+        idempotency_key: str,
+        thing_id: UUID | None = None,
+        source_ids: tuple[UUID, ...] = (),
+        valid_from: datetime | None = None,
+        valid_until: datetime | None = None,
+        embedding: list[float] | None = None,
+        profile_key: str | None = None,
+        provenance_run_id: UUID | None = None,
+        source_message_ids: tuple[UUID, ...] = (),
+    ) -> MemoryDTO | None:
+        async with self._unit_of_work_factory() as unit_of_work:
+            outcome = await memory_write_ops.apply_create_memory(
+                cast(PersonalStateUnitOfWork, unit_of_work),
+                user_id=user_id,
+                memory_type=memory_type,
+                content=content,
+                summary=summary,
+                importance=importance,
+                confidence=confidence,
+                idempotency_key=idempotency_key,
+                thing_id=thing_id,
+                source_ids=source_ids,
+                valid_from=valid_from,
+                valid_until=valid_until,
+                embedding=embedding,
+                profile_key=profile_key,
+                provenance_run_id=provenance_run_id,
+                source_message_ids=source_message_ids,
+                reconcile_state=True,
+            )
+            if outcome.code in {"MEMORY_SUPPRESSED", "MEMORY_STATE_DUPLICATE"}:
+                await unit_of_work.rollback()
+                return None
+            await unit_of_work.commit()
+            memory = await unit_of_work.memories.get(
+                user_id=user_id, memory_id=UUID(str(outcome.data["id"]))
+            )
+            if memory is None:
+                raise RuntimeError("Memory creation did not persist.")
+            return to_memory_dto(memory, replayed=outcome.replayed)
 
     async def get(self, *, user_id: UUID, memory_id: UUID) -> MemoryDTO:
         async with self._unit_of_work_factory() as unit_of_work:
@@ -149,15 +178,26 @@ class MemoryApplicationService:
         if query_embedding is not None and len(query_embedding) != 1536:
             raise ValueError("Query embedding must contain exactly 1536 values.")
         async with self._unit_of_work_factory() as unit_of_work:
-            memories = await unit_of_work.memories.search(
-                user_id=user_id,
-                query=query.strip() if query else None,
-                memory_type=memory_type,
-                status=MemoryStatus.ACTIVE,
-                thing_id=thing_id,
-                query_embedding=query_embedding,
-                limit=limit,
-            )
+            if query_embedding is not None and query and query.strip():
+                memories = await hybrid_search_memories(
+                    unit_of_work,
+                    user_id=user_id,
+                    query=query.strip(),
+                    memory_type=memory_type,
+                    thing_id=thing_id,
+                    query_embedding=query_embedding,
+                    limit=limit,
+                )
+            else:
+                memories = await unit_of_work.memories.search(
+                    user_id=user_id,
+                    query=query.strip() if query else None,
+                    memory_type=memory_type,
+                    status=MemoryStatus.ACTIVE,
+                    thing_id=thing_id,
+                    query_embedding=query_embedding,
+                    limit=limit,
+                )
             return [to_memory_dto(memory) for memory in memories]
 
     async def update(
@@ -181,6 +221,19 @@ class MemoryApplicationService:
         if supersede and delete:
             raise ValueError("Memory cannot be superseded and deleted together.")
         async with self._unit_of_work_factory() as unit_of_work:
+            if delete:
+                outcome = await memory_write_ops.apply_forget_memory(
+                    cast(PersonalStateUnitOfWork, unit_of_work),
+                    user_id=user_id,
+                    memory_id=memory_id,
+                    expected_version=expected_version,
+                    idempotency_key=idempotency_key,
+                )
+                await unit_of_work.commit()
+                memory = await unit_of_work.memories.get(user_id=user_id, memory_id=memory_id)
+                if memory is None:
+                    raise RuntimeError("Memory forget did not persist.")
+                return to_memory_dto(memory, replayed=outcome.replayed)
             replay_version = await unit_of_work.memories.get_operation_version(
                 user_id=user_id, key=idempotency_key
             )

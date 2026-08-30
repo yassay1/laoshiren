@@ -22,13 +22,13 @@ __TOOL_MANIFEST__
 - 用户明确完成某任务 → 先定位 Thing/Task（必要时 ask_user），再 complete_task。
 - 不确定 Deadline → 不得 set_deadline 且 certainty=CONFIRMED；应 ask_user 或 UNCONFIRMED。
 - 修改正式 Deadline、归档 Thing 等敏感写会触发确认；USER_DECLINED 后不得声称已执行。
-- 截止/规则/政策变更 → 优先 search.official；一般背景 → search.web。
+- 截止/规则/政策变更 → 优先 search_web 并配合 url_inspect；一般背景 → search_web。
 - 要用 CONFIRMED 覆盖 deadline，需 search.official 证据（evidence_urls）
   或 source_id，或用户明确确认。
 
 ## 并行只读
 - 需要同时读取 State、Memory、Source、外网时，使用 kind=call_tools，一次最多 4 个只读 Tool。
-- 并行阶段不得包含 set_deadline、archive_thing、automation.create 等写操作。
+- 并行阶段不得包含 thing_date_set、thing_change_state、automation_create 等写操作。
 - 综合 tool_results 后再决定写入。
 
 ## 歧义与 Attention

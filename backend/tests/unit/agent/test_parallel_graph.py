@@ -36,12 +36,12 @@ class ParallelGateway:
         del tool_manifest
         if self._phase == 0:
             self._phase += 1
-            assert "search.official" in available_tools
+            assert "search_web" in available_tools
             return ExecutiveDecision(
                 DecisionKind.CALL_TOOLS,
                 tool_calls=(
-                    ToolCallSpec("search.official", {"query": "比赛截止"}),
-                    ToolCallSpec("memory.search", {"query": "比赛"}),
+                    ToolCallSpec("search_web", {"query": "比赛截止"}),
+                    ToolCallSpec("memory_search", {"query": "比赛"}),
                 ),
             )
         return ExecutiveDecision(
@@ -66,9 +66,7 @@ def initial_state() -> GraphState:
 async def test_graph_executes_parallel_read_batch() -> None:
     memory_calls = 0
 
-    async def memory_search(
-        context: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
+    async def memory_search(context: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
         nonlocal memory_calls
         del context, arguments
         memory_calls += 1
@@ -78,7 +76,7 @@ async def test_graph_executes_parallel_read_batch() -> None:
     register_search_tools(registry, SearchApplicationService(RecordingWebSearchAdapter()))
     registry.register(
         ToolDefinition(
-            "memory.search",
+            "memory_search",
             "memory",
             ToolRisk.READ,
             memory_search,
@@ -98,5 +96,5 @@ async def test_graph_executes_parallel_read_batch() -> None:
     assert memory_calls == 1
     assert output["final_response"].startswith("done:")
     tool_results = output.get("tool_results", [])
-    assert any(item.get("tool_name") == "search.official" for item in tool_results)
+    assert any(item.get("tool_name") == "search_web" for item in tool_results)
     assert any(item.get("code") == "PARALLEL_BATCH_OK" for item in tool_results)

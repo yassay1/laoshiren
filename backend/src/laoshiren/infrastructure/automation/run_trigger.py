@@ -20,3 +20,23 @@ class RuntimeAutomationRunTrigger:
             occurrence_key=notification.occurrence_key,
         )
         return run.id
+
+    async def trigger_from_occurrence(
+        self,
+        *,
+        user_id: UUID,
+        automation_id: UUID,
+        thing_id: UUID | None,
+        title: str,
+        message: str,
+        occurrence_key: str,
+    ) -> UUID | None:
+        run = await self._runtime.create_automation_run(
+            user_id=user_id,
+            automation_id=automation_id,
+            thing_id=thing_id,
+            title=title,
+            message=message,
+            occurrence_key=occurrence_key,
+        )
+        return run.id

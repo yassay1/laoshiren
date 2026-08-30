@@ -14,6 +14,7 @@ from laoshiren.main import create_app
 pytestmark = [
     pytest.mark.asyncio,
     pytest.mark.live_model,
+    pytest.mark.gate_a,
     pytest.mark.skipif(
         os.getenv("RUN_MODEL_EVALS") != "1",
         reason="Set RUN_MODEL_EVALS=1 to spend model quota on live evals.",
@@ -54,9 +55,7 @@ async def test_live_agent_scenario(scenario: LiveScenario) -> None:
         status = await build_configured_agent_worker(container).run_once(
             user_id=user_id, run_id=run.id
         )
-        messages = await container.runtime.list_messages(
-            user_id=user_id, thread_id=thread.id
-        )
+        messages = await container.runtime.list_messages(user_id=user_id, thread_id=thread.id)
         events = await container.runtime.list_events(user_id=user_id, run_id=run.id)
         record = {
             "scenario": key,

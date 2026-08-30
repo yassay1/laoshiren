@@ -1,27 +1,29 @@
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from typing import cast
 from uuid import UUID, uuid4
 
+from laoshiren.application.automations import write_ops as automation_write_ops
 from laoshiren.application.automations.dto import (
     AttentionCandidateDTO,
     AutomationDTO,
     NotificationDTO,
 )
+from laoshiren.application.automations.materialize import materialize_due_automation
 from laoshiren.application.automations.ports import (
     AutomationRunTrigger,
     AutomationUnitOfWork,
     NotificationPort,
 )
+from laoshiren.application.personal_state.ports import PersonalStateUnitOfWork
 from laoshiren.domain.automations.entities import (
     AttentionFeedbackAction,
     AttentionSubjectType,
     Automation,
-    AutomationStatus,
     AutomationType,
     NotificationOutbox,
 )
-from laoshiren.domain.personal_state.exceptions import EntityNotFound, VersionConflict
-from laoshiren.domain.personal_state.value_objects import TaskStatus
+from laoshiren.domain.personal_state.exceptions import EntityNotFound
 
 UnitOfWorkFactory = Callable[[], AutomationUnitOfWork]
 
@@ -93,43 +95,27 @@ class AutomationApplicationService:
         if not title.strip() or not message.strip() or not timezone_name.strip():
             raise ValueError("Automation title, message and timezone must not be empty.")
         async with self._unit_of_work_factory() as unit_of_work:
-            previous = await unit_of_work.automations.get_by_idempotency(
-                user_id=user_id, key=idempotency_key
-            )
-            if previous is not None:
-                return to_automation_dto(previous, replayed=True)
-            await unit_of_work.users.ensure_exists(user_id)
-            if thing_id is not None and await unit_of_work.things.get(
-                user_id=user_id, thing_id=thing_id
-            ) is None:
-                raise EntityNotFound("Thing was not found.")
-            if task_id is not None:
-                task = await unit_of_work.tasks.get(user_id=user_id, task_id=task_id)
-                if task is None or (thing_id is not None and task.thing_id != thing_id):
-                    raise EntityNotFound("Task was not found in the selected Thing.")
-            if source_id is not None and await unit_of_work.sources.get(
-                user_id=user_id, source_id=source_id
-            ) is None:
-                raise EntityNotFound("Source was not found.")
-            automation = Automation(
+            outcome = await automation_write_ops.apply_create_automation(
+                cast(PersonalStateUnitOfWork, unit_of_work),
                 user_id=user_id,
                 automation_type=automation_type,
-                title=title.strip(),
-                message=message.strip(),
-                timezone_name=timezone_name.strip(),
+                title=title,
+                message=message,
+                timezone_name=timezone_name,
                 next_trigger_at=next_trigger_at,
                 idempotency_key=idempotency_key,
                 thing_id=thing_id,
                 task_id=task_id,
                 source_id=source_id,
                 recurrence_interval_seconds=recurrence_interval_seconds,
-                status=AutomationStatus.PAUSED
-                if automation_type is AutomationType.CONDITION_WATCH
-                else AutomationStatus.ACTIVE,
             )
-            await unit_of_work.automations.add(automation)
             await unit_of_work.commit()
-            return to_automation_dto(automation)
+            automation = await unit_of_work.automations.get(
+                user_id=user_id, automation_id=UUID(str(outcome.data["id"]))
+            )
+            if automation is None:
+                raise RuntimeError("Automation creation did not persist.")
+            return to_automation_dto(automation, replayed=outcome.replayed)
 
     async def get(self, *, user_id: UUID, automation_id: UUID) -> AutomationDTO:
         async with self._unit_of_work_factory() as unit_of_work:
@@ -140,15 +126,11 @@ class AutomationApplicationService:
                 raise EntityNotFound("Automation was not found.")
             return to_automation_dto(automation)
 
-    async def list_automations(
-        self, *, user_id: UUID, limit: int = 50
-    ) -> list[AutomationDTO]:
+    async def list_automations(self, *, user_id: UUID, limit: int = 50) -> list[AutomationDTO]:
         if not 1 <= limit <= 100:
             raise ValueError("Automation list limit must be between 1 and 100.")
         async with self._unit_of_work_factory() as unit_of_work:
-            values = await unit_of_work.automations.list_for_user(
-                user_id=user_id, limit=limit
-            )
+            values = await unit_of_work.automations.list_for_user(user_id=user_id, limit=limit)
             return [to_automation_dto(value) for value in values]
 
     async def change_status(
@@ -161,46 +143,21 @@ class AutomationApplicationService:
         idempotency_key: str,
     ) -> AutomationDTO:
         async with self._unit_of_work_factory() as unit_of_work:
-            operation = await unit_of_work.automations.get_operation(
-                user_id=user_id, key=idempotency_key
-            )
-            if operation is not None:
-                recorded_id, _ = operation
-                automation = await unit_of_work.automations.get(
-                    user_id=user_id, automation_id=recorded_id
-                )
-                if automation is None:
-                    raise RuntimeError("Automation operation points to missing data.")
-                return to_automation_dto(automation, replayed=True)
-            automation = await unit_of_work.automations.get(
-                user_id=user_id, automation_id=automation_id
-            )
-            if automation is None:
-                raise EntityNotFound("Automation was not found.")
-            if automation.version != expected_version:
-                raise VersionConflict("Automation version is stale.")
-            if action == "PAUSE":
-                automation.pause()
-            elif action == "RESUME":
-                if automation.automation_type is AutomationType.CONDITION_WATCH:
-                    raise ValueError("Condition watch execution requires the Agent phase.")
-                automation.resume()
-            elif action == "CANCEL":
-                automation.cancel()
-            else:
-                raise ValueError("Unsupported Automation action.")
-            if not await unit_of_work.automations.update(
-                automation, expected_version=expected_version
-            ):
-                raise VersionConflict("Automation was updated concurrently.")
-            await unit_of_work.automations.record_operation(
+            outcome = await automation_write_ops.apply_change_automation_status(
+                cast(PersonalStateUnitOfWork, unit_of_work),
                 user_id=user_id,
-                automation_id=automation.id,
-                key=idempotency_key,
-                target_version=automation.version,
+                automation_id=automation_id,
+                action=action,
+                expected_version=expected_version,
+                idempotency_key=idempotency_key,
             )
             await unit_of_work.commit()
-            return to_automation_dto(automation)
+            automation = await unit_of_work.automations.get(
+                user_id=user_id, automation_id=UUID(str(outcome.data["id"]))
+            )
+            if automation is None:
+                raise RuntimeError("Automation status change did not persist.")
+            return to_automation_dto(automation, replayed=outcome.replayed)
 
     async def process_due(self, *, now: datetime | None = None, limit: int = 100) -> int:
         occurred_at = now or datetime.now(UTC)
@@ -208,35 +165,13 @@ class AutomationApplicationService:
         async with self._unit_of_work_factory() as unit_of_work:
             due = await unit_of_work.automations.list_due(now=occurred_at, limit=limit)
             for automation in due:
-                expected_version = automation.version
-                if automation.task_id is not None:
-                    task = await unit_of_work.tasks.get(
-                        user_id=automation.user_id, task_id=automation.task_id
-                    )
-                    if task is None or task.status in {TaskStatus.DONE, TaskStatus.CANCELLED}:
-                        automation.cancel()
-                        await unit_of_work.automations.update(
-                            automation, expected_version=expected_version
-                        )
-                        continue
-                occurrence_key = (
-                    f"{automation.id}:{automation.next_trigger_at.astimezone(UTC).isoformat()}"
+                occurrence = await materialize_due_automation(
+                    unit_of_work,
+                    automation=automation,
+                    occurred_at=occurred_at,
                 )
-                notification = NotificationOutbox(
-                    user_id=automation.user_id,
-                    automation_id=automation.id,
-                    occurrence_key=occurrence_key,
-                    title=automation.title,
-                    message=automation.message,
-                    thing_id=automation.thing_id,
-                )
-                created = await unit_of_work.notifications.add(notification)
-                automation.mark_triggered(occurred_at)
-                if not await unit_of_work.automations.update(
-                    automation, expected_version=expected_version
-                ):
-                    raise VersionConflict("Automation was claimed concurrently.")
-                created_count += int(created)
+                if occurrence is not None:
+                    created_count += 1
             await unit_of_work.commit()
         return created_count
 
@@ -308,13 +243,9 @@ class AutomationApplicationService:
                     await unit_of_work.rollback()
         return submitted_count
 
-    async def list_notifications(
-        self, *, user_id: UUID, limit: int = 50
-    ) -> list[NotificationDTO]:
+    async def list_notifications(self, *, user_id: UUID, limit: int = 50) -> list[NotificationDTO]:
         async with self._unit_of_work_factory() as unit_of_work:
-            values = await unit_of_work.notifications.list_for_user(
-                user_id=user_id, limit=limit
-            )
+            values = await unit_of_work.notifications.list_for_user(user_id=user_id, limit=limit)
             return [to_notification_dto(value) for value in values]
 
 
@@ -363,19 +294,15 @@ class AttentionApplicationService:
                 AttentionSubjectType.DEADLINE,
             }:
                 subject_exists = (
-                    await unit_of_work.things.get(user_id=user_id, thing_id=subject_id)
-                    is not None
+                    await unit_of_work.things.get(user_id=user_id, thing_id=subject_id) is not None
                 )
             elif subject_type is AttentionSubjectType.TASK:
                 subject_exists = (
-                    await unit_of_work.tasks.get(user_id=user_id, task_id=subject_id)
-                    is not None
+                    await unit_of_work.tasks.get(user_id=user_id, task_id=subject_id) is not None
                 )
             else:
                 subject_exists = (
-                    await unit_of_work.blockers.get(
-                        user_id=user_id, blocker_id=subject_id
-                    )
+                    await unit_of_work.blockers.get(user_id=user_id, blocker_id=subject_id)
                     is not None
                 )
             if not subject_exists:

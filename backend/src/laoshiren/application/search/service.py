@@ -189,6 +189,52 @@ class SearchApplicationService:
         self._write_cache(cache_key, stored)
         return self._to_payload(stored, replayed=False, official_domains=domains)
 
+    async def inspect_url(
+        self,
+        *,
+        user_id: UUID,
+        url: str,
+    ) -> dict[str, Any]:
+        del user_id
+        normalized = url.strip()
+        if not normalized.startswith(("http://", "https://")):
+            raise ValueError("URL must start with http:// or https://")
+        cache_key = _search_cache_key(
+            mode="url_inspect",
+            query=normalized,
+            limit=1,
+            recency_days=None,
+            domains=(),
+        )
+        cached = self._read_cache(cache_key)
+        if cached is not None:
+            payload = self._to_payload(cached, replayed=True)
+            payload["url"] = normalized
+            return payload
+        response = await self._port.search(
+            query=normalized,
+            limit=1,
+            recency_days=None,
+            include_domains=None,
+            exclude_domains=None,
+        )
+        matching = tuple(
+            hit for hit in response.hits if hit.url.rstrip("/") == normalized.rstrip("/")
+        )
+        hits = matching or response.hits[:1]
+        hits = _trim_snippets(hits, self._max_snippet_characters)
+        stored = SearchResponse(
+            query=normalized,
+            provider=response.provider,
+            retrieved_at=response.retrieved_at,
+            hits=hits,
+            cache_key=cache_key,
+        )
+        self._write_cache(cache_key, stored)
+        payload = self._to_payload(stored, replayed=False)
+        payload["url"] = normalized
+        return payload
+
     def _read_cache(self, cache_key: str) -> SearchResponse | None:
         entry = self._cache.get(cache_key)
         if entry is None:

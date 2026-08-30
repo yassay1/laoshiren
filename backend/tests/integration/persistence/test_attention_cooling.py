@@ -7,7 +7,11 @@ from uuid import UUID, uuid4
 import pytest
 
 from laoshiren.domain.automations.entities import AttentionFeedbackAction, AttentionSubjectType
-from laoshiren.domain.personal_state.value_objects import DateCertainty, DatePrecision
+from laoshiren.domain.personal_state.value_objects import (
+    DateCertainty,
+    DatePrecision,
+    ThingDateType,
+)
 from laoshiren.main import create_app
 
 pytestmark = [
@@ -36,10 +40,10 @@ async def test_e08_attention_candidate_suppressed_after_surface() -> None:
         await container.personal_state.set_deadline(
             user_id=user_id,
             thing_id=thing.id,
-            kind="DEADLINE",
+            kind=ThingDateType.DEADLINE,
             value=overdue,
             timezone_name="UTC",
-            precision=DatePrecision.DATETIME,
+            precision=DatePrecision.DATE_TIME,
             certainty=DateCertainty.CONFIRMED,
             is_primary=True,
             expected_version=thing.version,

@@ -17,9 +17,7 @@ from laoshiren.application.search.service import SearchApplicationService
 from laoshiren.infrastructure.search.recording import RecordingWebSearchAdapter
 
 
-async def _unused_handler(
-    context: ToolExecutionContext, arguments: dict[str, object]
-) -> object:
+async def _unused_handler(context: ToolExecutionContext, arguments: dict[str, object]) -> object:
     raise AssertionError((context, arguments))
 
 
@@ -28,25 +26,25 @@ def test_parse_call_tools_decision() -> None:
         {
             "kind": "call_tools",
             "tools": [
-                {"tool_name": "search.web", "tool_arguments": {"query": "demo"}},
-                {"tool_name": "memory.search", "tool_arguments": {"query": "prefs"}},
+                {"tool_name": "search_web", "tool_arguments": {"query": "demo"}},
+                {"tool_name": "memory_search", "tool_arguments": {"query": "prefs"}},
             ],
         },
-        available_tools=("search.web", "memory.search"),
+        available_tools=("search_web", "memory_search"),
     )
     assert decision.kind is DecisionKind.CALL_TOOLS
     assert len(decision.tool_calls) == 2
-    assert decision.tool_calls[0].tool_name == "search.web"
+    assert decision.tool_calls[0].tool_name == "search_web"
 
 
 def test_parallel_batch_rejects_write_tools() -> None:
     registry = ToolRegistry()
     registry.register(
-        ToolDefinition("state.get_thing", "read", ToolRisk.READ, _unused_handler)
+        ToolDefinition("state_get_thing_context", "read", ToolRisk.READ, _unused_handler)
     )
     registry.register(
         ToolDefinition(
-            "state.create_thing",
+            "thing_create",
             "write",
             ToolRisk.REVERSIBLE_WRITE,
             _unused_handler,
@@ -56,8 +54,8 @@ def test_parallel_batch_rejects_write_tools() -> None:
     validation = validate_parallel_batch(
         registry=registry,
         specs=(
-            ToolCallSpec("state.get_thing", {"thing_id": str(uuid4())}),
-            ToolCallSpec("state.create_thing", {"name": "x"}),
+            ToolCallSpec("state_get_thing_context", {"thing_id": str(uuid4())}),
+            ToolCallSpec("thing_create", {"name": "x"}),
         ),
         tool_call_count=0,
         max_tool_calls=8,
@@ -69,6 +67,20 @@ def test_parallel_batch_rejects_write_tools() -> None:
     assert validation.code == "PARALLEL_WRITE_FORBIDDEN"
 
 
+def test_search_policy_uses_frozen_run_budget() -> None:
+    policy = ToolPolicy(search_max_per_run=6)
+    definition = ToolDefinition("search_web", "search", ToolRisk.READ, _unused_handler)
+    state = {
+        "budget_snapshot": {"max_search_queries": 1},
+        "tool_results": [{"status": "SUCCESS", "tool_name": "search_web", "data": {}}],
+    }
+
+    result = policy.evaluate(definition, state=state)
+
+    assert result.decision is PolicyDecision.DENY
+    assert result.code == "SEARCH_QUOTA_EXCEEDED"
+
+
 @pytest.mark.asyncio
 async def test_search_tools_return_structured_hits() -> None:
     registry = ToolRegistry()
@@ -77,9 +89,9 @@ async def test_search_tools_return_structured_hits() -> None:
     context = ToolExecutionContext(user_id=uuid4(), run_id=uuid4(), action_id="search-1")
 
     result = await registry.execute(
-        name="search.official",
+        name="search_web",
         context=context,
-        arguments={"query": "华为开发者大赛 截止", "official_domains": ["developer.huawei.com"]},
+        arguments={"query": "华为开发者大赛 截止"},
     )
 
     assert result.status is ToolStatus.SUCCESS
@@ -92,7 +104,7 @@ async def test_search_tools_return_structured_hits() -> None:
 async def test_search_verified_deadline_policy() -> None:
     policy = ToolPolicy()
     definition = ToolDefinition(
-        "state.set_deadline",
+        "thing_date_set",
         "deadline",
         ToolRisk.SENSITIVE_WRITE,
         _unused_handler,
@@ -103,7 +115,7 @@ async def test_search_verified_deadline_policy() -> None:
         "tool_results": [
             {
                 "status": "SUCCESS",
-                "tool_name": "search.official",
+                "tool_name": "search_web",
                 "data": {
                     "items": [{"url": evidence_url, "title": "t", "snippet": "s"}],
                 },

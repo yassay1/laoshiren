@@ -16,14 +16,12 @@ from laoshiren.agent.tools import (
 )
 from laoshiren.application.personal_state.dto import MutationResultDTO, ThingDTO
 from laoshiren.application.personal_state.service import PersonalStateApplicationService
-from laoshiren.domain.personal_state.value_objects import ThingStatus
+from laoshiren.domain.personal_state.value_objects import TaskStatus, ThingStatus
 
 pytestmark = pytest.mark.asyncio
 
 
-async def _unused_handler(
-    context: ToolExecutionContext, arguments: dict[str, object]
-) -> object:
+async def _unused_handler(context: ToolExecutionContext, arguments: dict[str, object]) -> object:
     raise AssertionError((context, arguments))
 
 
@@ -45,7 +43,7 @@ async def test_policy_matrix_is_deterministic() -> None:
 async def test_set_deadline_confirmed_without_source_requires_more_context() -> None:
     policy = ToolPolicy()
     definition = ToolDefinition(
-        "state.set_deadline",
+        "thing_date_set",
         "deadline",
         ToolRisk.SENSITIVE_WRITE,
         _unused_handler,
@@ -66,7 +64,7 @@ async def test_set_deadline_confirmed_without_source_requires_more_context() -> 
 async def test_set_deadline_with_source_allows_first_confirmed_write() -> None:
     policy = ToolPolicy()
     definition = ToolDefinition(
-        "state.set_deadline",
+        "thing_date_set",
         "deadline",
         ToolRisk.SENSITIVE_WRITE,
         _unused_handler,
@@ -89,9 +87,7 @@ async def test_write_tool_requires_replay_contract_and_context_key_is_stable() -
     registry = ToolRegistry()
     with pytest.raises(ValueError, match="explicit replay policy"):
         registry.register(
-            ToolDefinition(
-                "unsafe.write", "write", ToolRisk.REVERSIBLE_WRITE, _unused_handler
-            )
+            ToolDefinition("unsafe.write", "write", ToolRisk.REVERSIBLE_WRITE, _unused_handler)
         )
     registry.register(
         ToolDefinition(
@@ -121,47 +117,47 @@ class RecordingPersonalStateService:
             status=ThingStatus.ACTIVE,
             current_stage=None,
             deadline_at=None,
+            merged_into_thing_id=None,
+            deleted_at=None,
             version=2,
             created_at=now,
             updated_at=now,
         )
 
-    async def complete_task(self, **kwargs: object) -> MutationResultDTO:
-        self.calls.append(("complete_task", kwargs))
+    async def transition_task(self, **kwargs: object) -> MutationResultDTO:
+        self.calls.append(("transition_task", kwargs))
         return MutationResultDTO(uuid4(), kwargs["task_id"], 4)  # type: ignore[index]
 
 
 async def test_tool_adapter_injects_runtime_identity_and_idempotency() -> None:
     service = RecordingPersonalStateService()
     registry = ToolRegistry()
-    register_personal_state_tools(
-        registry, cast(PersonalStateApplicationService, service)
-    )
+    register_personal_state_tools(registry, cast(PersonalStateApplicationService, service))
     context = ToolExecutionContext(user_id=uuid4(), run_id=uuid4(), action_id="action-1")
     task_id = uuid4()
 
     result = await registry.execute(
-        name="state.complete_task",
+        name="task_change_status",
         context=context,
-        arguments={"task_id": str(task_id), "expected_version": 3},
+        arguments={"task_id": str(task_id), "expected_version": 3, "target_status": "DONE"},
     )
 
     assert result.status is ToolStatus.SUCCESS
     assert service.calls == [
         (
-            "complete_task",
+            "transition_task",
             {
                 "user_id": context.user_id,
                 "task_id": task_id,
+                "target_status": TaskStatus.DONE,
                 "expected_version": 3,
                 "action_id": "action-1",
                 "idempotency_key": f"agent:{context.run_id}:action-1",
-                "reason": "Agent completed Task",
-                "run_id": context.run_id,
+                "reason": "Agent changed Task status",
             },
         )
     ]
-    assert registry.get("state.set_deadline").risk is ToolRisk.SENSITIVE_WRITE
+    assert registry.get("thing_date_set").risk is ToolRisk.SENSITIVE_WRITE
 
 
 async def test_tool_adapter_normalizes_invalid_arguments() -> None:
@@ -171,7 +167,7 @@ async def test_tool_adapter_normalizes_invalid_arguments() -> None:
         cast(PersonalStateApplicationService, RecordingPersonalStateService()),
     )
     result = await registry.execute(
-        name="state.get_thing",
+        name="state_get_thing_context",
         context=ToolExecutionContext(uuid4(), uuid4(), "bad"),
         arguments={"thing_id": "not-a-uuid"},
     )
@@ -179,9 +175,9 @@ async def test_tool_adapter_normalizes_invalid_arguments() -> None:
     assert result.code == "INVALID_ARGUMENT"
 
     missing = await registry.execute(
-        name="state.complete_task",
+        name="task_change_status",
         context=ToolExecutionContext(uuid4(), uuid4(), "missing"),
         arguments={},
     )
     assert missing.status is ToolStatus.REQUIRES_USER_INPUT
-    assert missing.data == {"missing": ["task_id", "expected_version"]}
+    assert missing.data == {"missing": ["task_id", "target_status", "expected_version"]}

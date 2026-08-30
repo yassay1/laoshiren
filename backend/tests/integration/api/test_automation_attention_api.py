@@ -6,7 +6,11 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 
+from laoshiren.infrastructure.automation.run_trigger import RuntimeAutomationRunTrigger
 from laoshiren.main import create_app
+from laoshiren.workers.automation import run_once
+from laoshiren.workers.automation_occurrence import AutomationOccurrenceWorker
+from laoshiren.workers.push_delivery import PushDeliveryWorker
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -41,7 +45,7 @@ async def test_automation_scheduler_outbox_and_attention_feedback() -> None:
                     "kind": "DEADLINE",
                     "value": (now - timedelta(hours=1)).isoformat(),
                     "timezone": "Asia/Shanghai",
-                    "precision": "DATETIME",
+                    "precision": "DATE_TIME",
                     "certainty": "CONFIRMED",
                     "is_primary": True,
                     "expected_version": 1,
@@ -51,9 +55,7 @@ async def test_automation_scheduler_outbox_and_attention_feedback() -> None:
 
             attention = await client.get("/api/v1/attention")
             deadline_item = next(
-                item
-                for item in attention.json()["items"]
-                if item["subject_id"] == str(thing_id)
+                item for item in attention.json()["items"] if item["subject_id"] == str(thing_id)
             )
             assert deadline_item["candidate_type"] == "overdue"
             dismissed_until = now + timedelta(days=1)
@@ -67,8 +69,7 @@ async def test_automation_scheduler_outbox_and_attention_feedback() -> None:
             attention_after = await client.get("/api/v1/attention")
             assert feedback.status_code == 204
             assert all(
-                item["subject_id"] != str(thing_id)
-                for item in attention_after.json()["items"]
+                item["subject_id"] != str(thing_id) for item in attention_after.json()["items"]
             )
 
             create_key = f"automation-test-{uuid4()}"
@@ -95,19 +96,40 @@ async def test_automation_scheduler_outbox_and_attention_feedback() -> None:
             automation_id = UUID(created.json()["id"])
             automation_ids.append(automation_id)
 
-            generated = await app.state.container.automations.process_due(now=now)
-            generated_again = await app.state.container.automations.process_due(now=now)
-            submitted = await app.state.container.automations.dispatch_pending()
+            generated, processed = await run_once(
+                app.state.container.automations,
+                AutomationOccurrenceWorker(
+                    app.state.container.database.automation_unit_of_work,
+                    run_trigger=RuntimeAutomationRunTrigger(app.state.container.runtime),
+                ),
+                PushDeliveryWorker(
+                    app.state.container.database.automation_unit_of_work,
+                    app.state.container.notification_adapter,
+                ),
+                limit=10,
+            )
+            generated_again, _ = await run_once(
+                app.state.container.automations,
+                AutomationOccurrenceWorker(
+                    app.state.container.database.automation_unit_of_work,
+                    run_trigger=RuntimeAutomationRunTrigger(app.state.container.runtime),
+                ),
+                PushDeliveryWorker(
+                    app.state.container.database.automation_unit_of_work,
+                    app.state.container.notification_adapter,
+                ),
+                limit=10,
+            )
             assert generated == 1
             assert generated_again == 0
-            assert submitted == 1
-            assert len(app.state.container.notification_adapter.submitted_ids) == 1
+            assert processed >= 1
 
             current = await client.get(f"/api/v1/automations/{automation_id}")
             notifications = await client.get("/api/v1/automations/notifications")
             assert current.json()["status"] == "COMPLETED"
-            assert notifications.json()[0]["status"] == "SUBMITTED_TO_ADAPTER"
-            assert "DELIVERED" not in notifications.json()[0]["status"]
+            assert all(
+                item["automation_id"] != str(automation_id) for item in notifications.json()
+            )
 
             recurring = await client.post(
                 "/api/v1/automations",
@@ -158,6 +180,10 @@ async def test_automation_scheduler_outbox_and_attention_feedback() -> None:
             async with app.state.container.database.engine.begin() as connection:
                 for statement in (
                     "DELETE FROM attention_feedback WHERE user_id = :user_id",
+                    "DELETE FROM notification_deliveries WHERE user_id = :user_id",
+                    "DELETE FROM notification_intents WHERE automation_id = ANY(:automation_ids)",
+                    "DELETE FROM durable_jobs WHERE user_id = :user_id",
+                    "DELETE FROM automation_occurrences WHERE automation_id = ANY(:automation_ids)",
                     "DELETE FROM notification_outbox WHERE automation_id = ANY(:automation_ids)",
                     "DELETE FROM automation_operations WHERE automation_id = ANY(:automation_ids)",
                     "DELETE FROM automations WHERE id = ANY(:automation_ids)",

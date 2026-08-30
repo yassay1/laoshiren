@@ -74,9 +74,7 @@ class OpenAIMemoryExtractor:
         self._url = f"{api_base.rstrip('/')}/chat/completions"
         self._timeout = timeout_seconds
 
-    async def extract(
-        self, *, context: MemoryFormationContext
-    ) -> tuple[MemoryCandidate, ...]:
+    async def extract(self, *, context: MemoryFormationContext) -> tuple[MemoryCandidate, ...]:
         payload = {
             "model": self._model,
             "messages": [

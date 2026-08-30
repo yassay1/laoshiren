@@ -76,15 +76,11 @@ class SqlAlchemyMemoryRepository:
 
     async def get_by_idempotency(self, *, user_id: UUID, key: str) -> Memory | None:
         model = await self._session.scalar(
-            select(MemoryORM).where(
-                MemoryORM.user_id == user_id, MemoryORM.idempotency_key == key
-            )
+            select(MemoryORM).where(MemoryORM.user_id == user_id, MemoryORM.idempotency_key == key)
         )
         return memory_to_domain(model) if model is not None else None
 
-    async def get_active_profile(
-        self, *, user_id: UUID, profile_key: str
-    ) -> Memory | None:
+    async def get_active_profile(self, *, user_id: UUID, profile_key: str) -> Memory | None:
         model = await self._session.scalar(
             select(MemoryORM).where(
                 MemoryORM.user_id == user_id,
@@ -123,6 +119,12 @@ class SqlAlchemyMemoryRepository:
                 MemoryORM.embedding.cosine_distance(query_embedding),
                 MemoryORM.importance.desc(),
             )
+        elif memory_type is MemoryType.PROFILE and query is None:
+            # Profile memories represent current user reality.  Importance is
+            # not a safe proxy for freshness here: an older, highly important
+            # profile must not crowd the current active version out of the
+            # bounded context window.
+            statement = statement.order_by(MemoryORM.updated_at.desc(), MemoryORM.id.desc())
         else:
             statement = statement.order_by(
                 MemoryORM.importance.desc(), MemoryORM.updated_at.desc(), MemoryORM.id.desc()

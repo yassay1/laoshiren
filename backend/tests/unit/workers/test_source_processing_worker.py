@@ -35,9 +35,7 @@ class RecordingSourceService:
         assert max_attempts == 3
         return self.jobs.pop(0) if self.jobs else None
 
-    async def extract_claimed_content(
-        self, job: SourceProcessingJobDTO
-    ) -> ParsedSourceContent:
+    async def extract_claimed_content(self, job: SourceProcessingJobDTO) -> ParsedSourceContent:
         if self.error is not None:
             raise self.error
         return ParsedSourceContent(
@@ -93,18 +91,14 @@ async def test_worker_completes_claimed_source() -> None:
 
 async def test_deterministic_parse_failure_is_terminal() -> None:
     claimed = job()
-    service = RecordingSourceService(
-        jobs=[claimed], error=SourceParsingError("invalid pdf")
-    )
+    service = RecordingSourceService(jobs=[claimed], error=SourceParsingError("invalid pdf"))
     worker = SourceProcessingWorker(  # type: ignore[arg-type]
         service, worker_id="worker-a"
     )
 
     await worker.run_once()
 
-    assert service.failed == [
-        (claimed.id, "worker-a", "SOURCE_PARSE_FAILED", None)
-    ]
+    assert service.failed == [(claimed.id, "worker-a", "SOURCE_PARSE_FAILED", None)]
 
 
 async def test_transient_failure_uses_bounded_exponential_retry() -> None:
@@ -119,9 +113,7 @@ async def test_transient_failure_uses_bounded_exponential_retry() -> None:
 
     await worker.run_once()
 
-    assert service.failed == [
-        (claimed.id, "worker-a", "SOURCE_PROCESSING_RETRYABLE", 10)
-    ]
+    assert service.failed == [(claimed.id, "worker-a", "SOURCE_PROCESSING_RETRYABLE", 10)]
 
 
 async def test_last_attempt_becomes_terminal() -> None:
@@ -133,9 +125,7 @@ async def test_last_attempt_becomes_terminal() -> None:
 
     await worker.run_once()
 
-    assert service.failed == [
-        (claimed.id, "worker-a", "SOURCE_PROCESSING_EXHAUSTED", None)
-    ]
+    assert service.failed == [(claimed.id, "worker-a", "SOURCE_PROCESSING_EXHAUSTED", None)]
 
 
 async def test_scheduler_drains_only_configured_batch() -> None:

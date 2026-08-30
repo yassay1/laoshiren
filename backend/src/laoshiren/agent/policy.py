@@ -67,7 +67,7 @@ def _search_urls_from_state(state: dict[str, Any] | None) -> set[str]:
         if result.get("status") != "SUCCESS":
             continue
         tool_name = result.get("tool_name")
-        if tool_name != "search.official":
+        if tool_name not in {"search_web", "url_inspect", "search.official"}:
             continue
         data = result.get("data")
         if isinstance(data, dict):
@@ -111,12 +111,18 @@ class ToolPolicy:
 
         args = arguments or {}
 
-        if definition.name.startswith("search."):
+        if definition.name in {"search_web", "url_inspect", "search.web", "search.official"}:
             if state is not None:
                 tool_results = state.get("tool_results", [])
                 if isinstance(tool_results, list):
                     used = count_search_tools_in_results(tool_results)
-                    if used >= self._search_max_per_run:
+                    budget = state.get("budget_snapshot", {})
+                    search_limit = (
+                        int(budget.get("max_search_queries", self._search_max_per_run))
+                        if isinstance(budget, dict)
+                        else self._search_max_per_run
+                    )
+                    if used >= search_limit:
                         return PolicyResult(
                             PolicyDecision.DENY,
                             "SEARCH_QUOTA_EXCEEDED",
@@ -124,7 +130,7 @@ class ToolPolicy:
                         )
             return PolicyResult(PolicyDecision.ALLOW, "ALLOWED", "Search is allowed.")
 
-        if definition.name == "state.set_deadline":
+        if definition.name in {"thing_date_set", "state.set_deadline"}:
             certainty_raw = args.get("certainty")
             try:
                 certainty = DateCertainty(str(certainty_raw))

@@ -80,9 +80,7 @@ async def test_pdf_page_limit_is_enforced_before_extraction() -> None:
 async def test_text_extraction_character_limit_is_enforced() -> None:
     parser = TextSourceParser(max_extracted_characters=5)
 
-    text = await parser.parse(
-        filename="large.txt", mime_type="text/plain", content=b"123456789"
-    )
+    text = await parser.parse(filename="large.txt", mime_type="text/plain", content=b"123456789")
 
     assert text.text == "12345"
     assert text.pages[0].text == "12345"

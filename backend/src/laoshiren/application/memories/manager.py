@@ -8,6 +8,7 @@ from laoshiren.application.ai.ports import EmbeddingProvider, EmbeddingProviderE
 from laoshiren.application.memories.candidate import (
     MemoryCandidate,
     MemoryCandidateAction,
+    profile_key_for,
     rejects_state_authority,
 )
 from laoshiren.application.memories.dto import MemoryDTO
@@ -32,20 +33,7 @@ class MemoryFormationContext:
 class MemoryExtractor(Protocol):
     """LLM boundary that decides what to remember (数据设计 §27 Memory Manager)."""
 
-    async def extract(
-        self, *, context: MemoryFormationContext
-    ) -> tuple[MemoryCandidate, ...]: ...
-
-
-def profile_key_for(content: str) -> str:
-    value = content.casefold()
-    if any(word in value for word in ("回答", "回复", "简洁", "详细", "语气")):
-        return "preference:response_style"
-    if "提醒" in value:
-        return "preference:reminder"
-    if any(word in value for word in ("中文", "英文", "语言")):
-        return "preference:language"
-    return "preference:general"
+    async def extract(self, *, context: MemoryFormationContext) -> tuple[MemoryCandidate, ...]: ...
 
 
 class MemoryManager:
@@ -174,9 +162,7 @@ class MemoryManager:
         if candidate.action is MemoryCandidateAction.SUPERSEDE:
             target_id = candidate.target_memory_id
             assert target_id is not None  # guaranteed by MemoryCandidate.__post_init__
-            target = await self._memories.get(
-                user_id=context.user_id, memory_id=target_id
-            )
+            target = await self._memories.get(user_id=context.user_id, memory_id=target_id)
             await self._memories.update(
                 user_id=context.user_id,
                 memory_id=target.id,
@@ -195,9 +181,7 @@ class MemoryManager:
         }:
             target_id = candidate.target_memory_id
             assert target_id is not None  # guaranteed by MemoryCandidate.__post_init__
-            target = await self._memories.get(
-                user_id=context.user_id, memory_id=target_id
-            )
+            target = await self._memories.get(user_id=context.user_id, memory_id=target_id)
             return await self._memories.update(
                 user_id=context.user_id,
                 memory_id=target.id,
@@ -209,7 +193,7 @@ class MemoryManager:
                 idempotency_key=idempotency_key,
             )
 
-        return await self._memories.create(
+        return await self._memories.create_if_allowed(
             user_id=context.user_id,
             memory_type=candidate.memory_type,
             content=candidate.content,
@@ -240,9 +224,7 @@ class MemoryManager:
             return None
 
     @staticmethod
-    def _idempotency_key(
-        *, context: MemoryFormationContext, candidate: MemoryCandidate
-    ) -> str:
+    def _idempotency_key(*, context: MemoryFormationContext, candidate: MemoryCandidate) -> str:
         canonical = " ".join(candidate.content.casefold().split())
         digest = sha256(canonical.encode()).hexdigest()[:16]
         return f"agent-memory:{context.run_id}:{digest}"

@@ -15,18 +15,12 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute("UPDATE tool_executions SET status = 'FAILED' WHERE status = 'UNKNOWN'")
     op.execute(
-        "UPDATE tool_executions SET status = 'FAILED' WHERE status = 'UNKNOWN'"
-    )
-    op.execute(
-        "ALTER TABLE tool_executions ALTER COLUMN status TYPE varchar(20) "
-        "USING status::text"
+        "ALTER TABLE tool_executions ALTER COLUMN status TYPE varchar(20) USING status::text"
     )
     op.execute("DROP TYPE tool_execution_status")
-    op.execute(
-        "CREATE TYPE tool_execution_status AS ENUM "
-        "('RUNNING', 'SUCCEEDED', 'FAILED')"
-    )
+    op.execute("CREATE TYPE tool_execution_status AS ENUM ('RUNNING', 'SUCCEEDED', 'FAILED')")
     op.execute(
         "ALTER TABLE tool_executions ALTER COLUMN status "
         "TYPE tool_execution_status USING status::tool_execution_status"

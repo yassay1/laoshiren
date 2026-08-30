@@ -1,7 +1,7 @@
 import os
 from collections.abc import AsyncIterator
 from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import text
@@ -21,9 +21,7 @@ pytestmark = [
 
 
 class UnusedStorage:
-    async def put(
-        self, *, object_key: str, chunks: AsyncIterator[bytes]
-    ) -> tuple[int, str]:
+    async def put(self, *, object_key: str, chunks: AsyncIterator[bytes]) -> tuple[int, str]:
         raise AssertionError("not used")
 
     async def read(self, *, object_key: str) -> bytes:
@@ -50,7 +48,7 @@ async def upload_chunks(content: bytes) -> AsyncIterator[bytes]:
 async def test_source_evidence_uses_vector_similarity_and_preserves_page() -> None:
     app = create_app()
     container = app.state.container
-    user_id = UUID(container.settings.dev_user_id)
+    user_id = uuid4()
     source_id = None
     object_key = None
     try:
@@ -63,7 +61,10 @@ async def test_source_evidence_uses_vector_similarity_and_preserves_page() -> No
         )
         source_id = uploaded.id
         claimed = await container.sources.claim_next_processing(
-            owner="semantic-worker", lease_seconds=60, max_attempts=3
+            owner="semantic-worker",
+            user_id=user_id,
+            lease_seconds=60,
+            max_attempts=3,
         )
         assert claimed is not None and claimed.id == uploaded.id
         object_key = claimed.object_key
@@ -102,20 +103,29 @@ async def test_source_evidence_uses_vector_similarity_and_preserves_page() -> No
         assert chunks[0].content == "deadline is Friday"
         assert chunks[0].page_number == 2
         async with container.database.engine.connect() as connection:
-            metadata = await connection.scalar(
-                text("SELECT metadata FROM source_chunks WHERE id = :chunk_id"),
-                {"chunk_id": chunks[0].id},
+            locator = await connection.scalar(
+                text("SELECT locator FROM retrieval_segments WHERE id = :segment_id"),
+                {"segment_id": chunks[0].id},
+            )
+            segment_count = await connection.scalar(
+                text("SELECT count(*) FROM retrieval_segments WHERE file_id = :file_id"),
+                {"file_id": uploaded.id},
             )
             chunk_count = await connection.scalar(
                 text("SELECT count(*) FROM source_chunks WHERE source_id = :source_id"),
                 {"source_id": uploaded.id},
             )
-        assert metadata["parser_version"] == "text-source-v2"
-        assert metadata["chunk_version"] == "character-overlap-v1"
+        assert locator is not None
+        assert locator["page_number"] == 2
+        assert segment_count == 2
         assert chunk_count == 2
     finally:
         if source_id is not None:
             async with container.database.engine.begin() as connection:
+                await connection.execute(
+                    text("DELETE FROM files WHERE id = :source_id"),
+                    {"source_id": source_id},
+                )
                 await connection.execute(
                     text("DELETE FROM sources WHERE id = :source_id"),
                     {"source_id": source_id},

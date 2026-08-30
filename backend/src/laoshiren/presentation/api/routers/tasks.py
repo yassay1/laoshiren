@@ -8,11 +8,41 @@ from laoshiren.presentation.api.dependencies import (
     IdempotencyKey,
 )
 from laoshiren.presentation.api.schemas.personal_state import (
+    CreateTaskRequest,
     MutationResponse,
+    TaskResponse,
     UpdateTaskRequest,
 )
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
+
+
+@router.get("", response_model=list[TaskResponse])
+async def list_standalone_tasks(
+    container: ContainerDependency, user_id: CurrentUserId
+) -> list[TaskResponse]:
+    tasks = await container.personal_state.get_standalone_tasks(user_id=user_id)
+    return [TaskResponse.from_dto(task) for task in tasks]
+
+
+@router.post("", response_model=TaskResponse, status_code=201)
+async def create_standalone_task(
+    request: CreateTaskRequest,
+    container: ContainerDependency,
+    user_id: CurrentUserId,
+    idempotency_key: IdempotencyKey,
+) -> TaskResponse:
+    task = await container.personal_state.create_task(
+        user_id=user_id,
+        thing_id=None,
+        title=request.title,
+        due_at=request.due_at,
+        recurrence_interval_days=request.recurrence_interval_days,
+        action_id="api.create_standalone_task",
+        idempotency_key=idempotency_key,
+        reason="User created standalone Task through Product API.",
+    )
+    return TaskResponse.from_dto(task)
 
 
 @router.patch("/{task_id}", response_model=MutationResponse)

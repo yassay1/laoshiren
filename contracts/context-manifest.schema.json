@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laoshiren.local/schemas/context-manifest.schema.json",
+  "title": "Laoshiren Context Manifest",
+  "type": "object",
+  "required": ["model_invocation_id", "run_id", "current_message_id", "included", "token_estimate", "source_refs", "state_authority", "decision_index"],
+  "properties": {
+    "model_invocation_id": { "type": "string", "minLength": 1 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "current_message_id": { "type": ["string", "null"] },
+    "included": {
+      "type": "object",
+      "required": ["message_ids", "source_ids", "memory_ids", "thing_ids"],
+      "properties": {
+        "message_ids": { "type": "array", "items": { "type": "string" } },
+        "source_ids": { "type": "array", "items": { "type": "string" } },
+        "memory_ids": { "type": "array", "items": { "type": "string" } },
+        "thing_ids": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "token_estimate": { "type": "integer", "minimum": 0 },
+    "source_refs": { "type": "array", "items": { "type": "string" } },
+    "state_authority": { "const": "PERSONAL_STATE" },
+    "decision_index": { "type": "integer", "minimum": 0 }
+  },
+  "additionalProperties": false
+}

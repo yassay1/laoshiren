@@ -5,6 +5,12 @@ on:
     paths: ["backend/**", ".github/workflows/backend.yml"]
   pull_request:
     paths: ["backend/**", ".github/workflows/backend.yml"]
+  workflow_dispatch:
+    inputs:
+      run_gate_a:
+        description: Run Gate A live model evals (requires model secrets)
+        type: boolean
+        default: false
 
 jobs:
   quality:
@@ -38,6 +44,45 @@ jobs:
       - run: uv run alembic upgrade head
       - run: uv run python scripts/export_openapi.py
       - run: git diff --exit-code ../contracts/openapi.json
+      - run: uv run python scripts/export_tool_registry.py
+      - run: git diff --exit-code ../contracts/tool-registry.json
+      - run: uv run python scripts/check_contract_schemas.py
       - run: uv run ruff check src tests evals scripts
       - run: uv run mypy --strict src
       - run: uv run pytest -q
+      - run: uv run pytest tests/freeze -m "gate_b or gate_c" -q
+      - run: uv run pytest tests/evals -m "gate_d and not live_model" -q
+
+  gate_a_live:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_gate_a }}
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: laoshiren
+          POSTGRES_PASSWORD: laoshiren
+          POSTGRES_DB: laoshiren
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U laoshiren -d laoshiren"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      DATABASE_URL: postgresql+asyncpg://laoshiren:laoshiren@localhost:5432/laoshiren
+      RUN_DATABASE_TESTS: "1"
+      RUN_MODEL_EVALS: "1"
+      MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - run: uv sync --locked
+      - run: uv run alembic upgrade head
+      - run: uv run pytest evals -m "gate_a and live_model" -q

@@ -21,21 +21,13 @@ def upgrade() -> None:
         sa.Column("content", sa.Text(), nullable=False),
         sa.Column("char_start", sa.Integer(), nullable=False),
         sa.Column("char_end", sa.Integer(), nullable=False),
-        sa.Column(
-            "metadata", postgresql.JSONB(), nullable=False, server_default="{}"
-        ),
-        sa.Column(
-            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now()
-        ),
+        sa.Column("metadata", postgresql.JSONB(), nullable=False, server_default="{}"),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.ForeignKeyConstraint(["source_id"], ["sources.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint(
-            "source_id", "ordinal", name="uq_source_chunks_ordinal"
-        ),
+        sa.UniqueConstraint("source_id", "ordinal", name="uq_source_chunks_ordinal"),
     )
-    op.create_index(
-        "ix_source_chunks_source_ordinal", "source_chunks", ["source_id", "ordinal"]
-    )
+    op.create_index("ix_source_chunks_source_ordinal", "source_chunks", ["source_id", "ordinal"])
 
 
 def downgrade() -> None:

@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from typing import Any
 
 import httpx
@@ -40,9 +41,7 @@ class ZhipuExecutiveModelGateway:
                 {
                     "role": "user",
                     "content": json.dumps(
-                        build_executive_user_payload(
-                            state=state, available_tools=available_tools
-                        ),
+                        build_executive_user_payload(state=state, available_tools=available_tools),
                         ensure_ascii=False,
                     ),
                 },
@@ -53,20 +52,37 @@ class ZhipuExecutiveModelGateway:
             "max_tokens": 2048,
             "stream": False,
         }
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            response = await client.post(
-                self._url,
-                headers={"Authorization": f"Bearer {self._api_key}"},
-                json=payload,
-            )
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                response = await client.post(
+                    self._url,
+                    headers={"Authorization": f"Bearer {self._api_key}"},
+                    json=payload,
+                )
+        except httpx.TransportError as exc:
+            raise ModelGatewayError(
+                "MODEL_PROVIDER_UNAVAILABLE",
+                "The model provider transport failed.",
+                retryable=True,
+            ) from exc
         self._raise_for_error(response)
         body: Any = response.json()
         try:
             content = body["choices"][0]["message"]["content"]
             decision = json.loads(content)
         except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
-            raise RuntimeError("Zhipu returned an invalid decision payload.") from exc
-        return parse_executive_decision(decision, available_tools=available_tools)
+            raise ModelGatewayError(
+                "MODEL_INVALID_RESPONSE",
+                "Zhipu returned an invalid decision payload.",
+                retryable=True,
+            ) from exc
+        normalized = parse_executive_decision(decision, available_tools=available_tools)
+        usage = body.get("usage", {}) if isinstance(body, dict) else {}
+        return replace(
+            normalized,
+            input_tokens=int(usage.get("prompt_tokens", 0)),
+            output_tokens=int(usage.get("completion_tokens", 0)),
+        )
 
     @staticmethod
     def _raise_for_error(response: httpx.Response) -> None:

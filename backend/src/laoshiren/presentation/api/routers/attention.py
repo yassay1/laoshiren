@@ -21,14 +21,10 @@ async def get_attention(
     limit: Annotated[int, Query(ge=1, le=20)] = 5,
 ) -> AttentionResponse:
     values = await container.attention.get_candidates(user_id=user_id, limit=limit)
-    return AttentionResponse(
-        items=[AttentionCandidateResponse.from_dto(value) for value in values]
-    )
+    return AttentionResponse(items=[AttentionCandidateResponse.from_dto(value) for value in values])
 
 
-@router.post(
-    "/{subject_type}/{subject_id}/feedback", status_code=status.HTTP_204_NO_CONTENT
-)
+@router.post("/{subject_type}/{subject_id}/feedback", status_code=status.HTTP_204_NO_CONTENT)
 async def record_attention_feedback(
     subject_type: AttentionSubjectType,
     subject_id: UUID,

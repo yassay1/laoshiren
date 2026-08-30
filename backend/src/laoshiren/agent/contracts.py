@@ -24,8 +24,12 @@ class ExecutiveDecision:
     tool_arguments: dict[str, Any] = field(default_factory=dict)
     tool_calls: tuple[ToolCallSpec, ...] = ()
     prompt: dict[str, Any] | None = None
+    input_tokens: int = 0
+    output_tokens: int = 0
 
     def __post_init__(self) -> None:
+        if self.input_tokens < 0 or self.output_tokens < 0:
+            raise ValueError("Normalized token usage cannot be negative.")
         if self.kind is DecisionKind.RESPOND and not self.content:
             raise ValueError("A response decision requires content.")
         if self.kind is DecisionKind.ASK_USER and self.prompt is None:
@@ -55,8 +59,28 @@ class ToolResult:
     retryable: bool = False
     mutation_refs: tuple[str, ...] = ()
     source_refs: tuple[str, ...] = ()
+    receipt: dict[str, Any] | None = None
+    error: dict[str, Any] | None = None
+    warnings: tuple[str, ...] = ()
+    current_state: dict[str, Any] | None = None
+    ledger_receipt_persisted: bool = False
 
     def as_dict(self) -> dict[str, Any]:
+        receipt = self.receipt
+        error = self.error
+        if self.status in {ToolStatus.SUCCESS, ToolStatus.PARTIAL} and receipt is None:
+            receipt = {
+                "code": self.code,
+                "data": self.data,
+                "mutation_refs": list(self.mutation_refs),
+                "source_refs": list(self.source_refs),
+            }
+        if self.status not in {ToolStatus.SUCCESS, ToolStatus.PARTIAL} and error is None:
+            error = {
+                "code": self.code,
+                "message": self.message,
+                "retryable": self.retryable,
+            }
         return {
             "status": self.status.value,
             "code": self.code,
@@ -65,6 +89,10 @@ class ToolResult:
             "retryable": self.retryable,
             "mutation_refs": list(self.mutation_refs),
             "source_refs": list(self.source_refs),
+            "receipt": receipt,
+            "error": error,
+            "warnings": list(self.warnings),
+            "current_state": self.current_state,
         }
 
 
@@ -73,10 +101,13 @@ class GraphState(TypedDict, total=False):
     thread_id: str
     run_id: str
     run_claim_token: str
+    input_message_id: str
     current_input: str
     messages: list[dict[str, Any]]
     source_refs: list[str]
     prefetched_state: dict[str, Any]
+    context_manifest: dict[str, Any]
+    budget_snapshot: dict[str, Any]
     tool_results: list[dict[str, Any]]
     decision: dict[str, Any]
     pending_action: dict[str, Any]
@@ -84,6 +115,9 @@ class GraphState(TypedDict, total=False):
     final_response: str
     decision_count: int
     tool_call_count: int
+    input_tokens_used: int
+    output_tokens_used: int
+    external_action_count: int
     pending_batch: list[dict[str, Any]]
     route: Literal[
         "respond",

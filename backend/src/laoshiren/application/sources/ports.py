@@ -17,6 +17,10 @@ class SourceRepository(Protocol):
 
     async def get(self, *, user_id: UUID, source_id: UUID) -> Source | None: ...
 
+    async def get_by_id(self, source_id: UUID) -> Source | None: ...
+
+    async def get_including_deleted(self, *, user_id: UUID, source_id: UUID) -> Source | None: ...
+
     async def get_by_idempotency(self, *, user_id: UUID, key: str) -> Source | None: ...
 
     async def add_relation(self, relation: ThingSource) -> bool: ...
@@ -27,6 +31,7 @@ class SourceRepository(Protocol):
         self,
         *,
         owner: str,
+        user_id: UUID | None,
         now: datetime,
         lease_expires_at: datetime,
         supported_mime_types: tuple[str, ...],
@@ -71,6 +76,19 @@ class SourceRepository(Protocol):
         query_embedding: list[float] | None = None,
         query_text: str | None = None,
     ) -> list[SourceChunk]: ...
+
+    async def search_for_user(
+        self,
+        *,
+        user_id: UUID,
+        query: str,
+        thing_id: UUID | None,
+        limit: int,
+    ) -> list[Source]: ...
+
+    async def mark_deleted(self, *, user_id: UUID, source_id: UUID) -> Source | None: ...
+
+    async def purge_chunks(self, *, source_id: UUID) -> None: ...
 
 
 class ObjectStorage(Protocol):

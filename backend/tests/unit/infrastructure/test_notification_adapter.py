@@ -18,12 +18,8 @@ async def test_recording_adapter_deduplicates_downstream_submission_key() -> Non
         message="Do the thing",
     )
 
-    first = await adapter.submit(
-        notification, idempotency_key=notification.occurrence_key
-    )
-    replay = await adapter.submit(
-        notification, idempotency_key=notification.occurrence_key
-    )
+    first = await adapter.submit(notification, idempotency_key=notification.occurrence_key)
+    replay = await adapter.submit(notification, idempotency_key=notification.occurrence_key)
 
     assert first is True
     assert replay is True

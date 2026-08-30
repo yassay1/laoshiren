@@ -1,0 +1,204 @@
+[
+  {
+    "name": "automation_cancel",
+    "description": "Cancel an automation with optimistic concurrency.",
+    "risk": "REVERSIBLE_WRITE",
+    "replay_policy": "IDEMPOTENT",
+    "required_arguments": [
+      "automation_id",
+      "expected_version"
+    ]
+  },
+  {
+    "name": "automation_create",
+    "description": "Create an automation.",
+    "risk": "REVERSIBLE_WRITE",
+    "replay_policy": "IDEMPOTENT",
+    "required_arguments": [
+      "automation_type",
+      "title",
+      "next_trigger_at"
+    ]
+  },
+  {
+    "name": "blocker_manage",
+    "description": "Open or resolve a Blocker.",
+    "risk": "REVERSIBLE_WRITE",
+    "replay_policy": "IDEMPOTENT",
+    "required_arguments": [
+      "operation"
+    ]
+  },
+  {
+    "name": "file_delete",
+    "description": "Delete a user file after confirmation.",
+    "risk": "IRREVERSIBLE",
+    "replay_policy": "IDEMPOTENT",
+    "required_arguments": [
+      "file_id"
+    ]
+  },
+  {
+    "name": "file_inspect",
+    "description": "Inspect a file using its stable internal file_id.",
+    "risk": "READ",
+    "replay_policy": "READ_ONLY",
+    "required_arguments": [
+      "file_id"
+    ]
+  },
+  {
+    "name": "file_search",
+    "description": "Search user files and matching fragments.",
+    "risk": "READ",
+    "replay_policy": "READ_ONLY",
+    "required_arguments": [
+      "query"
+    ]
+  },
+  {
+    "name": "memory_forget",
+    "description": "Forget one resolved memory.",
+    "risk": "SENSITIVE_WRITE",
+    "replay_policy": "IDEMPOTENT",
+    "required_arguments": [
+      "memory_id",
+      "expected_version"
+    ]
+  },
+  {
+    "name": "memory_remember",
+    "description": "Persist an explicit long-term memory.",
+    "risk": "REVERSIBLE_WRITE",
+    "replay_policy": "IDEMPOTENT",
+    "required_arguments": [
+      "content",
+      "memory_type"
+    ]
+  },
+  {
+    "name": "memory_search",
+    "description": "Search long-term memory.",
+    "risk": "READ",
+    "replay_policy": "READ_ONLY",
+    "required_arguments": [
+      "query"
+    ]
+  },
+  {
+    "name": "search_web",
+    "description": "Search the public web.",
+    "risk": "READ",
+    "replay_policy": "READ_ONLY",
+    "required_arguments": [
+      "query"
+    ]
+  },
+  {
+    "name": "state_get_overview",
+    "description": "Read the bounded authoritative current-state overview.",
+    "risk": "READ",
+    "replay_policy": "READ_ONLY",
+    "required_arguments": []
+  },
+  {
+    "name": "state_get_thing_context",
+    "description": "Read one Thing's current state with stable versions.",
+    "risk": "READ",
+    "replay_policy": "READ_ONLY",
+    "required_arguments": [
+      "thing_id"
+    ]
+  },
+  {
+    "name": "task_change_status",
+    "description": "Change a Task status with optimistic concurrency.",
+    "risk": "REVERSIBLE_WRITE",
+    "replay_policy": "IDEMPOTENT",
+    "required_arguments": [
+      "task_id",
+      "target_status",
+      "expected_version"
+    ]
+  },
+  {
+    "name": "task_create",
+    "description": "Create a standalone or Thing-linked Task.",
+    "risk": "REVERSIBLE_WRITE",
+    "replay_policy": "IDEMPOTENT",
+    "required_arguments": [
+      "title"
+    ]
+  },
+  {
+    "name": "thing_change_state",
+    "description": "Change Thing lifecycle or archive state.",
+    "risk": "REVERSIBLE_WRITE",
+    "replay_policy": "IDEMPOTENT",
+    "required_arguments": [
+      "thing_id",
+      "action",
+      "expected_version"
+    ]
+  },
+  {
+    "name": "thing_context_set",
+    "description": "Create or correct one current soft-state entry.",
+    "risk": "REVERSIBLE_WRITE",
+    "replay_policy": "IDEMPOTENT",
+    "required_arguments": [
+      "thing_id",
+      "label",
+      "content"
+    ]
+  },
+  {
+    "name": "thing_create",
+    "description": "Create a persistent Thing.",
+    "risk": "REVERSIBLE_WRITE",
+    "replay_policy": "IDEMPOTENT",
+    "required_arguments": [
+      "name"
+    ]
+  },
+  {
+    "name": "thing_date_set",
+    "description": "Create or correct a typed ThingDate.",
+    "risk": "SENSITIVE_WRITE",
+    "replay_policy": "IDEMPOTENT",
+    "required_arguments": [
+      "operation"
+    ]
+  },
+  {
+    "name": "thing_delete",
+    "description": "Permanently delete a Thing after confirmation.",
+    "risk": "IRREVERSIBLE",
+    "replay_policy": "IDEMPOTENT",
+    "required_arguments": [
+      "thing_id",
+      "expected_version"
+    ]
+  },
+  {
+    "name": "thing_merge",
+    "description": "Merge a duplicate Thing after confirmation.",
+    "risk": "IRREVERSIBLE",
+    "replay_policy": "IDEMPOTENT",
+    "required_arguments": [
+      "canonical_thing_id",
+      "duplicate_thing_id",
+      "expected_canonical_version",
+      "expected_duplicate_version"
+    ]
+  },
+  {
+    "name": "url_inspect",
+    "description": "Inspect a known URL resource.",
+    "risk": "READ",
+    "replay_policy": "READ_ONLY",
+    "required_arguments": [
+      "url"
+    ]
+  }
+]

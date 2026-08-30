@@ -13,12 +13,8 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     op.add_column("notification_outbox", sa.Column("claim_owner", sa.String(200)))
-    op.add_column(
-        "notification_outbox", sa.Column("lease_expires_at", sa.DateTime(timezone=True))
-    )
-    op.add_column(
-        "notification_outbox", sa.Column("next_attempt_at", sa.DateTime(timezone=True))
-    )
+    op.add_column("notification_outbox", sa.Column("lease_expires_at", sa.DateTime(timezone=True)))
+    op.add_column("notification_outbox", sa.Column("next_attempt_at", sa.DateTime(timezone=True)))
     op.create_index(
         "ix_notification_outbox_dispatch",
         "notification_outbox",

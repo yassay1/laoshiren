@@ -6,8 +6,11 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from laoshiren.domain.runtime.entities import RunStatus, RunTrigger
+from laoshiren.infrastructure.automation.run_trigger import RuntimeAutomationRunTrigger
 from laoshiren.main import create_app
 from laoshiren.workers.automation import run_once
+from laoshiren.workers.automation_occurrence import AutomationOccurrenceWorker
+from laoshiren.workers.push_delivery import PushDeliveryWorker
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -49,9 +52,22 @@ async def test_automation_dispatch_triggers_agent_run() -> None:
         )
         assert create.status_code == 201
 
-    generated, submitted = await run_once(container.automations, limit=10)
+    occurrence_worker = AutomationOccurrenceWorker(
+        container.database.automation_unit_of_work,
+        run_trigger=RuntimeAutomationRunTrigger(container.runtime),
+    )
+    push_worker = PushDeliveryWorker(
+        container.database.automation_unit_of_work,
+        container.notification_adapter,
+    )
+    generated, processed = await run_once(
+        container.automations,
+        occurrence_worker,
+        push_worker,
+        limit=10,
+    )
     assert generated >= 1
-    assert submitted >= 1
+    assert processed >= 1
 
     threads = await container.runtime.list_threads(user_id=user_id, limit=50)
     automation_threads = [item for item in threads if item.title == "自动化"]
@@ -74,5 +90,5 @@ async def test_automation_dispatch_triggers_agent_run() -> None:
         RunStatus.QUEUED,
         RunStatus.RUNNING,
         RunStatus.COMPLETED,
-        RunStatus.WAITING_USER,
+        RunStatus.WAITING_FOR_USER,
     }

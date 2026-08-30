@@ -1,0 +1,1 @@
+"""Non-authoritative coordination adapters."""

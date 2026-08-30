@@ -50,9 +50,7 @@ async def version_conflict_handler(request: Request, exception: Exception) -> JS
     )
 
 
-async def invalid_state_transition_handler(
-    request: Request, exception: Exception
-) -> JSONResponse:
+async def invalid_state_transition_handler(request: Request, exception: Exception) -> JSONResponse:
     if not isinstance(exception, InvalidStateTransition):
         raise exception
     return error_response(

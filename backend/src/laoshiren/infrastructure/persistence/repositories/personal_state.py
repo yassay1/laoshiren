@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, literal, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,18 +12,30 @@ from laoshiren.domain.personal_state.entities import (
     StateMutation,
     Task,
     Thing,
+    ThingContextEntry,
     ThingDate,
     ThingRelation,
     TimelineEvent,
 )
-from laoshiren.domain.personal_state.value_objects import BlockerStatus, TaskStatus, ThingStatus
+from laoshiren.domain.personal_state.value_objects import (
+    BlockerStatus,
+    TaskStatus,
+    ThingDateType,
+    ThingStatus,
+)
 from laoshiren.infrastructure.persistence.orm.personal_state import (
+    AutomationORM,
     BlockerORM,
+    MemoryORM,
+    NotificationOutboxORM,
     StateMutationORM,
     TaskORM,
+    ThingContextEntryORM,
     ThingDateORM,
     ThingORM,
     ThingRelationORM,
+    ThingSourceORM,
+    ThreadORM,
     TimelineEventORM,
     UserORM,
 )
@@ -38,6 +50,8 @@ def thing_to_domain(model: ThingORM) -> Thing:
         current_stage=model.current_stage,
         deadline_at=model.deadline_at,
         archived_at=model.archived_at,
+        merged_into_thing_id=model.merged_into_thing_id,
+        deleted_at=model.deleted_at,
         version=model.version,
         created_at=model.created_at,
         updated_at=model.updated_at,
@@ -47,11 +61,14 @@ def thing_to_domain(model: ThingORM) -> Thing:
 def task_to_domain(model: TaskORM) -> Task:
     return Task(
         id=model.id,
+        user_id=model.user_id,
         thing_id=model.thing_id,
         title=model.title,
         status=model.status,
         version=model.version,
         completed_at=model.completed_at,
+        due_at=model.due_at,
+        recurrence_interval_days=model.recurrence_interval_days,
         created_at=model.created_at,
         updated_at=model.updated_at,
     )
@@ -80,12 +97,26 @@ def thing_date_to_domain(model: ThingDateORM) -> ThingDate:
     return ThingDate(
         id=model.id,
         thing_id=model.thing_id,
-        kind=model.kind,
+        kind=ThingDateType(model.kind),
+        label=model.label,
         value=model.value,
         timezone_name=model.timezone_name,
         precision=model.precision,
         certainty=model.certainty,
         is_primary=model.is_primary,
+        source_id=model.source_id,
+        version=model.version,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+    )
+
+
+def context_entry_to_domain(model: ThingContextEntryORM) -> ThingContextEntry:
+    return ThingContextEntry(
+        id=model.id,
+        thing_id=model.thing_id,
+        label=model.label,
+        content=model.content,
         source_id=model.source_id,
         version=model.version,
         created_at=model.created_at,
@@ -159,6 +190,8 @@ class SqlAlchemyThingRepository:
                 current_stage=thing.current_stage,
                 deadline_at=thing.deadline_at,
                 archived_at=thing.archived_at,
+                merged_into_thing_id=thing.merged_into_thing_id,
+                deleted_at=thing.deleted_at,
                 version=thing.version,
                 created_at=thing.created_at,
                 updated_at=thing.updated_at,
@@ -166,6 +199,15 @@ class SqlAlchemyThingRepository:
         )
 
     async def get(self, *, user_id: UUID, thing_id: UUID) -> Thing | None:
+        statement = select(ThingORM).where(
+            ThingORM.id == thing_id,
+            ThingORM.user_id == user_id,
+            ThingORM.deleted_at.is_(None),
+        )
+        model = await self._session.scalar(statement)
+        return thing_to_domain(model) if model is not None else None
+
+    async def get_including_deleted(self, *, user_id: UUID, thing_id: UUID) -> Thing | None:
         statement = select(ThingORM).where(ThingORM.id == thing_id, ThingORM.user_id == user_id)
         model = await self._session.scalar(statement)
         return thing_to_domain(model) if model is not None else None
@@ -180,7 +222,10 @@ class SqlAlchemyThingRepository:
         limit: int,
     ) -> list[Thing]:
         statement = select(ThingORM).where(
-            ThingORM.user_id == user_id, ThingORM.archived_at.is_(None)
+            ThingORM.user_id == user_id,
+            ThingORM.archived_at.is_(None),
+            ThingORM.merged_into_thing_id.is_(None),
+            ThingORM.deleted_at.is_(None),
         )
         if status is not None:
             statement = statement.where(ThingORM.status == status)
@@ -202,12 +247,79 @@ class SqlAlchemyThingRepository:
                 current_stage=thing.current_stage,
                 deadline_at=thing.deadline_at,
                 archived_at=thing.archived_at,
+                merged_into_thing_id=thing.merged_into_thing_id,
+                deleted_at=thing.deleted_at,
                 version=thing.version,
                 updated_at=thing.updated_at,
             )
         )
         result = cast(CursorResult[Any], await self._session.execute(statement))
         return result.rowcount == 1
+
+    async def detach_tasks(self, *, thing_id: UUID) -> None:
+        await self._session.execute(
+            update(TaskORM).where(TaskORM.thing_id == thing_id).values(thing_id=None)
+        )
+
+    async def delete_owned_components(self, *, thing_id: UUID) -> None:
+        await self._session.execute(
+            delete(ThingContextEntryORM).where(ThingContextEntryORM.thing_id == thing_id)
+        )
+        await self._session.execute(delete(ThingDateORM).where(ThingDateORM.thing_id == thing_id))
+        await self._session.execute(delete(BlockerORM).where(BlockerORM.thing_id == thing_id))
+        await self._session.execute(
+            delete(ThingSourceORM).where(ThingSourceORM.thing_id == thing_id)
+        )
+        await self._session.execute(
+            delete(ThingRelationORM).where(
+                (ThingRelationORM.from_thing_id == thing_id)
+                | (ThingRelationORM.to_thing_id == thing_id)
+            )
+        )
+
+    async def rebind_merged_references(
+        self, *, duplicate_thing_id: UUID, canonical_thing_id: UUID
+    ) -> None:
+        # Current-state associations move to the canonical Thing. Historical audit,
+        # timeline, and legacy relation rows intentionally keep their original ID so
+        # provenance remains resolvable through the redirect tombstone.
+        for model in (
+            TaskORM,
+            ThingDateORM,
+            BlockerORM,
+            ThingContextEntryORM,
+            AutomationORM,
+            NotificationOutboxORM,
+            MemoryORM,
+        ):
+            await self._session.execute(
+                update(model)
+                .where(model.thing_id == duplicate_thing_id)
+                .values(thing_id=canonical_thing_id)
+            )
+        await self._session.execute(
+            update(ThreadORM)
+            .where(ThreadORM.active_thing_id == duplicate_thing_id)
+            .values(active_thing_id=canonical_thing_id)
+        )
+        source_rows = select(
+            literal(canonical_thing_id),
+            ThingSourceORM.source_id,
+            ThingSourceORM.relation_type,
+            ThingSourceORM.relevance,
+            ThingSourceORM.created_at,
+        ).where(ThingSourceORM.thing_id == duplicate_thing_id)
+        await self._session.execute(
+            insert(ThingSourceORM)
+            .from_select(
+                ["thing_id", "source_id", "relation_type", "relevance", "created_at"],
+                source_rows,
+            )
+            .on_conflict_do_nothing(index_elements=["thing_id", "source_id"])
+        )
+        await self._session.execute(
+            delete(ThingSourceORM).where(ThingSourceORM.thing_id == duplicate_thing_id)
+        )
 
     async def list_upcoming(
         self, *, user_id: UUID, now: datetime, window_end: datetime, limit: int
@@ -217,6 +329,7 @@ class SqlAlchemyThingRepository:
             .where(
                 ThingORM.user_id == user_id,
                 ThingORM.archived_at.is_(None),
+                ThingORM.merged_into_thing_id.is_(None),
                 ThingORM.deadline_at.is_not(None),
                 ThingORM.deadline_at >= now,
                 ThingORM.deadline_at <= window_end,
@@ -233,9 +346,8 @@ class SqlAlchemyThingRepository:
             .where(
                 ThingORM.user_id == user_id,
                 ThingORM.archived_at.is_(None),
-                ThingORM.status.in_(
-                    [ThingStatus.ACTIVE, ThingStatus.BLOCKED, ThingStatus.WAITING]
-                ),
+                ThingORM.merged_into_thing_id.is_(None),
+                ThingORM.status == ThingStatus.ACTIVE,
             )
             .order_by(ThingORM.updated_at.desc(), ThingORM.id.desc())
             .limit(limit)
@@ -246,7 +358,11 @@ class SqlAlchemyThingRepository:
     async def list_recent(self, *, user_id: UUID, limit: int) -> list[Thing]:
         statement = (
             select(ThingORM)
-            .where(ThingORM.user_id == user_id, ThingORM.archived_at.is_(None))
+            .where(
+                ThingORM.user_id == user_id,
+                ThingORM.archived_at.is_(None),
+                ThingORM.merged_into_thing_id.is_(None),
+            )
             .order_by(ThingORM.updated_at.desc(), ThingORM.id.desc())
             .limit(limit)
         )
@@ -264,6 +380,7 @@ class SqlAlchemyThingDateRepository:
                 id=thing_date.id,
                 thing_id=thing_date.thing_id,
                 kind=thing_date.kind,
+                label=thing_date.label,
                 value=thing_date.value,
                 timezone_name=thing_date.timezone_name,
                 precision=thing_date.precision,
@@ -276,7 +393,7 @@ class SqlAlchemyThingDateRepository:
             )
         )
 
-    async def unset_primary(self, *, thing_id: UUID, kind: str) -> None:
+    async def unset_primary(self, *, thing_id: UUID, kind: ThingDateType) -> None:
         statement = (
             update(ThingDateORM)
             .where(
@@ -288,9 +405,7 @@ class SqlAlchemyThingDateRepository:
         )
         await self._session.execute(statement)
 
-    async def list_for_thing(
-        self, *, user_id: UUID, thing_id: UUID, limit: int
-    ) -> list[ThingDate]:
+    async def list_for_thing(self, *, user_id: UUID, thing_id: UUID, limit: int) -> list[ThingDate]:
         statement = (
             select(ThingDateORM)
             .join(ThingORM, ThingORM.id == ThingDateORM.thing_id)
@@ -329,6 +444,63 @@ class SqlAlchemyThingDateRepository:
         return result.rowcount == 1
 
 
+class SqlAlchemyThingContextEntryRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add(self, entry: ThingContextEntry) -> None:
+        self._session.add(
+            ThingContextEntryORM(
+                id=entry.id,
+                thing_id=entry.thing_id,
+                label=entry.label,
+                content=entry.content,
+                source_id=entry.source_id,
+                version=entry.version,
+                created_at=entry.created_at,
+                updated_at=entry.updated_at,
+            )
+        )
+
+    async def get(self, *, user_id: UUID, entry_id: UUID) -> ThingContextEntry | None:
+        model = await self._session.scalar(
+            select(ThingContextEntryORM)
+            .join(ThingORM, ThingORM.id == ThingContextEntryORM.thing_id)
+            .where(ThingContextEntryORM.id == entry_id, ThingORM.user_id == user_id)
+        )
+        return context_entry_to_domain(model) if model is not None else None
+
+    async def list_for_thing(self, *, user_id: UUID, thing_id: UUID) -> list[ThingContextEntry]:
+        models = (
+            await self._session.scalars(
+                select(ThingContextEntryORM)
+                .join(ThingORM, ThingORM.id == ThingContextEntryORM.thing_id)
+                .where(ThingContextEntryORM.thing_id == thing_id, ThingORM.user_id == user_id)
+                .order_by(ThingContextEntryORM.updated_at.desc(), ThingContextEntryORM.id.desc())
+            )
+        ).all()
+        return [context_entry_to_domain(model) for model in models]
+
+    async def update(self, entry: ThingContextEntry, *, expected_version: int) -> bool:
+        result = cast(
+            CursorResult[Any],
+            await self._session.execute(
+                update(ThingContextEntryORM)
+                .where(
+                    ThingContextEntryORM.id == entry.id,
+                    ThingContextEntryORM.version == expected_version,
+                )
+                .values(
+                    label=entry.label,
+                    content=entry.content,
+                    version=entry.version,
+                    updated_at=entry.updated_at,
+                )
+            ),
+        )
+        return result.rowcount == 1
+
+
 class SqlAlchemyTaskRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -337,33 +509,41 @@ class SqlAlchemyTaskRepository:
         self._session.add(
             TaskORM(
                 id=task.id,
+                user_id=task.user_id,
                 thing_id=task.thing_id,
                 title=task.title,
                 status=task.status,
                 version=task.version,
                 completed_at=task.completed_at,
+                due_at=task.due_at,
+                recurrence_interval_days=task.recurrence_interval_days,
                 created_at=task.created_at,
                 updated_at=task.updated_at,
             )
         )
 
     async def get(self, *, user_id: UUID, task_id: UUID) -> Task | None:
-        statement = (
-            select(TaskORM)
-            .join(ThingORM, ThingORM.id == TaskORM.thing_id)
-            .where(TaskORM.id == task_id, ThingORM.user_id == user_id)
-        )
+        statement = select(TaskORM).where(TaskORM.id == task_id, TaskORM.user_id == user_id)
         model = await self._session.scalar(statement)
         return task_to_domain(model) if model is not None else None
 
     async def list_for_thing(self, *, user_id: UUID, thing_id: UUID) -> list[Task]:
         statement = (
             select(TaskORM)
-            .join(ThingORM, ThingORM.id == TaskORM.thing_id)
-            .where(TaskORM.thing_id == thing_id, ThingORM.user_id == user_id)
+            .where(TaskORM.thing_id == thing_id, TaskORM.user_id == user_id)
             .order_by(TaskORM.created_at, TaskORM.id)
         )
         models = (await self._session.scalars(statement)).all()
+        return [task_to_domain(model) for model in models]
+
+    async def list_standalone(self, *, user_id: UUID) -> list[Task]:
+        models = (
+            await self._session.scalars(
+                select(TaskORM)
+                .where(TaskORM.user_id == user_id, TaskORM.thing_id.is_(None))
+                .order_by(TaskORM.created_at, TaskORM.id)
+            )
+        ).all()
         return [task_to_domain(model) for model in models]
 
     async def update(self, task: Task, *, expected_version: int) -> bool:
@@ -374,6 +554,8 @@ class SqlAlchemyTaskRepository:
                 status=task.status,
                 version=task.version,
                 completed_at=task.completed_at,
+                due_at=task.due_at,
+                recurrence_interval_days=task.recurrence_interval_days,
                 updated_at=task.updated_at,
             )
         )
@@ -385,18 +567,10 @@ class SqlAlchemyTaskRepository:
             return {}
         statement = (
             select(TaskORM.thing_id, func.count())
-            .join(ThingORM, ThingORM.id == TaskORM.thing_id)
             .where(
                 TaskORM.thing_id.in_(thing_ids),
-                ThingORM.user_id == user_id,
-                TaskORM.status.in_(
-                    [
-                        TaskStatus.TODO,
-                        TaskStatus.IN_PROGRESS,
-                        TaskStatus.WAITING,
-                        TaskStatus.BLOCKED,
-                    ]
-                ),
+                TaskORM.user_id == user_id,
+                TaskORM.status == TaskStatus.TODO,
             )
             .group_by(TaskORM.thing_id)
         )
@@ -584,9 +758,7 @@ class SqlAlchemyThingRelationRepository:
         )
         return (await self._session.scalar(statement)) is not None
 
-    async def list_for_thing(
-        self, *, user_id: UUID, thing_id: UUID
-    ) -> list[ThingRelation]:
+    async def list_for_thing(self, *, user_id: UUID, thing_id: UUID) -> list[ThingRelation]:
         models = (
             await self._session.scalars(
                 select(ThingRelationORM)

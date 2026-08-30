@@ -88,20 +88,18 @@ async def test_thread_run_interrupt_resume_completion_and_event_replay() -> None
                 },
             )
             assert started.status.value == "RUNNING"
-            assert waiting.status.value == "WAITING_USER"
+            assert waiting.status.value == "WAITING_FOR_USER"
             assert waiting.interrupt_id is not None
 
             waiting_events = await app.state.container.runtime.list_events(
                 user_id=UUID(app.state.container.settings.dev_user_id), run_id=run_id
             )
             interrupt_event = next(
-                event
-                for event in waiting_events
-                if event.event is RunEventType.INTERRUPT_REQUIRED
+                event for event in waiting_events if event.event is RunEventType.HITL_REQUESTED
             )
             waiting_replay = await client.get(
                 f"/api/v1/runs/{run_id}/events?follow=false",
-                headers={"Last-Event-ID": str(interrupt_event.id)},
+                headers={"Last-Event-ID": str(interrupt_event.sequence)},
             )
             assert "interrupt.required" not in waiting_replay.text
 
@@ -144,12 +142,6 @@ async def test_thread_run_interrupt_resume_completion_and_event_replay() -> None
                 phase="responding",
                 label="正在整理结果",
             )
-            delta = await app.state.container.runtime.emit_event(
-                user_id=UUID(app.state.container.settings.dev_user_id),
-                run_id=run_id,
-                event_type=RunEventType.ASSISTANT_DELTA,
-                data={"message_id": str(uuid4()), "delta": "已经确认"},
-            )
             completed = await app.state.container.runtime.complete_run(
                 user_id=UUID(app.state.container.settings.dev_user_id),
                 run_id=run_id,
@@ -163,20 +155,25 @@ async def test_thread_run_interrupt_resume_completion_and_event_replay() -> None
             sequences = [event.sequence for event in completed_events]
             assert sequences == sorted(sequences)
             assert len(sequences) == len(set(sequences))
+            resumed_event = next(
+                event for event in completed_events if event.event is RunEventType.RUN_RESUMED
+            )
 
             replay_stream = await client.get(
                 f"/api/v1/runs/{run_id}/events?follow=false",
-                headers={"Last-Event-ID": str(delta.id)},
+                headers={"Last-Event-ID": str(resumed_event.sequence)},
             )
             assert replay_stream.status_code == 200
             assert replay_stream.headers["content-type"].startswith("text/event-stream")
             assert "run.completed" in replay_stream.text
-            assert "assistant.delta" not in replay_stream.text
+            assert "run.resumed" not in replay_stream.text
 
             final_messages = await client.get(f"/api/v1/threads/{thread_id}/messages")
             assert [item["role"] for item in final_messages.json()] == ["USER", "ASSISTANT"]
             current = await client.get(f"/api/v1/runs/{run_id}")
             assert current.json()["final_message_id"] == final_messages.json()[-1]["id"]
+            assert current.json()["last_event_sequence"] == completed_events[-1].sequence
+            assert current.json()["pending_interaction"] is None
 
             second_run = await client.post(
                 "/api/v1/runs",

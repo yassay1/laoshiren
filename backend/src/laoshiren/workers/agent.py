@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 from contextlib import suppress
+from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID, uuid4
 
@@ -14,17 +15,16 @@ from laoshiren.agent.contracts import AgentBudgetExceeded, GraphState, ToolStatu
 from laoshiren.agent.graph import ToolOutcomeUnknown
 from laoshiren.agent.model_gateway import ModelGatewayError
 from laoshiren.agent.tools import ToolReplayPolicy
-from laoshiren.application.automations.dto import AttentionCandidateDTO
-from laoshiren.application.automations.service import AttentionApplicationService
-from laoshiren.application.context import AgentContextBuilder
 from laoshiren.application.memories.candidate import is_explicit_memory_command
-from laoshiren.application.memories.context import AgentMemoryApplicationService
-from laoshiren.application.personal_state.service import PersonalStateApplicationService
+from laoshiren.application.memories.formation import MemoryFormationEvent
+from laoshiren.application.runtime.dto import (
+    CheckpointReconciliation,
+    reconcile_checkpoint,
+)
+from laoshiren.application.runtime.ports import CheckpointInspector
 from laoshiren.application.runtime.service import RuntimeApplicationService
-from laoshiren.application.sources.service import SourceApplicationService
-from laoshiren.domain.automations.entities import AttentionFeedbackAction
 from laoshiren.domain.runtime.entities import RunEventType, RunStatus
-from laoshiren.workers.memory import MemoryFormationEvent, MemoryFormationWorker
+from laoshiren.workers.memory import MemoryFormationWorker
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +99,16 @@ class RuntimeToolExecutionLedger:
             succeeded=succeeded,
         )
 
+    def claim_token_for(self, *, run_id: UUID, action_id: str) -> UUID | None:
+        return self._claim_tokens.get((run_id, action_id))
+
+    @property
+    def claim_owner(self) -> str:
+        return self._owner
+
+    def acknowledge_atomic_completion(self, *, run_id: UUID, action_id: str) -> None:
+        self._claim_tokens.pop((run_id, action_id), None)
+
 
 class RuntimeAgentEventSink:
     def __init__(self, runtime: RuntimeApplicationService) -> None:
@@ -126,7 +136,7 @@ class RuntimeAgentEventSink:
     ) -> None:
         event_type = (
             RunEventType.TOOL_COMPLETED
-            if status is ToolStatus.SUCCESS
+            if status in {ToolStatus.SUCCESS, ToolStatus.PARTIAL}
             else RunEventType.TOOL_FAILED
         )
         await self._runtime.emit_event(
@@ -149,28 +159,24 @@ class AgentRunWorker:
         self,
         runtime: RuntimeApplicationService,
         graph: CompiledStateGraph[GraphState, None, GraphState, GraphState],
-        agent_memory: AgentMemoryApplicationService | None = None,
-        sources: SourceApplicationService | None = None,
         *,
-        personal_state: PersonalStateApplicationService | None = None,
-        attention: AttentionApplicationService | None = None,
         memory_formation: MemoryFormationWorker | None = None,
         worker_id: str | None = None,
         lease_seconds: float = 60.0,
         heartbeat_seconds: float = 15.0,
-        context_builder: AgentContextBuilder | None = None,
+        max_active_wall_time_seconds: float = 300.0,
+        checkpoint_inspector: CheckpointInspector | None = None,
     ) -> None:
         self._runtime = runtime
         self._graph = graph
-        self._agent_memory = agent_memory
-        self._sources = sources
-        self._personal_state = personal_state
-        self._attention = attention
         self._memory_formation = memory_formation
         self._worker_id = worker_id or f"agent-worker-{uuid4()}"
         self._lease_seconds = lease_seconds
         self._heartbeat_seconds = heartbeat_seconds
-        self._context_builder = context_builder or AgentContextBuilder()
+        if max_active_wall_time_seconds <= 0:
+            raise ValueError("Active wall-time budget must be positive.")
+        self._max_active_wall_time_seconds = max_active_wall_time_seconds
+        self._checkpoint_inspector = checkpoint_inspector
 
     async def run_once(self, *, user_id: UUID, run_id: UUID) -> RunStatus:
         run = await self._runtime.claim_run(
@@ -184,6 +190,100 @@ class AgentRunWorker:
         if run.claim_token is None:
             raise RuntimeError("Claimed Run did not return its fencing token.")
         run_claim_token = run.claim_token
+        raw_budget = getattr(run, "budget_snapshot", {})
+        budget = raw_budget if isinstance(raw_budget, dict) else {}
+        active_budget = float(
+            budget.get("max_active_wall_time_seconds", self._max_active_wall_time_seconds)
+        )
+        active_since = run.active_started_at or datetime.now(UTC)
+        active_elapsed = (
+            run.active_time_used_ms / 1000 + (datetime.now(UTC) - active_since).total_seconds()
+        )
+        remaining_active_seconds = active_budget - active_elapsed
+        if remaining_active_seconds <= 0:
+            await self._runtime.fail_run(
+                user_id=user_id,
+                run_id=run_id,
+                error_code="BUDGET_EXHAUSTED",
+                claim_owner=self._worker_id,
+                claim_token=run_claim_token,
+            )
+            return RunStatus.FAILED
+        if run.terminal_output is not None:
+            response = run.terminal_output.get("final_response")
+            if not isinstance(response, str) or not response.strip():
+                await self._runtime.fail_run(
+                    user_id=user_id,
+                    run_id=run_id,
+                    error_code="RUNTIME_INCONSISTENCY",
+                    claim_owner=self._worker_id,
+                    claim_token=run_claim_token,
+                )
+                return RunStatus.FAILED
+            await self._runtime.complete_run(
+                user_id=user_id,
+                run_id=run_id,
+                content=response,
+                claim_owner=self._worker_id,
+                claim_token=run_claim_token,
+            )
+            return RunStatus.COMPLETED
+        if self._checkpoint_inspector is not None:
+            checkpoint = await self._checkpoint_inspector.inspect(run_id=run_id)
+            reconciliation = reconcile_checkpoint(
+                run_status=getattr(run, "status", RunStatus.RUNNING),
+                snapshot=checkpoint,
+            )
+            if reconciliation is CheckpointReconciliation.FAIL_INCONSISTENCY:
+                await self._runtime.fail_run(
+                    user_id=user_id,
+                    run_id=run_id,
+                    error_code="RUNTIME_INCONSISTENCY",
+                    claim_owner=self._worker_id,
+                    claim_token=run_claim_token,
+                )
+                return RunStatus.FAILED
+            if reconciliation is CheckpointReconciliation.FINALIZE:
+                assert checkpoint.terminal_output is not None
+                await self._runtime.accept_terminal_output(
+                    user_id=user_id,
+                    run_id=run_id,
+                    output=checkpoint.terminal_output,
+                    claim_owner=self._worker_id,
+                    claim_token=run_claim_token,
+                )
+                response = checkpoint.terminal_output.get("final_response")
+                if not isinstance(response, str) or not response.strip():
+                    raise RuntimeError("Terminal checkpoint output is invalid.")
+                await self._runtime.complete_run(
+                    user_id=user_id,
+                    run_id=run_id,
+                    content=response,
+                    claim_owner=self._worker_id,
+                    claim_token=run_claim_token,
+                )
+                return RunStatus.COMPLETED
+            if reconciliation is CheckpointReconciliation.WAIT_FOR_USER:
+                assert checkpoint.pending_interrupt is not None
+                checkpoint_payload = dict(checkpoint.pending_interrupt)
+                checkpoint_interaction_id: UUID | None = None
+                if checkpoint.pending_interrupt_id is not None:
+                    checkpoint_payload.setdefault("interaction_id", checkpoint.pending_interrupt_id)
+                    try:
+                        checkpoint_interaction_id = UUID(checkpoint.pending_interrupt_id)
+                    except ValueError:
+                        # LangGraph providers may use non-UUID interrupt keys;
+                        # the durable Run interaction then gets a local UUID.
+                        checkpoint_interaction_id = None
+                await self._runtime.require_input(
+                    user_id=user_id,
+                    run_id=run_id,
+                    payload=checkpoint_payload,
+                    interaction_id=checkpoint_interaction_id,
+                    claim_owner=self._worker_id,
+                    claim_token=run_claim_token,
+                )
+                return RunStatus.WAITING_FOR_USER
         logger.info(
             "agent_run_claimed",
             extra={
@@ -213,9 +313,7 @@ class AgentRunWorker:
                     lease_lost.set()
                     return
 
-        heartbeat_task = asyncio.create_task(
-            heartbeat(), name=f"run-heartbeat-{run_id}"
-        )
+        heartbeat_task = asyncio.create_task(heartbeat(), name=f"run-heartbeat-{run_id}")
         # LangGraph's thread_id identifies one checkpoint execution lifecycle.
         # Business Thread history is separate; every Run gets an isolated checkpoint.
         config: RunnableConfig = {"configurable": {"thread_id": str(run.id)}}
@@ -225,10 +323,16 @@ class AgentRunWorker:
                     resume=run.resume_payload,
                     update={"run_claim_token": str(run_claim_token)},
                 )
-                output = cast(
-                    dict[str, Any],
-                    await self._graph.ainvoke(command, config, durability="sync"),
-                )
+                try:
+                    async with asyncio.timeout(remaining_active_seconds):
+                        output = cast(
+                            dict[str, Any],
+                            await self._graph.ainvoke(command, config, durability="sync"),
+                        )
+                except TimeoutError as exception:
+                    raise AgentBudgetExceeded(
+                        "Run active wall-time budget exceeded."
+                    ) from exception
             else:
                 current = next(item for item in messages if item.id == run.input_message_id)
                 initial: GraphState = {
@@ -236,103 +340,23 @@ class AgentRunWorker:
                     "thread_id": str(run.thread_id),
                     "run_id": str(run_id),
                     "run_claim_token": str(run_claim_token),
+                    "input_message_id": str(run.input_message_id),
+                    "budget_snapshot": dict(budget),
                     "current_input": current.content,
                     "messages": [],
                     "source_refs": [str(value) for value in current.source_ids],
                     "tool_results": [],
                 }
-                memory_prompt: dict[str, Any] = {}
-                if self._agent_memory is not None:
-                    memory_context = await self._agent_memory.load_context(
-                        user_id=user_id, query=current.content
-                    )
-                    memory_prompt = memory_context.as_prompt_data()
-                source_context: list[dict[str, str]] = []
-                if self._sources is not None and current.source_ids:
-                    remaining = 12_000
-                    for source_id in current.source_ids[:5]:
-                        source = await self._sources.get(
-                            user_id=user_id, source_id=source_id
+                try:
+                    async with asyncio.timeout(remaining_active_seconds):
+                        output = cast(
+                            dict[str, Any],
+                            await self._graph.ainvoke(initial, config, durability="sync"),
                         )
-                        chunks = await self._sources.get_context_chunks(
-                            user_id=user_id,
-                            source_id=source_id,
-                            max_chunks=8,
-                            max_characters=remaining,
-                            query=current.content,
-                        )
-                        if not chunks and source.extracted_text and remaining > 0:
-                            # Compatibility for READY rows created before chunk migration.
-                            excerpt = source.extracted_text[:remaining]
-                            source_context.append(
-                                {
-                                    "source_id": str(source.id),
-                                    "chunk_id": "",
-                                    "ordinal": "0",
-                                    "title": source.title,
-                                    "content": excerpt,
-                                }
-                            )
-                            remaining -= len(excerpt)
-                        for chunk in chunks:
-                            if remaining <= 0:
-                                break
-                            source_context.append(
-                                {
-                                    "source_id": str(source.id),
-                                    "chunk_id": str(chunk.id),
-                                    "ordinal": str(chunk.ordinal),
-                                    "page_number": (
-                                        str(chunk.page_number)
-                                        if chunk.page_number is not None
-                                        else ""
-                                    ),
-                                    "title": source.title,
-                                    "content": chunk.content,
-                                }
-                            )
-                            remaining -= len(chunk.content)
-                thread = await self._runtime.get_thread(
-                    user_id=user_id, thread_id=run.thread_id
-                )
-                active_thing_context: dict[str, object] = {}
-                state_overview = None
-                if self._personal_state is not None:
-                    active_thing_context = await self._personal_state.get_agent_thing_prefetch(
-                        user_id=user_id,
-                        active_thing_id=thread.active_thing_id,
-                        query=current.content,
-                    )
-                    state_overview = await self._personal_state.get_state_overview(
-                        user_id=user_id
-                    )
-                attention_items: tuple[AttentionCandidateDTO, ...] = ()
-                if self._attention is not None:
-                    attention_items = tuple(
-                        await self._attention.get_candidates(user_id=user_id, limit=5)
-                    )
-                    for candidate in attention_items[:3]:
-                        await self._attention.record_feedback(
-                            user_id=user_id,
-                            subject_type=candidate.subject_type,
-                            subject_id=candidate.subject_id,
-                            action=AttentionFeedbackAction.SURFACED,
-                            dismissed_until=None,
-                        )
-                bounded_context = self._context_builder.build(
-                    messages=messages,
-                    memory_context=memory_prompt,
-                    source_context=source_context,
-                    state_overview=state_overview,
-                    active_thing_context=active_thing_context,
-                    attention=attention_items,
-                )
-                initial["messages"] = bounded_context.messages
-                initial["prefetched_state"] = bounded_context.prefetched_state
-                output = cast(
-                    dict[str, Any],
-                    await self._graph.ainvoke(initial, config, durability="sync"),
-                )
+                except TimeoutError as exception:
+                    raise AgentBudgetExceeded(
+                        "Run active wall-time budget exceeded."
+                    ) from exception
             interrupts = output.get("__interrupt__")
             if interrupts:
                 first = interrupts[0]
@@ -346,12 +370,19 @@ class AgentRunWorker:
                     claim_owner=self._worker_id,
                     claim_token=run_claim_token,
                 )
-                return RunStatus.WAITING_USER
+                return RunStatus.WAITING_FOR_USER
             response = output.get("final_response")
             if not isinstance(response, str) or not response.strip():
                 raise RuntimeError("Executive Graph ended without a response.")
             if lease_lost.is_set():
                 raise RuntimeError("Run lease was lost during execution.")
+            await self._runtime.accept_terminal_output(
+                user_id=user_id,
+                run_id=run_id,
+                output={"final_response": response.strip()},
+                claim_owner=self._worker_id,
+                claim_token=run_claim_token,
+            )
             await self._runtime.complete_run(
                 user_id=user_id,
                 run_id=run_id,
@@ -386,11 +417,11 @@ class AgentRunWorker:
                 if is_explicit_memory_command(current.content):
                     await self._memory_formation.process(event)
                 else:
-                    await self._memory_formation.enqueue(event)
+                    await self._memory_formation.enqueue_durable(event)
             return RunStatus.COMPLETED
         except Exception as exception:
             if isinstance(exception, AgentBudgetExceeded):
-                error_code = "AGENT_BUDGET_EXCEEDED"
+                error_code = "BUDGET_EXHAUSTED"
             elif isinstance(exception, ToolOutcomeUnknown):
                 error_code = "TOOL_OUTCOME_UNKNOWN"
             elif isinstance(exception, ModelGatewayError):

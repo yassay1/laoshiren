@@ -68,7 +68,7 @@ def validate_parallel_batch(
             continue
         seen_keys.add(key)
         unique.append(spec)
-        if spec.tool_name.startswith("search."):
+        if spec.tool_name in {"search_web", "url_inspect"} or spec.tool_name.startswith("search."):
             search_in_batch += 1
 
     if search_in_batch > 2:
@@ -91,20 +91,23 @@ def count_search_tools_in_results(tool_results: list[dict[str, Any]]) -> int:
     count = 0
     for result in tool_results:
         tool_name = result.get("tool_name")
-        if isinstance(tool_name, str) and tool_name.startswith("search."):
+        if isinstance(tool_name, str) and (
+            tool_name in {"search_web", "url_inspect"} or tool_name.startswith("search.")
+        ):
             count += 1
             continue
         names = result.get("batch_tool_names")
         if isinstance(names, list):
             count += sum(
-                1 for name in names if isinstance(name, str) and name.startswith("search.")
+                1
+                for name in names
+                if isinstance(name, str)
+                and (name in {"search_web", "url_inspect"} or name.startswith("search."))
             )
     return count
 
 
-def parse_executive_decision(
-    value: Any, *, available_tools: tuple[str, ...]
-) -> ExecutiveDecision:
+def parse_executive_decision(value: Any, *, available_tools: tuple[str, ...]) -> ExecutiveDecision:
     if not isinstance(value, dict):
         raise ModelGatewayError(
             "MODEL_INVALID_RESPONSE", "Model decision must be an object.", retryable=True

@@ -35,16 +35,14 @@ class RecordingArchiveService:
 async def test_archive_thing_tool_is_sensitive_and_injects_identity() -> None:
     service = RecordingArchiveService()
     registry = ToolRegistry()
-    register_personal_state_tools(
-        registry, cast(PersonalStateApplicationService, service)
-    )
+    register_personal_state_tools(registry, cast(PersonalStateApplicationService, service))
     context = ToolExecutionContext(user_id=uuid4(), run_id=uuid4(), action_id="arch-1")
     thing_id = uuid4()
 
     result = await registry.execute(
-        name="state.archive_thing",
+        name="thing_change_state",
         context=context,
-        arguments={"thing_id": str(thing_id), "expected_version": 2},
+        arguments={"thing_id": str(thing_id), "expected_version": 2, "action": "ARCHIVE"},
     )
 
     assert result.status is ToolStatus.SUCCESS
@@ -63,7 +61,7 @@ async def test_archive_thing_tool_is_sensitive_and_injects_identity() -> None:
             },
         )
     ]
-    assert registry.get("state.archive_thing").risk is ToolRisk.SENSITIVE_WRITE
+    assert registry.get("thing_change_state").risk is ToolRisk.REVERSIBLE_WRITE
 
 
 async def test_memory_search_tool_is_registered_read_only() -> None:
@@ -73,11 +71,9 @@ async def test_memory_search_tool_is_registered_read_only() -> None:
             return ()
 
     registry = ToolRegistry()
-    register_memory_tools(
-        registry, cast(AgentMemoryApplicationService, RecordingMemoryService())
-    )
+    register_memory_tools(registry, cast(AgentMemoryApplicationService, RecordingMemoryService()))
 
-    definition = registry.get("memory.search")
+    definition = registry.get("memory_search")
     assert definition is not None
     assert definition.risk is ToolRisk.READ
     assert definition.replay_policy is ToolReplayPolicy.READ_ONLY
@@ -99,17 +95,15 @@ async def test_automation_tools_are_registered_reversible_write() -> None:
         registry, cast(AutomationApplicationService, RecordingAutomationService())
     )
 
-    create = registry.get("automation.create")
-    change = registry.get("automation.change")
+    create = registry.get("automation_create")
+    cancel = registry.get("automation_cancel")
     assert create is not None and create.risk is ToolRisk.REVERSIBLE_WRITE
     assert create.replay_policy is ToolReplayPolicy.IDEMPOTENT
-    assert change is not None and change.risk is ToolRisk.REVERSIBLE_WRITE
+    assert cancel is not None and cancel.risk is ToolRisk.REVERSIBLE_WRITE
 
 
 async def test_build_tool_manifest_renders_name_description_and_arguments() -> None:
-    async def noop(
-        context: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
+    async def noop(context: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
         del context, arguments
         return ToolResult(ToolStatus.SUCCESS, "OK", "ok")
 
@@ -132,15 +126,13 @@ async def test_build_tool_manifest_renders_name_description_and_arguments() -> N
 async def test_missing_required_argument_returns_user_input() -> None:
     service = RecordingArchiveService()
     registry = ToolRegistry()
-    register_personal_state_tools(
-        registry, cast(PersonalStateApplicationService, service)
-    )
+    register_personal_state_tools(registry, cast(PersonalStateApplicationService, service))
 
     result = await registry.execute(
-        name="state.archive_thing",
+        name="thing_change_state",
         context=ToolExecutionContext(uuid4(), uuid4(), "arch-1"),
         arguments={},
     )
 
     assert result.status is ToolStatus.REQUIRES_USER_INPUT
-    assert result.data == {"missing": ["thing_id", "expected_version"]}
+    assert result.data == {"missing": ["thing_id", "action", "expected_version"]}

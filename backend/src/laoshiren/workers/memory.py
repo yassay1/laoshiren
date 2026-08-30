@@ -1,26 +1,24 @@
 import asyncio
 import logging
+from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import dataclass, field
-from uuid import UUID
+from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
+from laoshiren.application.memories.formation import (
+    MemoryFormationEvent,
+    enqueue_memory_formation,
+    event_from_job_payload,
+)
 from laoshiren.application.memories.manager import MemoryManager
+from laoshiren.application.personal_state.ports import PersonalStateUnitOfWork
+from laoshiren.application.runtime.durable_job_claim import claim_ready_jobs
 from laoshiren.application.runtime.service import RuntimeApplicationService
+from laoshiren.domain.runtime.entities import DurableJobKind, DurableJobStatus
 
 logger = logging.getLogger(__name__)
 
-
-@dataclass(frozen=True, slots=True)
-class MemoryFormationEvent:
-    """A durable-free signal that a Run finished and memory formation is due."""
-
-    user_id: UUID
-    run_id: UUID
-    thread_id: UUID
-    source_message_id: UUID
-    user_text: str
-    tool_result_codes: tuple[str, ...] = field(default_factory=tuple)
-
+UnitOfWorkFactory = Callable[[], PersonalStateUnitOfWork]
 
 _TOOL_CODE_SUMMARIES = {
     "THING_CREATED": "创建了事务",
@@ -43,30 +41,37 @@ def tool_code_summary(code: str) -> str:
 
 
 class MemoryFormationWorker:
-    """Drains formation events and runs the LLM Memory Manager in the background."""
+    """Claims MEMORY_FORMATION durable jobs and runs the LLM Memory Manager."""
 
     def __init__(
         self,
         manager: MemoryManager,
         runtime: RuntimeApplicationService,
+        unit_of_work_factory: UnitOfWorkFactory,
         *,
+        worker_id: str | None = None,
         interval_seconds: float = 2.0,
         batch_size: int = 10,
+        lease_seconds: float = 120.0,
     ) -> None:
-        if interval_seconds <= 0 or batch_size <= 0:
-            raise ValueError("Memory formation interval and batch size must be positive.")
+        if interval_seconds <= 0 or batch_size <= 0 or lease_seconds <= 0:
+            raise ValueError("Memory formation worker settings must be positive.")
         self._manager = manager
         self._runtime = runtime
+        self._unit_of_work_factory = unit_of_work_factory
+        self._worker_id = worker_id or f"memory-formation-{uuid4()}"
         self._interval_seconds = interval_seconds
         self._batch_size = batch_size
-        self._queue: asyncio.Queue[MemoryFormationEvent] = asyncio.Queue()
+        self._lease_seconds = lease_seconds
         self._task: asyncio.Task[None] | None = None
 
-    async def enqueue(self, event: MemoryFormationEvent) -> None:
-        await self._queue.put(event)
+    async def enqueue_durable(self, event: MemoryFormationEvent) -> None:
+        async with self._unit_of_work_factory() as unit_of_work:
+            await enqueue_memory_formation(unit_of_work, user_id=event.user_id, event=event)
+            await unit_of_work.commit()
 
     async def process(self, event: MemoryFormationEvent) -> None:
-        """Run formation for one event now (explicit-command hot path or queue drain)."""
+        """Run formation for one event now (explicit-command hot path)."""
         try:
             await self._process(event)
         except Exception:
@@ -76,14 +81,43 @@ class MemoryFormationWorker:
             )
 
     async def run_once(self) -> bool:
-        try:
-            event = self._queue.get_nowait()
-        except asyncio.QueueEmpty:
-            return False
+        now = datetime.now(UTC)
+        async with self._unit_of_work_factory() as unit_of_work:
+            jobs = await claim_ready_jobs(
+                unit_of_work,
+                kind=DurableJobKind.MEMORY_FORMATION,
+                owner=self._worker_id,
+                now=now,
+                lease_until=now + timedelta(seconds=self._lease_seconds),
+                limit=1,
+            )
+            if not jobs:
+                await unit_of_work.rollback()
+                return False
+            job = jobs[0]
+            await unit_of_work.commit()
+
+        event = event_from_job_payload(user_id=job.user_id, payload=job.payload)
         try:
             await self._process(event)
-        finally:
-            self._queue.task_done()
+        except Exception:
+            logger.exception(
+                "memory_formation_failed",
+                extra={"run_id": str(event.run_id), "user_id": str(event.user_id)},
+            )
+
+        async with self._unit_of_work_factory() as unit_of_work:
+            settled = await unit_of_work.durable_jobs.settle(
+                job_id=job.id,
+                owner=self._worker_id,
+                claim_epoch=job.claim_epoch,
+                status=DurableJobStatus.COMPLETED,
+                now=datetime.now(UTC),
+            )
+            if settled:
+                await unit_of_work.commit()
+            else:
+                await unit_of_work.rollback()
         return True
 
     async def _process(self, event: MemoryFormationEvent) -> None:

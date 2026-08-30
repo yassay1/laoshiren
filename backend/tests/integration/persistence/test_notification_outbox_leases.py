@@ -26,12 +26,24 @@ class SequenceNotificationAdapter:
         self.results = results
         self.calls: list[UUID] = []
 
-    async def submit(
-        self, notification: NotificationOutbox, *, idempotency_key: str
-    ) -> bool:
+    async def submit(self, notification: NotificationOutbox, *, idempotency_key: str) -> bool:
         assert idempotency_key == notification.occurrence_key
         self.calls.append(notification.id)
         return self.results.pop(0)
+
+
+async def _seed_outbox(container, *, user_id: UUID, automation) -> None:
+    async with container.database.automation_unit_of_work() as unit_of_work:
+        await unit_of_work.notifications.add(
+            NotificationOutbox(
+                user_id=user_id,
+                automation_id=automation.id,
+                occurrence_key=f"{automation.id}:legacy-test",
+                title=automation.title,
+                message=automation.message,
+            )
+        )
+        await unit_of_work.commit()
 
 
 async def test_outbox_retry_is_due_gated_and_concurrent_claim_is_exclusive() -> None:
@@ -40,12 +52,8 @@ async def test_outbox_retry_is_due_gated_and_concurrent_claim_is_exclusive() -> 
     user_id = UUID(container.settings.dev_user_id)
     automation_id = None
     adapter = SequenceNotificationAdapter([False, True])
-    service_a = AutomationApplicationService(
-        container.database.automation_unit_of_work, adapter
-    )
-    service_b = AutomationApplicationService(
-        container.database.automation_unit_of_work, adapter
-    )
+    service_a = AutomationApplicationService(container.database.automation_unit_of_work, adapter)
+    service_b = AutomationApplicationService(container.database.automation_unit_of_work, adapter)
     try:
         automation = await service_a.create(
             user_id=user_id,
@@ -57,11 +65,9 @@ async def test_outbox_retry_is_due_gated_and_concurrent_claim_is_exclusive() -> 
             idempotency_key=f"outbox-{uuid4()}",
         )
         automation_id = automation.id
-        assert await service_a.process_due() == 1
+        await _seed_outbox(container, user_id=user_id, automation=automation)
 
-        first = await service_a.dispatch_pending(
-            retry_base_seconds=60, retry_max_seconds=60
-        )
+        first = await service_a.dispatch_pending(retry_base_seconds=60, retry_max_seconds=60)
         immediate = await service_b.dispatch_pending()
         assert first == 0
         assert immediate == 0
@@ -119,9 +125,7 @@ async def test_adapter_success_before_ack_is_deduplicated_after_lease_takeover()
     user_id = UUID(container.settings.dev_user_id)
     automation_id = None
     adapter = RecordingNotificationAdapter()
-    service = AutomationApplicationService(
-        container.database.automation_unit_of_work, adapter
-    )
+    service = AutomationApplicationService(container.database.automation_unit_of_work, adapter)
     try:
         automation = await service.create(
             user_id=user_id,
@@ -133,7 +137,7 @@ async def test_adapter_success_before_ack_is_deduplicated_after_lease_takeover()
             idempotency_key=f"outbox-crash-{uuid4()}",
         )
         automation_id = automation.id
-        assert await service.process_due() == 1
+        await _seed_outbox(container, user_id=user_id, automation=automation)
 
         now = datetime.now(UTC)
         async with container.database.automation_unit_of_work() as unit_of_work:
@@ -145,9 +149,7 @@ async def test_adapter_success_before_ack_is_deduplicated_after_lease_takeover()
             )
             assert claimed is not None
             await unit_of_work.commit()
-        assert await adapter.submit(
-            claimed, idempotency_key=claimed.occurrence_key
-        )
+        assert await adapter.submit(claimed, idempotency_key=claimed.occurrence_key)
         # Simulate process death before the database completion acknowledgement.
         async with container.database.engine.begin() as connection:
             await connection.execute(

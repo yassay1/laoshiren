@@ -7,6 +7,20 @@ from laoshiren.application.sources.ports import SourceRepository
 from laoshiren.domain.memories.entities import Memory, MemoryStatus, MemoryType
 
 
+class MemorySuppressionRepository(Protocol):
+    async def is_suppressed(self, *, user_id: UUID, content_fingerprint: str) -> bool: ...
+
+    async def record(
+        self,
+        *,
+        user_id: UUID,
+        content_fingerprint: str,
+        memory_id: UUID | None,
+    ) -> None: ...
+
+    async def clear(self, *, user_id: UUID, content_fingerprint: str) -> None: ...
+
+
 class MemoryRepository(Protocol):
     async def add(self, memory: Memory) -> None: ...
 
@@ -14,9 +28,7 @@ class MemoryRepository(Protocol):
 
     async def get_by_idempotency(self, *, user_id: UUID, key: str) -> Memory | None: ...
 
-    async def get_active_profile(
-        self, *, user_id: UUID, profile_key: str
-    ) -> Memory | None: ...
+    async def get_active_profile(self, *, user_id: UUID, profile_key: str) -> Memory | None: ...
 
     async def search(
         self,
@@ -44,6 +56,7 @@ class MemoryUnitOfWork(Protocol):
     things: ThingRepository
     sources: SourceRepository
     memories: MemoryRepository
+    memory_suppressions: MemorySuppressionRepository
 
     async def __aenter__(self) -> Self: ...
 

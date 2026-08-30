@@ -18,15 +18,9 @@ def _enum(name: str, *values: str) -> postgresql.ENUM:
 
 def upgrade() -> None:
     automation_type = _enum("automation_type", "ONE_SHOT", "RECURRING", "CONDITION_WATCH")
-    automation_status = _enum(
-        "automation_status", "ACTIVE", "PAUSED", "COMPLETED", "CANCELLED"
-    )
-    notification_status = _enum(
-        "notification_status", "PENDING", "SUBMITTED_TO_ADAPTER", "FAILED"
-    )
-    attention_subject_type = _enum(
-        "attention_subject_type", "THING", "TASK", "DEADLINE", "BLOCKER"
-    )
+    automation_status = _enum("automation_status", "ACTIVE", "PAUSED", "COMPLETED", "CANCELLED")
+    notification_status = _enum("notification_status", "PENDING", "SUBMITTED_TO_ADAPTER", "FAILED")
+    attention_subject_type = _enum("attention_subject_type", "THING", "TASK", "DEADLINE", "BLOCKER")
     bind = op.get_bind()
     for enum in (
         automation_type,

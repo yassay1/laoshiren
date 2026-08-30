@@ -2,6 +2,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from uuid import UUID
 
+from laoshiren.application.personal_state import write_ops
 from laoshiren.application.personal_state.dto import (
     ActiveThingDTO,
     BlockedThingDTO,
@@ -11,6 +12,7 @@ from laoshiren.application.personal_state.dto import (
     StateMutationDTO,
     StateOverviewDTO,
     TaskDTO,
+    ThingContextEntryDTO,
     ThingDateDTO,
     ThingDTO,
     ThingRelationDTO,
@@ -28,6 +30,7 @@ from laoshiren.domain.personal_state.entities import (
     StateMutation,
     Task,
     Thing,
+    ThingContextEntry,
     ThingDate,
     ThingRelation,
     TimelineEvent,
@@ -39,6 +42,7 @@ from laoshiren.domain.personal_state.value_objects import (
     DateCertainty,
     DatePrecision,
     TaskStatus,
+    ThingDateType,
     ThingRelationType,
     ThingStatus,
 )
@@ -54,6 +58,8 @@ def to_thing_dto(thing: Thing) -> ThingDTO:
         status=thing.status,
         current_stage=thing.current_stage,
         deadline_at=thing.deadline_at,
+        merged_into_thing_id=thing.merged_into_thing_id,
+        deleted_at=thing.deleted_at,
         version=thing.version,
         created_at=thing.created_at,
         updated_at=thing.updated_at,
@@ -63,11 +69,14 @@ def to_thing_dto(thing: Thing) -> ThingDTO:
 def to_task_dto(task: Task) -> TaskDTO:
     return TaskDTO(
         id=task.id,
+        user_id=task.user_id,
         thing_id=task.thing_id,
         title=task.title,
         status=task.status,
         version=task.version,
         completed_at=task.completed_at,
+        due_at=task.due_at,
+        recurrence_interval_days=task.recurrence_interval_days,
         created_at=task.created_at,
         updated_at=task.updated_at,
     )
@@ -78,6 +87,7 @@ def to_thing_date_dto(thing_date: ThingDate) -> ThingDateDTO:
         id=thing_date.id,
         thing_id=thing_date.thing_id,
         kind=thing_date.kind,
+        label=thing_date.label,
         value=thing_date.value,
         timezone_name=thing_date.timezone_name,
         precision=thing_date.precision,
@@ -87,6 +97,19 @@ def to_thing_date_dto(thing_date: ThingDate) -> ThingDateDTO:
         version=thing_date.version,
         created_at=thing_date.created_at,
         updated_at=thing_date.updated_at,
+    )
+
+
+def to_context_entry_dto(entry: ThingContextEntry) -> ThingContextEntryDTO:
+    return ThingContextEntryDTO(
+        id=entry.id,
+        thing_id=entry.thing_id,
+        label=entry.label,
+        content=entry.content,
+        source_id=entry.source_id,
+        version=entry.version,
+        created_at=entry.created_at,
+        updated_at=entry.updated_at,
     )
 
 
@@ -152,12 +175,105 @@ class PersonalStateApplicationService:
     def __init__(self, unit_of_work_factory: UnitOfWorkFactory) -> None:
         self._unit_of_work_factory = unit_of_work_factory
 
+    @staticmethod
+    async def _resolve_active_thing(
+        unit_of_work: PersonalStateUnitOfWork, *, user_id: UUID, thing_id: UUID
+    ) -> Thing:
+        current_id = thing_id
+        seen: set[UUID] = set()
+        while True:
+            if current_id in seen:
+                raise RuntimeError("Thing merge redirect cycle detected.")
+            seen.add(current_id)
+            thing = await unit_of_work.things.get_including_deleted(
+                user_id=user_id, thing_id=current_id
+            )
+            if thing is None or thing.deleted_at is not None:
+                raise EntityNotFound("Thing was not found.")
+            if thing.merged_into_thing_id is None:
+                return thing
+            current_id = thing.merged_into_thing_id
+
     async def get_thing(self, *, user_id: UUID, thing_id: UUID) -> ThingDTO:
         async with self._unit_of_work_factory() as unit_of_work:
-            thing = await unit_of_work.things.get(user_id=user_id, thing_id=thing_id)
-            if thing is None:
+            thing = await unit_of_work.things.get_including_deleted(
+                user_id=user_id, thing_id=thing_id
+            )
+            if thing is None or thing.deleted_at is not None:
                 raise EntityNotFound("Thing was not found.")
             return to_thing_dto(thing)
+
+    async def get_thing_context_snapshot(
+        self, *, user_id: UUID, thing_id: UUID
+    ) -> dict[str, object]:
+        async with self._unit_of_work_factory() as unit_of_work:
+            thing = await self._resolve_active_thing(
+                unit_of_work, user_id=user_id, thing_id=thing_id
+            )
+            resolved_id = thing.id
+            tasks = await unit_of_work.tasks.list_for_thing(user_id=user_id, thing_id=resolved_id)
+            dates = await unit_of_work.dates.list_for_thing(
+                user_id=user_id, thing_id=resolved_id, limit=100
+            )
+            blockers = await unit_of_work.blockers.list_for_thing(
+                user_id=user_id, thing_id=resolved_id
+            )
+            entries = await unit_of_work.context_entries.list_for_thing(
+                user_id=user_id, thing_id=resolved_id
+            )
+            payload: dict[str, object] = {
+                "thing": {
+                    "id": str(thing.id),
+                    "name": thing.name,
+                    "status": thing.status.value,
+                    "current_stage": thing.current_stage,
+                    "version": thing.version,
+                    "deadline_at": thing.deadline_at.isoformat() if thing.deadline_at else None,
+                },
+                "context_entries": [
+                    {
+                        "id": str(entry.id),
+                        "label": entry.label,
+                        "content": entry.content,
+                        "version": entry.version,
+                    }
+                    for entry in entries
+                ],
+                "tasks": [
+                    {
+                        "id": str(task.id),
+                        "title": task.title,
+                        "status": task.status.value,
+                        "version": task.version,
+                    }
+                    for task in tasks
+                ],
+                "dates": [
+                    {
+                        "id": str(date.id),
+                        "kind": date.kind.value,
+                        "value": date.value.isoformat(),
+                        "certainty": date.certainty.value,
+                        "is_primary": date.is_primary,
+                        "version": date.version,
+                    }
+                    for date in dates
+                ],
+                "open_blockers": [
+                    {
+                        "id": str(blocker.id),
+                        "description": blocker.description,
+                        "severity": blocker.severity.value,
+                        "version": blocker.version,
+                    }
+                    for blocker in blockers
+                    if blocker.status.value == "OPEN"
+                ],
+            }
+            if resolved_id != thing_id:
+                payload["requested_thing_id"] = str(thing_id)
+                payload["resolved_thing_id"] = str(resolved_id)
+            return payload
 
     async def get_things(
         self,
@@ -185,6 +301,11 @@ class PersonalStateApplicationService:
             tasks = await unit_of_work.tasks.list_for_thing(user_id=user_id, thing_id=thing_id)
             return [to_task_dto(task) for task in tasks]
 
+    async def get_standalone_tasks(self, *, user_id: UUID) -> list[TaskDTO]:
+        async with self._unit_of_work_factory() as unit_of_work:
+            tasks = await unit_of_work.tasks.list_standalone(user_id=user_id)
+            return [to_task_dto(task) for task in tasks]
+
     async def get_dates(
         self, *, user_id: UUID, thing_id: UUID, limit: int = 100
     ) -> list[ThingDateDTO]:
@@ -198,6 +319,50 @@ class PersonalStateApplicationService:
                 user_id=user_id, thing_id=thing_id, limit=limit
             )
             return [to_thing_date_dto(thing_date) for thing_date in dates]
+
+    async def get_context_entries(
+        self, *, user_id: UUID, thing_id: UUID
+    ) -> list[ThingContextEntryDTO]:
+        async with self._unit_of_work_factory() as unit_of_work:
+            if await unit_of_work.things.get(user_id=user_id, thing_id=thing_id) is None:
+                raise EntityNotFound("Thing was not found.")
+            entries = await unit_of_work.context_entries.list_for_thing(
+                user_id=user_id, thing_id=thing_id
+            )
+            return [to_context_entry_dto(entry) for entry in entries]
+
+    async def set_thing_context(
+        self,
+        *,
+        user_id: UUID,
+        thing_id: UUID,
+        label: str,
+        content: str,
+        entry_id: UUID | None,
+        expected_version: int | None,
+        source_id: UUID | None,
+        action_id: str,
+        idempotency_key: str,
+        reason: str,
+        run_id: UUID | None = None,
+    ) -> MutationResultDTO:
+        async with self._unit_of_work_factory() as unit_of_work:
+            outcome = await write_ops.apply_set_thing_context(
+                unit_of_work,
+                user_id=user_id,
+                thing_id=thing_id,
+                label=label,
+                content=content,
+                entry_id=entry_id,
+                expected_version=expected_version,
+                source_id=source_id,
+                action_id=action_id,
+                idempotency_key=idempotency_key,
+                reason=reason,
+                run_id=run_id,
+            )
+            await unit_of_work.commit()
+            return write_ops.mutation_result_from_outcome(outcome)
 
     async def get_timeline(
         self,
@@ -244,9 +409,7 @@ class PersonalStateApplicationService:
             )
             return [to_blocker_dto(blocker) for blocker in blockers]
 
-    async def get_relations(
-        self, *, user_id: UUID, thing_id: UUID
-    ) -> list[ThingRelationDTO]:
+    async def get_relations(self, *, user_id: UUID, thing_id: UUID) -> list[ThingRelationDTO]:
         async with self._unit_of_work_factory() as unit_of_work:
             if await unit_of_work.things.get(user_id=user_id, thing_id=thing_id) is None:
                 raise EntityNotFound("Thing was not found.")
@@ -344,113 +507,56 @@ class PersonalStateApplicationService:
         reason: str,
         run_id: UUID | None = None,
     ) -> ThingDTO:
-        normalized_name = name.strip()
-        if not normalized_name:
-            raise ValueError("Thing name must not be empty.")
         async with self._unit_of_work_factory() as unit_of_work:
-            previous = await unit_of_work.audit.get_mutation(
-                user_id=user_id, idempotency_key=idempotency_key
-            )
-            if previous is not None:
-                thing = await unit_of_work.things.get(user_id=user_id, thing_id=previous.target_id)
-                if thing is None:
-                    raise RuntimeError("Idempotent Thing creation points to a missing Thing.")
-                return to_thing_dto(thing)
-
-            await unit_of_work.users.ensure_exists(user_id)
-            thing = Thing(user_id=user_id, name=normalized_name)
-            await unit_of_work.things.add(thing)
-            await unit_of_work.flush()
-            mutation = StateMutation(
+            outcome = await write_ops.apply_create_thing(
+                unit_of_work,
                 user_id=user_id,
-                thing_id=thing.id,
-                run_id=run_id,
+                name=name,
                 action_id=action_id,
-                mutation_type="THING_CREATED",
-                target_type="THING",
-                target_id=thing.id,
-                after={
-                    "name": thing.name,
-                    "status": thing.status.value,
-                    "version": thing.version,
-                },
-                reason=reason,
                 idempotency_key=idempotency_key,
-            )
-            await unit_of_work.audit.add_mutation(mutation)
-            await unit_of_work.flush()
-            await unit_of_work.audit.add_timeline_event(
-                TimelineEvent(
-                    user_id=user_id,
-                    thing_id=thing.id,
-                    event_type="THING_CREATED",
-                    title=f"创建事务：{thing.name}",
-                    occurred_at=thing.created_at,
-                    mutation_id=mutation.id,
-                )
+                reason=reason,
+                run_id=run_id,
             )
             await unit_of_work.commit()
+            thing = await unit_of_work.things.get(
+                user_id=user_id, thing_id=UUID(str(outcome.data["id"]))
+            )
+            if thing is None:
+                raise RuntimeError("Thing creation did not persist.")
             return to_thing_dto(thing)
 
     async def create_task(
         self,
         *,
         user_id: UUID,
-        thing_id: UUID,
+        thing_id: UUID | None,
         title: str,
+        due_at: datetime | None = None,
+        recurrence_interval_days: int | None = None,
         action_id: str,
         idempotency_key: str,
         reason: str,
         run_id: UUID | None = None,
     ) -> TaskDTO:
-        normalized_title = title.strip()
-        if not normalized_title:
-            raise ValueError("Task title must not be empty.")
         async with self._unit_of_work_factory() as unit_of_work:
-            previous = await unit_of_work.audit.get_mutation(
-                user_id=user_id, idempotency_key=idempotency_key
-            )
-            if previous is not None:
-                task = await unit_of_work.tasks.get(user_id=user_id, task_id=previous.target_id)
-                if task is None:
-                    raise RuntimeError("Idempotent Task creation points to a missing Task.")
-                return to_task_dto(task)
-
-            thing = await unit_of_work.things.get(user_id=user_id, thing_id=thing_id)
-            if thing is None:
-                raise EntityNotFound("Thing was not found.")
-            task = Task(thing_id=thing.id, title=normalized_title)
-            await unit_of_work.tasks.add(task)
-            await unit_of_work.flush()
-            mutation = StateMutation(
+            outcome = await write_ops.apply_create_task(
+                unit_of_work,
                 user_id=user_id,
-                thing_id=thing.id,
-                run_id=run_id,
+                thing_id=thing_id,
+                title=title,
+                due_at=due_at,
+                recurrence_interval_days=recurrence_interval_days,
                 action_id=action_id,
-                mutation_type="TASK_CREATED",
-                target_type="TASK",
-                target_id=task.id,
-                after={
-                    "title": task.title,
-                    "status": task.status.value,
-                    "version": task.version,
-                },
-                reason=reason,
                 idempotency_key=idempotency_key,
-            )
-            await unit_of_work.audit.add_mutation(mutation)
-            await unit_of_work.flush()
-            await unit_of_work.audit.add_timeline_event(
-                TimelineEvent(
-                    user_id=user_id,
-                    thing_id=thing.id,
-                    event_type="TASK_CREATED",
-                    title=f"创建任务：{task.title}",
-                    occurred_at=task.created_at,
-                    mutation_id=mutation.id,
-                )
+                reason=reason,
+                run_id=run_id,
             )
             await unit_of_work.commit()
+            task = await unit_of_work.tasks.get(
+                user_id=user_id, task_id=UUID(str(outcome.data["id"]))
+            )
+            if task is None:
+                raise RuntimeError("Task creation did not persist.")
             return to_task_dto(task)
 
     async def complete_task(
@@ -465,72 +571,25 @@ class PersonalStateApplicationService:
         run_id: UUID | None = None,
     ) -> MutationResultDTO:
         async with self._unit_of_work_factory() as unit_of_work:
-            previous = await unit_of_work.audit.get_mutation(
-                user_id=user_id, idempotency_key=idempotency_key
-            )
-            if previous is not None:
-                previous_version = previous.after.get("version")
-                if not isinstance(previous_version, int):
-                    raise RuntimeError("Stored mutation is missing a valid target version.")
-                return MutationResultDTO(
-                    mutation_id=previous.id,
-                    target_id=previous.target_id,
-                    target_version=previous_version,
-                    replayed=True,
-                )
-
-            task = await unit_of_work.tasks.get(user_id=user_id, task_id=task_id)
-            if task is None:
-                raise EntityNotFound("Task was not found.")
-            if task.version != expected_version:
-                raise VersionConflict("Task version is stale.")
-
-            before: dict[str, object] = {
-                "status": task.status.value,
-                "version": task.version,
-            }
-            task.complete()
-            updated = await unit_of_work.tasks.update(task, expected_version=expected_version)
-            if not updated:
-                raise VersionConflict("Task was updated concurrently.")
-
-            mutation = StateMutation(
+            outcome = await write_ops.apply_complete_task(
+                unit_of_work,
                 user_id=user_id,
-                thing_id=task.thing_id,
-                run_id=run_id,
+                task_id=task_id,
+                expected_version=expected_version,
                 action_id=action_id,
-                mutation_type="TASK_COMPLETED",
-                target_type="TASK",
-                target_id=task.id,
-                before=before,
-                after={"status": TaskStatus.DONE.value, "version": task.version},
-                reason=reason,
                 idempotency_key=idempotency_key,
+                reason=reason,
+                run_id=run_id,
             )
-            timeline = TimelineEvent(
-                user_id=user_id,
-                thing_id=task.thing_id,
-                event_type="TASK_COMPLETED",
-                title=f"{task.title}已完成",
-                occurred_at=task.completed_at or utc_now(),
-                mutation_id=mutation.id,
-            )
-            await unit_of_work.audit.add_mutation(mutation)
-            await unit_of_work.flush()
-            await unit_of_work.audit.add_timeline_event(timeline)
             await unit_of_work.commit()
-            return MutationResultDTO(
-                mutation_id=mutation.id,
-                target_id=task.id,
-                target_version=task.version,
-            )
+            return write_ops.mutation_result_from_outcome(outcome)
 
     async def set_deadline(
         self,
         *,
         user_id: UUID,
         thing_id: UUID,
-        kind: str,
+        kind: ThingDateType,
         value: datetime,
         timezone_name: str,
         precision: DatePrecision,
@@ -540,103 +599,31 @@ class PersonalStateApplicationService:
         action_id: str,
         idempotency_key: str,
         reason: str,
+        label: str | None = None,
         run_id: UUID | None = None,
         source_id: UUID | None = None,
     ) -> MutationResultDTO:
-        if value.tzinfo is None:
-            raise ValueError("Deadline must include timezone information.")
-        if not kind.strip() or not timezone_name.strip():
-            raise ValueError("Deadline kind and timezone must not be empty.")
-        if is_primary and certainty is not DateCertainty.CONFIRMED:
-            raise ValueError("Only a confirmed date can become the primary deadline.")
-
         async with self._unit_of_work_factory() as unit_of_work:
-            previous = await unit_of_work.audit.get_mutation(
-                user_id=user_id, idempotency_key=idempotency_key
-            )
-            if previous is not None:
-                previous_version = previous.after.get("thing_version")
-                if not isinstance(previous_version, int):
-                    raise RuntimeError("Stored deadline mutation is missing Thing version.")
-                return MutationResultDTO(
-                    mutation_id=previous.id,
-                    target_id=previous.target_id,
-                    target_version=previous_version,
-                    replayed=True,
-                )
-
-            thing = await unit_of_work.things.get(user_id=user_id, thing_id=thing_id)
-            if thing is None:
-                raise EntityNotFound("Thing was not found.")
-            if thing.version != expected_version:
-                raise VersionConflict("Thing version is stale.")
-            if source_id is not None and await unit_of_work.sources.get(
-                user_id=user_id, source_id=source_id
-            ) is None:
-                raise EntityNotFound("Source was not found.")
-
-            previous_deadline = thing.deadline_at
-            thing_date = ThingDate(
-                thing_id=thing.id,
-                kind=kind.strip(),
+            outcome = await write_ops.apply_set_deadline(
+                unit_of_work,
+                user_id=user_id,
+                thing_id=thing_id,
+                kind=kind,
                 value=value,
-                timezone_name=timezone_name.strip(),
+                timezone_name=timezone_name,
                 precision=precision,
                 certainty=certainty,
                 is_primary=is_primary,
+                expected_version=expected_version,
+                action_id=action_id,
+                idempotency_key=idempotency_key,
+                reason=reason,
+                label=label,
+                run_id=run_id,
                 source_id=source_id,
             )
-            if is_primary:
-                thing.set_primary_deadline(value)
-                updated = await unit_of_work.things.update(thing, expected_version=expected_version)
-                if not updated:
-                    raise VersionConflict("Thing was updated concurrently.")
-                await unit_of_work.dates.unset_primary(thing_id=thing.id, kind=thing_date.kind)
-
-            await unit_of_work.dates.add(thing_date)
-            await unit_of_work.flush()
-            mutation = StateMutation(
-                user_id=user_id,
-                thing_id=thing.id,
-                run_id=run_id,
-                action_id=action_id,
-                mutation_type="DEADLINE_SET",
-                target_type="THING_DATE",
-                target_id=thing_date.id,
-                before={
-                    "deadline_at": previous_deadline.isoformat()
-                    if previous_deadline is not None
-                    else None,
-                    "thing_version": expected_version,
-                },
-                after={
-                    "value": value.isoformat(),
-                    "certainty": certainty.value,
-                    "is_primary": is_primary,
-                    "source_id": str(source_id) if source_id is not None else None,
-                    "thing_version": thing.version,
-                },
-                reason=reason,
-                idempotency_key=idempotency_key,
-            )
-            await unit_of_work.audit.add_mutation(mutation)
-            await unit_of_work.flush()
-            await unit_of_work.audit.add_timeline_event(
-                TimelineEvent(
-                    user_id=user_id,
-                    thing_id=thing.id,
-                    event_type="DEADLINE_CHANGED" if is_primary else "IMPORTANT_DATE_ADDED",
-                    title=f"设置日期：{thing_date.kind}",
-                    occurred_at=utc_now(),
-                    mutation_id=mutation.id,
-                )
-            )
             await unit_of_work.commit()
-            return MutationResultDTO(
-                mutation_id=mutation.id,
-                target_id=thing_date.id,
-                target_version=thing.version,
-            )
+            return write_ops.mutation_result_from_outcome(outcome)
 
     async def transition_task(
         self,
@@ -650,53 +637,18 @@ class PersonalStateApplicationService:
         reason: str,
     ) -> MutationResultDTO:
         async with self._unit_of_work_factory() as unit_of_work:
-            previous = await unit_of_work.audit.get_mutation(
-                user_id=user_id, idempotency_key=idempotency_key
-            )
-            if previous is not None:
-                version = previous.after.get("version")
-                if not isinstance(version, int):
-                    raise RuntimeError("Stored Task mutation is missing target version.")
-                return MutationResultDTO(previous.id, previous.target_id, version, True)
-            task = await unit_of_work.tasks.get(user_id=user_id, task_id=task_id)
-            if task is None:
-                raise EntityNotFound("Task was not found.")
-            if task.version != expected_version:
-                raise VersionConflict("Task version is stale.")
-            before_status = task.status
-            task.transition_to(target_status)
-            if task.version == expected_version:
-                raise ValueError("Task already has the requested status.")
-            if not await unit_of_work.tasks.update(task, expected_version=expected_version):
-                raise VersionConflict("Task was updated concurrently.")
-            mutation = StateMutation(
+            outcome = await write_ops.apply_transition_task(
+                unit_of_work,
                 user_id=user_id,
-                thing_id=task.thing_id,
+                task_id=task_id,
+                target_status=target_status,
+                expected_version=expected_version,
                 action_id=action_id,
-                mutation_type="TASK_STATUS_CHANGED",
-                target_type="TASK",
-                target_id=task.id,
-                before={"status": before_status.value, "version": expected_version},
-                after={"status": task.status.value, "version": task.version},
-                reason=reason,
                 idempotency_key=idempotency_key,
-            )
-            await unit_of_work.audit.add_mutation(mutation)
-            await unit_of_work.flush()
-            await unit_of_work.audit.add_timeline_event(
-                TimelineEvent(
-                    user_id=user_id,
-                    thing_id=task.thing_id,
-                    event_type="TASK_COMPLETED"
-                    if task.status is TaskStatus.DONE
-                    else "TASK_STATUS_CHANGED",
-                    title=f"任务状态变更：{task.title} → {task.status.value}",
-                    occurred_at=task.updated_at,
-                    mutation_id=mutation.id,
-                )
+                reason=reason,
             )
             await unit_of_work.commit()
-            return MutationResultDTO(mutation.id, task.id, task.version)
+            return write_ops.mutation_result_from_outcome(outcome)
 
     async def update_date(
         self,
@@ -715,89 +667,23 @@ class PersonalStateApplicationService:
         reason: str,
     ) -> MutationResultDTO:
         async with self._unit_of_work_factory() as unit_of_work:
-            previous = await unit_of_work.audit.get_mutation(
-                user_id=user_id, idempotency_key=idempotency_key
-            )
-            if previous is not None:
-                version = previous.after.get("date_version")
-                if not isinstance(version, int):
-                    raise RuntimeError("Stored date mutation is missing target version.")
-                return MutationResultDTO(previous.id, previous.target_id, version, True)
-            thing_date = await unit_of_work.dates.get(user_id=user_id, date_id=date_id)
-            if thing_date is None:
-                raise EntityNotFound("ThingDate was not found.")
-            if thing_date.version != expected_version:
-                raise VersionConflict("ThingDate version is stale.")
-            thing = await unit_of_work.things.get(
-                user_id=user_id, thing_id=thing_date.thing_id
-            )
-            if thing is None:
-                raise EntityNotFound("Thing was not found.")
-            if thing.version != expected_thing_version:
-                raise VersionConflict("Thing version is stale.")
-            before: dict[str, object] = {
-                "value": thing_date.value.isoformat(),
-                "certainty": thing_date.certainty.value,
-                "is_primary": thing_date.is_primary,
-                "date_version": thing_date.version,
-                "thing_version": thing.version,
-            }
-            was_primary = thing_date.is_primary
-            thing_date.revise(
+            outcome = await write_ops.apply_update_date(
+                unit_of_work,
+                user_id=user_id,
+                date_id=date_id,
                 value=value,
                 timezone_name=timezone_name,
                 precision=precision,
                 certainty=certainty,
                 is_primary=is_primary,
-            )
-            if is_primary:
-                await unit_of_work.dates.unset_primary(
-                    thing_id=thing.id, kind=thing_date.kind
-                )
-                thing.set_primary_deadline(value)
-            elif was_primary:
-                thing.deadline_at = None
-                thing.touch()
-            if thing.version != expected_thing_version and not await unit_of_work.things.update(
-                thing, expected_version=expected_thing_version
-            ):
-                raise VersionConflict("Thing was updated concurrently.")
-            if not await unit_of_work.dates.update(
-                thing_date, expected_version=expected_version
-            ):
-                raise VersionConflict("ThingDate was updated concurrently.")
-            mutation = StateMutation(
-                user_id=user_id,
-                thing_id=thing.id,
+                expected_version=expected_version,
+                expected_thing_version=expected_thing_version,
                 action_id=action_id,
-                mutation_type="DATE_UPDATED",
-                target_type="THING_DATE",
-                target_id=thing_date.id,
-                before=before,
-                after={
-                    "value": thing_date.value.isoformat(),
-                    "certainty": thing_date.certainty.value,
-                    "is_primary": thing_date.is_primary,
-                    "date_version": thing_date.version,
-                    "thing_version": thing.version,
-                },
-                reason=reason,
                 idempotency_key=idempotency_key,
-            )
-            await unit_of_work.audit.add_mutation(mutation)
-            await unit_of_work.flush()
-            await unit_of_work.audit.add_timeline_event(
-                TimelineEvent(
-                    user_id=user_id,
-                    thing_id=thing.id,
-                    event_type="DEADLINE_CHANGED" if is_primary or was_primary else "DATE_CHANGED",
-                    title=f"更新日期：{thing_date.kind}",
-                    occurred_at=thing_date.updated_at,
-                    mutation_id=mutation.id,
-                )
+                reason=reason,
             )
             await unit_of_work.commit()
-            return MutationResultDTO(mutation.id, thing_date.id, thing_date.version)
+            return write_ops.mutation_result_from_outcome(outcome)
 
     async def create_blocker(
         self,
@@ -812,65 +698,25 @@ class PersonalStateApplicationService:
         idempotency_key: str,
         reason: str,
     ) -> BlockerDTO:
-        normalized = description.strip()
-        if not normalized:
-            raise ValueError("Blocker description must not be empty.")
         async with self._unit_of_work_factory() as unit_of_work:
-            previous = await unit_of_work.audit.get_mutation(
-                user_id=user_id, idempotency_key=idempotency_key
-            )
-            if previous is not None:
-                blocker = await unit_of_work.blockers.get(
-                    user_id=user_id, blocker_id=previous.target_id
-                )
-                if blocker is None:
-                    raise RuntimeError("Idempotent Blocker creation points to missing data.")
-                return to_blocker_dto(blocker)
-            if await unit_of_work.things.get(user_id=user_id, thing_id=thing_id) is None:
-                raise EntityNotFound("Thing was not found.")
-            if task_id is not None:
-                task = await unit_of_work.tasks.get(user_id=user_id, task_id=task_id)
-                if task is None or task.thing_id != thing_id:
-                    raise EntityNotFound("Task was not found in this Thing.")
-            if source_id is not None and await unit_of_work.sources.get(
-                user_id=user_id, source_id=source_id
-            ) is None:
-                raise EntityNotFound("Source was not found.")
-            blocker = Blocker(
-                thing_id=thing_id,
-                task_id=task_id,
-                description=normalized,
-                severity=severity,
-                source_id=source_id,
-            )
-            await unit_of_work.blockers.add(blocker)
-            await unit_of_work.flush()
-            mutation = StateMutation(
+            outcome = await write_ops.apply_create_blocker(
+                unit_of_work,
                 user_id=user_id,
                 thing_id=thing_id,
-                action_id=action_id,
-                mutation_type="BLOCKER_ADDED",
-                target_type="BLOCKER",
-                target_id=blocker.id,
-                after={"status": blocker.status.value, "version": blocker.version},
-                reason=reason,
+                description=description,
+                severity=severity,
+                task_id=task_id,
                 source_id=source_id,
+                action_id=action_id,
                 idempotency_key=idempotency_key,
-            )
-            await unit_of_work.audit.add_mutation(mutation)
-            await unit_of_work.flush()
-            await unit_of_work.audit.add_timeline_event(
-                TimelineEvent(
-                    user_id=user_id,
-                    thing_id=thing_id,
-                    event_type="BLOCKER_ADDED",
-                    title=f"新增阻碍：{blocker.description}",
-                    occurred_at=blocker.blocked_since,
-                    source_id=source_id,
-                    mutation_id=mutation.id,
-                )
+                reason=reason,
             )
             await unit_of_work.commit()
+            blocker = await unit_of_work.blockers.get(
+                user_id=user_id, blocker_id=UUID(str(outcome.data["id"]))
+            )
+            if blocker is None:
+                raise RuntimeError("Blocker creation did not persist.")
             return to_blocker_dto(blocker)
 
     async def resolve_blocker(
@@ -884,52 +730,17 @@ class PersonalStateApplicationService:
         reason: str,
     ) -> MutationResultDTO:
         async with self._unit_of_work_factory() as unit_of_work:
-            previous = await unit_of_work.audit.get_mutation(
-                user_id=user_id, idempotency_key=idempotency_key
-            )
-            if previous is not None:
-                version = previous.after.get("version")
-                if not isinstance(version, int):
-                    raise RuntimeError("Stored Blocker mutation is missing target version.")
-                return MutationResultDTO(previous.id, previous.target_id, version, True)
-            blocker = await unit_of_work.blockers.get(
-                user_id=user_id, blocker_id=blocker_id
-            )
-            if blocker is None:
-                raise EntityNotFound("Blocker was not found.")
-            if blocker.version != expected_version:
-                raise VersionConflict("Blocker version is stale.")
-            blocker.resolve()
-            if not await unit_of_work.blockers.update(
-                blocker, expected_version=expected_version
-            ):
-                raise VersionConflict("Blocker was updated concurrently.")
-            mutation = StateMutation(
+            outcome = await write_ops.apply_resolve_blocker(
+                unit_of_work,
                 user_id=user_id,
-                thing_id=blocker.thing_id,
+                blocker_id=blocker_id,
+                expected_version=expected_version,
                 action_id=action_id,
-                mutation_type="BLOCKER_RESOLVED",
-                target_type="BLOCKER",
-                target_id=blocker.id,
-                before={"status": "OPEN", "version": expected_version},
-                after={"status": blocker.status.value, "version": blocker.version},
-                reason=reason,
                 idempotency_key=idempotency_key,
-            )
-            await unit_of_work.audit.add_mutation(mutation)
-            await unit_of_work.flush()
-            await unit_of_work.audit.add_timeline_event(
-                TimelineEvent(
-                    user_id=user_id,
-                    thing_id=blocker.thing_id,
-                    event_type="BLOCKER_RESOLVED",
-                    title=f"解决阻碍：{blocker.description}",
-                    occurred_at=blocker.resolved_at or utc_now(),
-                    mutation_id=mutation.id,
-                )
+                reason=reason,
             )
             await unit_of_work.commit()
-            return MutationResultDTO(mutation.id, blocker.id, blocker.version)
+            return write_ops.mutation_result_from_outcome(outcome)
 
     async def add_relation(
         self,
@@ -944,9 +755,12 @@ class PersonalStateApplicationService:
         reason: str,
     ) -> bool:
         async with self._unit_of_work_factory() as unit_of_work:
-            if await unit_of_work.audit.get_mutation(
-                user_id=user_id, idempotency_key=idempotency_key
-            ) is not None:
+            if (
+                await unit_of_work.audit.get_mutation(
+                    user_id=user_id, idempotency_key=idempotency_key
+                )
+                is not None
+            ):
                 return False
             for thing_id in (from_thing_id, to_thing_id):
                 if await unit_of_work.things.get(user_id=user_id, thing_id=thing_id) is None:
@@ -1086,9 +900,10 @@ class PersonalStateApplicationService:
         self, *, user_id: UUID, thing_id: UUID, match_reason: str
     ) -> dict[str, object]:
         thing = await self.get_thing(user_id=user_id, thing_id=thing_id)
-        tasks = await self.get_tasks(user_id=user_id, thing_id=thing_id)
-        blockers = await self.get_blockers(user_id=user_id, thing_id=thing_id)
-        dates = await self.get_dates(user_id=user_id, thing_id=thing_id)
+        resolved_id = thing.merged_into_thing_id or thing.id
+        tasks = await self.get_tasks(user_id=user_id, thing_id=resolved_id)
+        blockers = await self.get_blockers(user_id=user_id, thing_id=resolved_id)
+        dates = await self.get_dates(user_id=user_id, thing_id=resolved_id)
         return thing_prefetch_payload(
             thing=thing,
             tasks=tasks,
@@ -1096,6 +911,35 @@ class PersonalStateApplicationService:
             dates=dates,
             match_reason=match_reason,
         )
+
+    async def merge_things(
+        self,
+        *,
+        user_id: UUID,
+        canonical_thing_id: UUID,
+        duplicate_thing_id: UUID,
+        expected_canonical_version: int,
+        expected_duplicate_version: int,
+        action_id: str,
+        idempotency_key: str,
+        reason: str,
+        run_id: UUID | None = None,
+    ) -> MutationResultDTO:
+        async with self._unit_of_work_factory() as unit_of_work:
+            outcome = await write_ops.apply_merge_things(
+                unit_of_work,
+                user_id=user_id,
+                canonical_thing_id=canonical_thing_id,
+                duplicate_thing_id=duplicate_thing_id,
+                expected_canonical_version=expected_canonical_version,
+                expected_duplicate_version=expected_duplicate_version,
+                action_id=action_id,
+                idempotency_key=idempotency_key,
+                reason=reason,
+                run_id=run_id,
+            )
+            await unit_of_work.commit()
+            return write_ops.mutation_result_from_outcome(outcome)
 
     async def archive_thing(
         self,
@@ -1154,78 +998,41 @@ class PersonalStateApplicationService:
         archive: bool,
     ) -> MutationResultDTO:
         async with self._unit_of_work_factory() as unit_of_work:
-            previous = await unit_of_work.audit.get_mutation(
-                user_id=user_id, idempotency_key=idempotency_key
-            )
-            if previous is not None:
-                version = previous.after.get("version")
-                if not isinstance(version, int):
-                    raise RuntimeError("Stored archive mutation is missing its target version.")
-                return MutationResultDTO(
-                    mutation_id=previous.id,
-                    target_id=previous.target_id,
-                    target_version=version,
-                    replayed=True,
-                )
-
-            thing = await unit_of_work.things.get(user_id=user_id, thing_id=thing_id)
-            if thing is None:
-                raise EntityNotFound("Thing was not found.")
-            if thing.version != expected_version:
-                raise VersionConflict("Thing version is stale.")
-
-            before: dict[str, object] = {
-                "archived_at": (
-                    thing.archived_at.isoformat() if thing.archived_at is not None else None
-                ),
-                "version": thing.version,
-            }
-            if archive:
-                thing.archive()
-                mutation_type = "THING_ARCHIVED"
-                event_type = "THING_ARCHIVED"
-                title = f"归档事务：{thing.name}"
-            else:
-                thing.unarchive()
-                mutation_type = "THING_UNARCHIVED"
-                event_type = "THING_UNARCHIVED"
-                title = f"恢复事务：{thing.name}"
-            if not await unit_of_work.things.update(thing, expected_version=expected_version):
-                raise VersionConflict("Thing was updated concurrently.")
-
-            mutation = StateMutation(
+            outcome = await write_ops.apply_change_archive(
+                unit_of_work,
                 user_id=user_id,
-                thing_id=thing.id,
-                run_id=run_id,
+                thing_id=thing_id,
+                expected_version=expected_version,
                 action_id=action_id,
-                mutation_type=mutation_type,
-                target_type="THING",
-                target_id=thing.id,
-                before=before,
-                after={
-                    "archived_at": (
-                        thing.archived_at.isoformat() if thing.archived_at is not None else None
-                    ),
-                    "version": thing.version,
-                },
-                reason=reason,
                 idempotency_key=idempotency_key,
-            )
-            await unit_of_work.audit.add_mutation(mutation)
-            await unit_of_work.flush()
-            await unit_of_work.audit.add_timeline_event(
-                TimelineEvent(
-                    user_id=user_id,
-                    thing_id=thing.id,
-                    event_type=event_type,
-                    title=title,
-                    occurred_at=thing.updated_at,
-                    mutation_id=mutation.id,
-                )
+                reason=reason,
+                run_id=run_id,
+                archive=archive,
             )
             await unit_of_work.commit()
-            return MutationResultDTO(
-                mutation_id=mutation.id,
-                target_id=thing.id,
-                target_version=thing.version,
+            return write_ops.mutation_result_from_outcome(outcome)
+
+    async def delete_thing(
+        self,
+        *,
+        user_id: UUID,
+        thing_id: UUID,
+        expected_version: int,
+        action_id: str,
+        idempotency_key: str,
+        reason: str,
+        run_id: UUID | None = None,
+    ) -> MutationResultDTO:
+        async with self._unit_of_work_factory() as unit_of_work:
+            outcome = await write_ops.apply_delete_thing(
+                unit_of_work,
+                user_id=user_id,
+                thing_id=thing_id,
+                expected_version=expected_version,
+                action_id=action_id,
+                idempotency_key=idempotency_key,
+                reason=reason,
+                run_id=run_id,
             )
+            await unit_of_work.commit()
+            return write_ops.mutation_result_from_outcome(outcome)

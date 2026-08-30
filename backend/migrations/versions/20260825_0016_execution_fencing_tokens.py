@@ -15,8 +15,7 @@ def upgrade() -> None:
     op.add_column("agent_runs", sa.Column("claim_token", sa.Uuid()))
     op.add_column("tool_executions", sa.Column("claim_token", sa.Uuid()))
     op.execute(
-        "UPDATE tool_executions SET claim_token = gen_random_uuid() "
-        "WHERE claim_token IS NULL"
+        "UPDATE tool_executions SET claim_token = gen_random_uuid() WHERE claim_token IS NULL"
     )
     op.alter_column("tool_executions", "claim_token", nullable=False)
 

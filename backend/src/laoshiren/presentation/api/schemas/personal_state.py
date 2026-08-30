@@ -7,6 +7,7 @@ from laoshiren.application.personal_state.dto import (
     BlockerDTO,
     StateMutationDTO,
     TaskDTO,
+    ThingContextEntryDTO,
     ThingDateDTO,
     ThingDTO,
     ThingRelationDTO,
@@ -18,6 +19,7 @@ from laoshiren.domain.personal_state.value_objects import (
     DateCertainty,
     DatePrecision,
     TaskStatus,
+    ThingDateType,
     ThingRelationType,
     ThingStatus,
 )
@@ -25,6 +27,13 @@ from laoshiren.domain.personal_state.value_objects import (
 
 class CreateThingRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
+
+
+class MergeThingsRequest(BaseModel):
+    duplicate_thing_id: UUID
+    expected_canonical_version: int = Field(ge=1)
+    expected_duplicate_version: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=500)
 
 
 class UpdateThingRequest(BaseModel):
@@ -44,6 +53,7 @@ class ThingResponse(BaseModel):
     status: ThingStatus
     current_stage: str | None
     deadline_at: datetime | None
+    merged_into_thing_id: UUID | None
     version: int
     created_at: datetime
     updated_at: datetime
@@ -55,10 +65,13 @@ class ThingResponse(BaseModel):
 
 class CreateTaskRequest(BaseModel):
     title: str = Field(min_length=1, max_length=300)
+    due_at: datetime | None = None
+    recurrence_interval_days: int | None = Field(default=None, ge=1)
 
 
 class SetDeadlineRequest(BaseModel):
-    kind: str = Field(min_length=1, max_length=50)
+    kind: ThingDateType
+    label: str | None = Field(default=None, max_length=200)
     value: datetime
     timezone: str = Field(min_length=1, max_length=100)
     precision: DatePrecision
@@ -74,7 +87,8 @@ class ThingDateResponse(BaseModel):
 
     id: UUID
     thing_id: UUID
-    kind: str
+    kind: ThingDateType
+    label: str | None
     value: datetime
     timezone_name: str
     precision: DatePrecision
@@ -87,6 +101,31 @@ class ThingDateResponse(BaseModel):
 
     @classmethod
     def from_dto(cls, value: ThingDateDTO) -> "ThingDateResponse":
+        return cls.model_validate(value)
+
+
+class SetThingContextRequest(BaseModel):
+    label: str = Field(min_length=1, max_length=120)
+    content: str = Field(min_length=1, max_length=10000)
+    entry_id: UUID | None = None
+    expected_version: int | None = Field(default=None, ge=1)
+    source_id: UUID | None = None
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class ThingContextEntryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    thing_id: UUID
+    label: str
+    content: str
+    source_id: UUID | None
+    version: int
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_dto(cls, value: ThingContextEntryDTO) -> "ThingContextEntryResponse":
         return cls.model_validate(value)
 
 
@@ -119,11 +158,14 @@ class TaskResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    thing_id: UUID
+    user_id: UUID
+    thing_id: UUID | None
     title: str
     status: TaskStatus
     version: int
     completed_at: datetime | None
+    due_at: datetime | None
+    recurrence_interval_days: int | None
     created_at: datetime
     updated_at: datetime
 

@@ -34,8 +34,6 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index("uq_memories_active_profile_key", table_name="long_term_memories")
-    op.drop_constraint(
-        "fk_memories_supersedes", "long_term_memories", type_="foreignkey"
-    )
+    op.drop_constraint("fk_memories_supersedes", "long_term_memories", type_="foreignkey")
     op.drop_column("long_term_memories", "supersedes_id")
     op.drop_column("long_term_memories", "profile_key")

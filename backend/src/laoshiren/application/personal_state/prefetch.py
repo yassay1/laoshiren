@@ -30,9 +30,7 @@ def thing_prefetch_payload(
     match_reason: str,
 ) -> dict[str, Any]:
     open_tasks = [
-        task
-        for task in tasks
-        if task.status not in {TaskStatus.DONE, TaskStatus.CANCELLED}
+        task for task in tasks if task.status not in {TaskStatus.DONE, TaskStatus.CANCELLED}
     ]
     primary_dates = [item for item in dates if item.is_primary][:3]
     return {

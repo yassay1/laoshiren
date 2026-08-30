@@ -55,9 +55,7 @@ class SourceProcessingWorker:
                     lease_lost.set()
                     return
 
-        heartbeat_task = asyncio.create_task(
-            heartbeat(), name=f"source-heartbeat-{job.id}"
-        )
+        heartbeat_task = asyncio.create_task(heartbeat(), name=f"source-heartbeat-{job.id}")
         try:
             parsed_content = await self._service.extract_claimed_content(job)
             if lease_lost.is_set():
@@ -84,9 +82,7 @@ class SourceProcessingWorker:
                 source_id=job.id,
                 owner=self._worker_id,
                 error_code=(
-                    "SOURCE_PROCESSING_EXHAUSTED"
-                    if exhausted
-                    else "SOURCE_PROCESSING_RETRYABLE"
+                    "SOURCE_PROCESSING_EXHAUSTED" if exhausted else "SOURCE_PROCESSING_RETRYABLE"
                 ),
                 retry_delay_seconds=None if exhausted else delay,
             )

@@ -24,9 +24,7 @@ class MemoryStorage:
         assert object_key == "source.pdf"
         return b"content"
 
-    async def put(
-        self, *, object_key: str, chunks: AsyncIterator[bytes]
-    ) -> tuple[int, str]:
+    async def put(self, *, object_key: str, chunks: AsyncIterator[bytes]) -> tuple[int, str]:
         raise AssertionError("not used")
 
     async def delete(self, *, object_key: str) -> None:
@@ -34,13 +32,9 @@ class MemoryStorage:
 
 
 class SlowParser:
-    async def parse(
-        self, *, filename: str, mime_type: str, content: bytes
-    ) -> ParsedSourceContent:
+    async def parse(self, *, filename: str, mime_type: str, content: bytes) -> ParsedSourceContent:
         await asyncio.sleep(1)
-        return ParsedSourceContent(
-            text="too late", pages=(ParsedSourcePage(None, "too late"),)
-        )
+        return ParsedSourceContent(text="too late", pages=(ParsedSourcePage(None, "too late"),))
 
 
 async def test_claimed_source_parse_timeout_becomes_terminal_parse_error() -> None:

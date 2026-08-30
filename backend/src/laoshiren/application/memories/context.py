@@ -22,9 +22,7 @@ def rank_memories(
     active = set(active_thing_ids)
 
     def score(memory: MemoryDTO) -> tuple[float, object]:
-        thing_bonus = (
-            1.0 if memory.thing_id is not None and memory.thing_id in active else 0.0
-        )
+        thing_bonus = 1.0 if memory.thing_id is not None and memory.thing_id in active else 0.0
         weight = _MEMORY_TYPE_WEIGHTS.get(memory.memory_type, 1.0)
         return (memory.importance * weight + thing_bonus, memory.updated_at)
 
@@ -47,6 +45,7 @@ class MemoryContext:
             }
 
         return {
+            "authority": "NON-AUTHORITATIVE LONG-TERM MEMORY",
             "profile": [item(memory) for memory in self.profile],
             "relevant": [item(memory) for memory in self.relevant],
         }
@@ -83,26 +82,24 @@ class AgentMemoryApplicationService:
                 embedding = None
         semantic = await self._memories.search(
             user_id=user_id,
-            query=None if embedding is not None else query,
+            query=query,
             memory_type=MemoryType.SEMANTIC,
             query_embedding=embedding,
             limit=relevant_limit,
         )
         episodic = await self._memories.search(
             user_id=user_id,
-            query=None if embedding is not None else query,
+            query=query,
             memory_type=MemoryType.EPISODIC,
             query_embedding=embedding,
             limit=max(1, relevant_limit // 2),
         )
-        combined = rank_memories(
-            [*semantic, *episodic], active_thing_ids=active_thing_ids
-        )[:relevant_limit]
+        combined = rank_memories([*semantic, *episodic], active_thing_ids=active_thing_ids)[
+            :relevant_limit
+        ]
         return MemoryContext(tuple(profile), tuple(combined))
 
-    async def search(
-        self, *, user_id: UUID, query: str, limit: int = 8
-    ) -> tuple[MemoryDTO, ...]:
+    async def search(self, *, user_id: UUID, query: str, limit: int = 8) -> tuple[MemoryDTO, ...]:
         embedding = None
         if self._embedding_provider is not None and query.strip():
             try:
@@ -111,7 +108,7 @@ class AgentMemoryApplicationService:
                 embedding = None
         results = await self._memories.search(
             user_id=user_id,
-            query=None if embedding is not None else query,
+            query=query,
             query_embedding=embedding,
             limit=limit,
         )

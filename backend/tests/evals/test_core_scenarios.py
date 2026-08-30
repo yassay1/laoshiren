@@ -2,6 +2,8 @@ from datetime import UTC, datetime
 from unittest.mock import MagicMock
 from uuid import uuid4
 
+import pytest
+
 from evals.acceptance import ACCEPTANCE_SCENARIOS, CORE_SCENARIO_CODES, ScenarioPhase
 from laoshiren.agent.prompts import EXECUTIVE_SYSTEM_PROMPT, build_executive_user_payload
 from laoshiren.agent.tools import ToolRegistry, register_source_tools
@@ -19,6 +21,8 @@ from laoshiren.domain.automations.entities import AttentionSubjectType
 from laoshiren.domain.personal_state.value_objects import ThingStatus
 from laoshiren.domain.runtime.entities import MessageRole
 from laoshiren.domain.sources.entities import SourceRelationType
+
+pytestmark = pytest.mark.gate_d
 
 
 def test_all_core_acceptance_scenarios_are_cataloged() -> None:
@@ -46,7 +50,7 @@ def test_executive_payload_includes_prefetch_fields() -> None:
             },
             "tool_results": [],
         },
-        available_tools=("state.get_thing",),
+        available_tools=("state_get_thing_context",),
     )
     assert payload["active_thing_context"]["match_status"] == "resolved"
     assert payload["attention_candidates"][0]["summary"] == "due soon"
@@ -117,6 +121,8 @@ def test_thing_prefetch_marks_ambiguous_candidates() -> None:
             status=ThingStatus.ACTIVE,
             current_stage=None,
             deadline_at=None,
+            merged_into_thing_id=None,
+            deleted_at=None,
             version=1,
             created_at=datetime.now(UTC),
             updated_at=datetime.now(UTC),
@@ -128,6 +134,8 @@ def test_thing_prefetch_marks_ambiguous_candidates() -> None:
             status=ThingStatus.ACTIVE,
             current_stage=None,
             deadline_at=None,
+            merged_into_thing_id=None,
+            deleted_at=None,
             version=1,
             created_at=datetime.now(UTC),
             updated_at=datetime.now(UTC),
@@ -142,10 +150,9 @@ def test_source_tools_are_registered() -> None:
     registry = ToolRegistry()
     register_source_tools(registry, service=MagicMock())
     names = set(registry.names())
-    assert "source.get" in names
-    assert "source.search_chunks" in names
-    assert "source.link_thing" in names
-    assert "source.list_for_thing" in names
+    assert "file_search" in names
+    assert "file_inspect" in names
+    assert "file_delete" in names
 
 
 def test_source_relation_type_supports_reference() -> None:

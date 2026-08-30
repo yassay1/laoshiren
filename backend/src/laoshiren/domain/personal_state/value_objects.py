@@ -2,21 +2,13 @@ from enum import StrEnum
 
 
 class ThingStatus(StrEnum):
-    PLANNING = "PLANNING"
     ACTIVE = "ACTIVE"
-    BLOCKED = "BLOCKED"
-    WAITING = "WAITING"
-    PAUSED = "PAUSED"
     COMPLETED = "COMPLETED"
     CANCELLED = "CANCELLED"
-    ARCHIVED = "ARCHIVED"
 
 
 class TaskStatus(StrEnum):
     TODO = "TODO"
-    IN_PROGRESS = "IN_PROGRESS"
-    WAITING = "WAITING"
-    BLOCKED = "BLOCKED"
     DONE = "DONE"
     CANCELLED = "CANCELLED"
 
@@ -29,14 +21,20 @@ class DateCertainty(StrEnum):
 
 
 class DatePrecision(StrEnum):
+    DATE_TIME = "DATE_TIME"
     DATE = "DATE"
-    DATETIME = "DATETIME"
+    MONTH = "MONTH"
+
+
+class ThingDateType(StrEnum):
+    DEADLINE = "DEADLINE"
+    EVENT = "EVENT"
+    MILESTONE = "MILESTONE"
 
 
 class BlockerStatus(StrEnum):
     OPEN = "OPEN"
     RESOLVED = "RESOLVED"
-    IGNORED = "IGNORED"
 
 
 class BlockerSeverity(StrEnum):

@@ -66,14 +66,18 @@ async def test_concurrent_profile_updates_leave_one_active_version_for_context()
 
         async with container.database.engine.connect() as connection:
             statuses = (
-                await connection.execute(
-                    text(
-                        "SELECT status FROM long_term_memories "
-                        "WHERE id = ANY(:memory_ids) ORDER BY status"
-                    ),
-                    {"memory_ids": memory_ids},
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT status FROM long_term_memories "
+                            "WHERE id = ANY(:memory_ids) ORDER BY status"
+                        ),
+                        {"memory_ids": memory_ids},
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
         assert set(statuses) == {"ACTIVE", "SUPERSEDED"}
     finally:
         if memory_ids:

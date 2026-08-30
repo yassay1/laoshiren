@@ -8,6 +8,7 @@ from laoshiren.domain.personal_state.value_objects import (
     DateCertainty,
     DatePrecision,
     TaskStatus,
+    ThingDateType,
     ThingRelationType,
     ThingStatus,
 )
@@ -21,6 +22,8 @@ class ThingDTO:
     status: ThingStatus
     current_stage: str | None
     deadline_at: datetime | None
+    merged_into_thing_id: UUID | None
+    deleted_at: datetime | None
     version: int
     created_at: datetime
     updated_at: datetime
@@ -29,11 +32,14 @@ class ThingDTO:
 @dataclass(frozen=True, slots=True)
 class TaskDTO:
     id: UUID
-    thing_id: UUID
+    user_id: UUID
+    thing_id: UUID | None
     title: str
     status: TaskStatus
     version: int
     completed_at: datetime | None
+    due_at: datetime | None
+    recurrence_interval_days: int | None
     created_at: datetime
     updated_at: datetime
 
@@ -50,12 +56,25 @@ class MutationResultDTO:
 class ThingDateDTO:
     id: UUID
     thing_id: UUID
-    kind: str
+    kind: ThingDateType
+    label: str | None
     value: datetime
     timezone_name: str
     precision: DatePrecision
     certainty: DateCertainty
     is_primary: bool
+    source_id: UUID | None
+    version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ThingContextEntryDTO:
+    id: UUID
+    thing_id: UUID
+    label: str
+    content: str
     source_id: UUID | None
     version: int
     created_at: datetime
@@ -104,7 +123,7 @@ class ThingRelationDTO:
 @dataclass(frozen=True, slots=True)
 class StateMutationDTO:
     id: UUID
-    thing_id: UUID
+    thing_id: UUID | None
     action_id: str
     mutation_type: str
     target_type: str

@@ -32,9 +32,7 @@ def test_short_thread_is_not_summarized() -> None:
 
     context = AgentContextBuilder().build(messages=messages)
 
-    assert [item["id"] for item in context.messages] == [
-        str(item.id) for item in messages
-    ]
+    assert [item["id"] for item in context.messages] == [str(item.id) for item in messages]
     assert "thread_summary" not in context.prefetched_state
     assert context.prefetched_state["context_stats"]["summarized_message_count"] == 0
 
@@ -52,9 +50,7 @@ def test_long_thread_keeps_recent_messages_and_summarizes_older_messages() -> No
 
     context = builder.build(messages=messages)
 
-    assert [item["id"] for item in context.messages] == [
-        str(item.id) for item in messages[-4:]
-    ]
+    assert [item["id"] for item in context.messages] == [str(item.id) for item in messages[-4:]]
     assert "message-0" in context.prefetched_state["thread_summary"]
     assert "message-7" in context.prefetched_state["thread_summary"]
     assert context.prefetched_state["context_stats"]["summarized_message_count"] == 8
@@ -96,9 +92,7 @@ def test_state_overview_is_injected_into_prefetched_state() -> None:
         recent=(RecentThingDTO(uuid4(), "搬家", ThingStatus.ACTIVE, datetime.now(UTC)),),
     )
 
-    context = AgentContextBuilder().build(
-        messages=[message(1, size=10)], state_overview=overview
-    )
+    context = AgentContextBuilder().build(messages=[message(1, size=10)], state_overview=overview)
 
     data = context.prefetched_state["state_overview"]
     assert data["upcoming"][0]["name"] == "搬家"
@@ -106,13 +100,13 @@ def test_state_overview_is_injected_into_prefetched_state() -> None:
     assert data["blocked"][0]["severity"] == "HIGH"
     assert data["active"][0]["stage"] == "练习中"
     assert data["recent"][0]["status"] == "ACTIVE"
+    assert context.prefetched_state["current_reality"]["state_overview"] == data
 
 
 def test_state_overview_is_trimmed_to_budget() -> None:
     overview = StateOverviewDTO(
         upcoming=tuple(
-            UpcomingThingDTO(uuid4(), f"事务-{index}", datetime.now(UTC), 1)
-            for index in range(30)
+            UpcomingThingDTO(uuid4(), f"事务-{index}", datetime.now(UTC), 1) for index in range(30)
         ),
         blocked=(),
         active=(),

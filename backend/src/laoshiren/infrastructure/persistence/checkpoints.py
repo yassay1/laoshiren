@@ -31,9 +31,7 @@ class PostgresCheckpointLifecycle:
         if self._saver is not None:
             return self._saver
         serde = JsonPlusSerializer(allowed_msgpack_modules=None)
-        context = AsyncPostgresSaver.from_conn_string(
-            self._connection_url, serde=serde
-        )
+        context = AsyncPostgresSaver.from_conn_string(self._connection_url, serde=serde)
         saver = await context.__aenter__()
         try:
             await saver.setup()

@@ -50,7 +50,7 @@ async def test_personal_state_product_api_flow() -> None:
                 "kind": "DEADLINE",
                 "value": "2026-09-01T18:00:00+08:00",
                 "timezone": "Asia/Shanghai",
-                "precision": "DATETIME",
+                "precision": "DATE_TIME",
                 "certainty": "CONFIRMED",
                 "is_primary": True,
                 "expected_version": 1,
@@ -98,6 +98,8 @@ async def test_personal_state_product_api_flow() -> None:
             assert update_thing.json()["version"] == 3
             assert dates.status_code == 200
             assert len(dates.json()) == 1
+            assert dates.json()[0]["kind"] == "DEADLINE"
+            assert dates.json()[0]["label"] is None
             assert dates.json()[0]["certainty"] == "CONFIRMED"
             assert dates.json()[0]["is_primary"] is True
 
@@ -176,12 +178,185 @@ async def test_personal_state_product_api_flow() -> None:
         await app.state.container.database.dispose()
 
 
+async def test_standalone_recurring_task_advances_without_automation() -> None:
+    app = create_app()
+    headers = {"Authorization": "Bearer change-me"}
+    task_id: UUID | None = None
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test", headers=headers
+        ) as client:
+            created = await client.post(
+                "/api/v1/tasks",
+                headers={"Idempotency-Key": f"recurring-{uuid4()}"},
+                json={
+                    "title": "Weekly review",
+                    "due_at": "2026-09-06T09:00:00+00:00",
+                    "recurrence_interval_days": 7,
+                },
+            )
+            assert created.status_code == 201
+            task_id = UUID(created.json()["id"])
+            assert created.json()["thing_id"] is None
+            advanced = await client.patch(
+                f"/api/v1/tasks/{task_id}",
+                headers={"Idempotency-Key": f"advance-{uuid4()}"},
+                json={"status": "DONE", "expected_version": 1, "reason": "completed"},
+            )
+            assert advanced.status_code == 200
+            tasks = await client.get("/api/v1/tasks")
+            assert tasks.status_code == 200
+            assert tasks.json()[0]["status"] == "TODO"
+            assert tasks.json()[0]["due_at"] == "2026-09-13T09:00:00Z"
+    finally:
+        if task_id is not None:
+            database = app.state.container.database
+            async with database.engine.begin() as connection:
+                await connection.execute(
+                    text("DELETE FROM state_mutations WHERE target_id = :task_id"),
+                    {"task_id": task_id},
+                )
+                await connection.execute(
+                    text("DELETE FROM tasks WHERE id = :task_id"), {"task_id": task_id}
+                )
+        await app.state.container.database.dispose()
+
+
+async def test_thing_context_entry_api_replays_and_enforces_version() -> None:
+    app = create_app()
+    headers = {"Authorization": "Bearer change-me"}
+    thing_id: UUID | None = None
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test", headers=headers
+        ) as client:
+            created = await client.post(
+                "/api/v1/things",
+                headers={"Idempotency-Key": f"context-thing-{uuid4()}"},
+                json={"name": "Context entry integration"},
+            )
+            assert created.status_code == 201
+            thing_id = UUID(created.json()["id"])
+            payload = {
+                "label": "Advisor focus",
+                "content": "Finish the runnable demo first.",
+                "reason": "integration test",
+            }
+            key = f"context-entry-{uuid4()}"
+            first = await client.put(
+                f"/api/v1/things/{thing_id}/context",
+                headers={"Idempotency-Key": key}, json=payload
+            )
+            replay = await client.put(
+                f"/api/v1/things/{thing_id}/context",
+                headers={"Idempotency-Key": key}, json=payload
+            )
+            assert first.status_code == 200
+            assert replay.json()["replayed"] is True
+            entry_id = first.json()["target_id"]
+            entries = await client.get(f"/api/v1/things/{thing_id}/context")
+            assert entries.status_code == 200
+            assert entries.json()[0]["content"] == payload["content"]
+
+            updated = await client.put(
+                f"/api/v1/things/{thing_id}/context",
+                headers={"Idempotency-Key": f"context-update-{uuid4()}"},
+                json={
+                    **payload,
+                    "entry_id": entry_id,
+                    "expected_version": 1,
+                    "content": "Finish the tested demo first.",
+                },
+            )
+            stale = await client.put(
+                f"/api/v1/things/{thing_id}/context",
+                headers={"Idempotency-Key": f"context-stale-{uuid4()}"},
+                json={**payload, "entry_id": entry_id, "expected_version": 1},
+            )
+            assert updated.status_code == 200
+            assert updated.json()["target_version"] == 2
+            assert stale.status_code == 409
+            assert stale.json()["error"]["code"] == "VERSION_CONFLICT"
+    finally:
+        if thing_id is not None:
+            database = app.state.container.database
+            async with database.engine.begin() as connection:
+                for statement in (
+                    "DELETE FROM timeline_events WHERE thing_id = :thing_id",
+                    "DELETE FROM state_mutations WHERE thing_id = :thing_id",
+                    "DELETE FROM thing_context_entries WHERE thing_id = :thing_id",
+                    "DELETE FROM things WHERE id = :thing_id",
+                ):
+                    await connection.execute(text(statement), {"thing_id": thing_id})
+        await app.state.container.database.dispose()
+
+
+async def test_merge_redirect_rebinds_current_task_and_hides_duplicate() -> None:
+    app = create_app()
+    headers = {"Authorization": "Bearer change-me"}
+    thing_ids: list[UUID] = []
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test", headers=headers
+        ) as client:
+            canonical = await client.post(
+                "/api/v1/things",
+                headers={"Idempotency-Key": f"merge-canonical-{uuid4()}"},
+                json={"name": "Canonical project"},
+            )
+            duplicate = await client.post(
+                "/api/v1/things",
+                headers={"Idempotency-Key": f"merge-duplicate-{uuid4()}"},
+                json={"name": "Duplicate project"},
+            )
+            assert canonical.status_code == duplicate.status_code == 201
+            canonical_id = UUID(canonical.json()["id"])
+            duplicate_id = UUID(duplicate.json()["id"])
+            thing_ids.extend((canonical_id, duplicate_id))
+            task = await client.post(
+                f"/api/v1/things/{duplicate_id}/tasks",
+                headers={"Idempotency-Key": f"merge-task-{uuid4()}"},
+                json={"title": "Current task must follow canonical"},
+            )
+            assert task.status_code == 201
+
+            merged = await client.post(
+                f"/api/v1/things/{canonical_id}/merge",
+                headers={"Idempotency-Key": f"merge-{uuid4()}"},
+                json={
+                    "duplicate_thing_id": str(duplicate_id),
+                    "expected_canonical_version": 1,
+                    "expected_duplicate_version": 1,
+                    "reason": "integration merge",
+                },
+            )
+            assert merged.status_code == 200
+            assert merged.json()["target_id"] == str(duplicate_id)
+            tasks = await client.get(f"/api/v1/things/{canonical_id}/tasks")
+            listed = await client.get("/api/v1/things", params={"q": "project"})
+            duplicate_view = await client.get(f"/api/v1/things/{duplicate_id}")
+            assert tasks.status_code == 200
+            assert tasks.json()[0]["id"] == task.json()["id"]
+            assert [item["id"] for item in listed.json()] == [str(canonical_id)]
+            assert duplicate_view.json()["merged_into_thing_id"] == str(canonical_id)
+    finally:
+        if thing_ids:
+            database = app.state.container.database
+            async with database.engine.begin() as connection:
+                for table in ("timeline_events", "state_mutations", "tasks", "things"):
+                    await connection.execute(
+                        text(f"DELETE FROM {table} WHERE thing_id = ANY(:thing_ids)")
+                        if table != "things"
+                        else text("DELETE FROM things WHERE id = ANY(:thing_ids)"),
+                        {"thing_ids": thing_ids},
+                    )
+        await app.state.container.database.dispose()
+
+
 async def test_product_api_error_contract() -> None:
     app = create_app()
     try:
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             unauthorized = await client.get(
                 "/api/v1/things", headers={"X-Request-ID": "contract-test"}
             )

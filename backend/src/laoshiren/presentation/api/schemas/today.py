@@ -37,12 +37,8 @@ class TodayResponse(BaseModel):
     ) -> "TodayResponse":
         today = now.date()
         upcoming = list(overview.upcoming)
-        overdue = [
-            item for item in upcoming if item.deadline_at.date() < today
-        ]
-        due_today = [
-            item for item in upcoming if item.deadline_at.date() == today
-        ]
+        overdue = [item for item in upcoming if item.deadline_at.date() < today]
+        due_today = [item for item in upcoming if item.deadline_at.date() == today]
         return cls(
             attention=[AttentionCandidateResponse.from_dto(item) for item in attention],
             upcoming=[

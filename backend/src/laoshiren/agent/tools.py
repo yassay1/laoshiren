@@ -7,6 +7,7 @@ from uuid import UUID
 
 from laoshiren.agent.contracts import ToolResult, ToolStatus
 from laoshiren.application.automations.service import AutomationApplicationService
+from laoshiren.application.files.evidence import web_evidence_ref
 from laoshiren.application.memories.context import AgentMemoryApplicationService
 from laoshiren.application.memories.manager import MemoryManager
 from laoshiren.application.personal_state.service import PersonalStateApplicationService
@@ -24,12 +25,37 @@ from laoshiren.domain.personal_state.value_objects import (
     DateCertainty,
     DatePrecision,
     TaskStatus,
-    ThingRelationType,
+    ThingDateType,
     ThingStatus,
 )
-from laoshiren.domain.sources.entities import SourceRelationType
 
 ToolHandler = Callable[["ToolExecutionContext", dict[str, Any]], Awaitable[ToolResult]]
+
+V2_2_CAPABILITY_NAMES: frozenset[str] = frozenset(
+    {
+        "state_get_overview",
+        "state_get_thing_context",
+        "thing_create",
+        "thing_change_state",
+        "task_create",
+        "task_change_status",
+        "thing_date_set",
+        "thing_context_set",
+        "blocker_manage",
+        "memory_search",
+        "memory_remember",
+        "memory_forget",
+        "file_search",
+        "file_inspect",
+        "search_web",
+        "url_inspect",
+        "automation_create",
+        "automation_cancel",
+        "thing_merge",
+        "thing_delete",
+        "file_delete",
+    }
+)
 
 
 class ToolRisk(StrEnum):
@@ -50,6 +76,8 @@ class ToolExecutionContext:
     user_id: UUID
     run_id: UUID
     action_id: str
+    tool_claim_owner: str | None = None
+    tool_claim_token: UUID | None = None
 
     @property
     def idempotency_key(self) -> str:
@@ -133,112 +161,96 @@ class ToolRegistry:
             return ToolResult(ToolStatus.FAILED, "INVALID_ARGUMENT", "Tool arguments are invalid.")
 
 
+def _ledger_ready(runtime: Any | None, context: ToolExecutionContext) -> bool:
+    return (
+        runtime is not None
+        and context.tool_claim_owner is not None
+        and context.tool_claim_token is not None
+    )
+
+
+async def try_bound_mutation(
+    runtime: Any | None,
+    context: ToolExecutionContext,
+    *,
+    tool_name: str,
+    code: str,
+    message: str,
+    apply_mutation: Any,
+) -> ToolResult | None:
+    if not _ledger_ready(runtime, context):
+        return None
+    complete = getattr(runtime, "complete_mutation_tool", None) or getattr(
+        runtime, "complete_personal_state_mutation_tool", None
+    )
+    if complete is None:
+        return None
+    data = await complete(
+        user_id=context.user_id,
+        run_id=context.run_id,
+        action_id=context.action_id,
+        owner=context.tool_claim_owner,
+        claim_token=context.tool_claim_token,
+        tool_name=tool_name,
+        apply_mutation=apply_mutation,
+    )
+    mutation_id = data.get("mutation_id")
+    mutation_refs = (str(mutation_id),) if mutation_id else ()
+    return ToolResult(
+        ToolStatus.SUCCESS,
+        code,
+        message,
+        data=data,
+        mutation_refs=mutation_refs,
+        ledger_receipt_persisted=True,
+    )
+
+
 def register_personal_state_tools(
-    registry: ToolRegistry, service: PersonalStateApplicationService
+    registry: ToolRegistry,
+    service: PersonalStateApplicationService,
+    runtime: Any | None = None,
 ) -> None:
-    async def get_thing(
-        context: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
-        thing_id = UUID(str(arguments["thing_id"]))
-        thing = await service.get_thing(user_id=context.user_id, thing_id=thing_id)
-        return ToolResult(
-            ToolStatus.SUCCESS,
-            "OK",
-            "Thing loaded.",
-            data={
-                "id": str(thing.id),
-                "name": thing.name,
-                "status": thing.status,
-                "current_stage": thing.current_stage,
-                "deadline_at": thing.deadline_at.isoformat() if thing.deadline_at else None,
-                "version": thing.version,
-            },
-        )
+    from laoshiren.application.personal_state import write_ops
 
-    async def list_things(
-        context: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
-        things = await service.get_things(
-            user_id=context.user_id,
-            query=str(arguments["query"]) if arguments.get("query") else None,
-            limit=int(arguments.get("limit", 20)),
-        )
-        return ToolResult(
-            ToolStatus.SUCCESS,
-            "OK",
-            "Things loaded.",
-            data={
-                "items": [
-                    {
-                        "id": str(thing.id),
-                        "name": thing.name,
-                        "status": thing.status,
-                        "current_stage": thing.current_stage,
-                        "deadline_at": (
-                            thing.deadline_at.isoformat() if thing.deadline_at else None
-                        ),
-                        "version": thing.version,
-                    }
-                    for thing in things
-                ]
-            },
-        )
-
-    async def list_tasks(
-        context: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
-        tasks = await service.get_tasks(
-            user_id=context.user_id, thing_id=UUID(str(arguments["thing_id"]))
-        )
-        return ToolResult(
-            ToolStatus.SUCCESS,
-            "OK",
-            "Tasks loaded.",
-            data={
-                "items": [
-                    {
-                        "id": str(task.id),
-                        "thing_id": str(task.thing_id),
-                        "title": task.title,
-                        "status": task.status,
-                        "version": task.version,
-                    }
-                    for task in tasks
-                ]
-            },
-        )
-
-    async def get_timeline(
-        context: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
-        events = await service.get_timeline(
-            user_id=context.user_id,
-            thing_id=UUID(str(arguments["thing_id"])),
-            limit=int(arguments.get("limit", 20)),
-        )
-        return ToolResult(
-            ToolStatus.SUCCESS,
-            "OK",
-            "Timeline loaded.",
-            data={
-                "items": [
-                    {
-                        "id": str(event.id),
-                        "event_type": event.event_type,
-                        "title": event.title,
-                        "occurred_at": event.occurred_at.isoformat(),
-                    }
-                    for event in events
-                ]
-            },
+    async def try_bound(
+        context: ToolExecutionContext,
+        *,
+        tool_name: str,
+        code: str,
+        message: str,
+        apply_mutation: Any,
+    ) -> ToolResult | None:
+        return await try_bound_mutation(
+            runtime,
+            context,
+            tool_name=tool_name,
+            code=code,
+            message=message,
+            apply_mutation=apply_mutation,
         )
 
     def idempotency_key(context: ToolExecutionContext) -> str:
         return context.idempotency_key
 
-    async def create_thing(
-        context: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
+    async def create_thing(context: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
+        bound = await try_bound(
+            context,
+            tool_name="thing_create",
+            code="THING_CREATED",
+            message="Thing created.",
+            apply_mutation=lambda uow: write_ops.apply_create_thing(
+                uow,
+                user_id=context.user_id,
+                name=str(arguments["name"]),
+                action_id=context.action_id,
+                idempotency_key=idempotency_key(context),
+                reason=str(arguments.get("reason", "Agent-created Thing")),
+                run_id=context.run_id,
+            ),
+        )
+        if bound is not None:
+            return bound
         thing = await service.create_thing(
             user_id=context.user_id,
             name=str(arguments["name"]),
@@ -254,13 +266,43 @@ def register_personal_state_tools(
             data={"id": str(thing.id), "version": thing.version},
         )
 
-    async def create_task(
-        context: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
+    async def create_task(context: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
+        thing_id_raw = arguments.get("thing_id")
+        due_at_raw = arguments.get("due_at")
+        bound = await try_bound(
+            context,
+            tool_name="task_create",
+            code="TASK_CREATED",
+            message="Task created.",
+            apply_mutation=lambda uow: write_ops.apply_create_task(
+                uow,
+                user_id=context.user_id,
+                thing_id=UUID(str(thing_id_raw)) if thing_id_raw else None,
+                title=str(arguments["title"]),
+                due_at=datetime.fromisoformat(str(due_at_raw)) if due_at_raw else None,
+                recurrence_interval_days=(
+                    int(arguments["recurrence_interval_days"])
+                    if arguments.get("recurrence_interval_days") is not None
+                    else None
+                ),
+                action_id=context.action_id,
+                idempotency_key=idempotency_key(context),
+                reason=str(arguments.get("reason", "Agent-created Task")),
+                run_id=context.run_id,
+            ),
+        )
+        if bound is not None:
+            return bound
         task = await service.create_task(
             user_id=context.user_id,
-            thing_id=UUID(str(arguments["thing_id"])),
+            thing_id=UUID(str(thing_id_raw)) if thing_id_raw else None,
             title=str(arguments["title"]),
+            due_at=datetime.fromisoformat(str(due_at_raw)) if due_at_raw else None,
+            recurrence_interval_days=(
+                int(arguments["recurrence_interval_days"])
+                if arguments.get("recurrence_interval_days") is not None
+                else None
+            ),
             action_id=context.action_id,
             idempotency_key=idempotency_key(context),
             reason=str(arguments.get("reason", "Agent-created Task")),
@@ -273,43 +315,43 @@ def register_personal_state_tools(
             data={"id": str(task.id), "version": task.version},
         )
 
-    async def complete_task(
-        context: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
-        result = await service.complete_task(
-            user_id=context.user_id,
-            task_id=UUID(str(arguments["task_id"])),
-            expected_version=int(arguments["expected_version"]),
-            action_id=context.action_id,
-            idempotency_key=idempotency_key(context),
-            reason=str(arguments.get("reason", "Agent completed Task")),
-            run_id=context.run_id,
-        )
-        return ToolResult(
-            ToolStatus.SUCCESS,
-            "TASK_COMPLETED",
-            "Task completed.",
-            data={
-                "mutation_id": str(result.mutation_id),
-                "task_id": str(result.target_id),
-                "version": result.target_version,
-                "replayed": result.replayed,
-            },
-            mutation_refs=(str(result.mutation_id),),
-        )
-
-    async def set_deadline(
-        context: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
+    async def set_deadline(context: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
         source_id_raw = arguments.get("source_id")
         source_id = UUID(str(source_id_raw)) if source_id_raw else None
+        bound = await try_bound(
+            context,
+            tool_name="thing_date_set",
+            code="DEADLINE_SET",
+            message="Deadline set.",
+            apply_mutation=lambda uow: write_ops.apply_set_deadline(
+                uow,
+                user_id=context.user_id,
+                thing_id=UUID(str(arguments["thing_id"])),
+                kind=ThingDateType(str(arguments.get("kind", "DEADLINE"))),
+                label=str(arguments["label"]) if arguments.get("label") else None,
+                value=datetime.fromisoformat(str(arguments["value"])),
+                timezone_name=str(arguments["timezone"]),
+                precision=DatePrecision(str(arguments.get("precision", "DATE_TIME"))),
+                certainty=DateCertainty(str(arguments["certainty"])),
+                is_primary=bool(arguments.get("is_primary", True)),
+                expected_version=int(arguments["expected_version"]),
+                action_id=context.action_id,
+                idempotency_key=idempotency_key(context),
+                reason=str(arguments.get("reason", "Agent set deadline")),
+                run_id=context.run_id,
+                source_id=source_id,
+            ),
+        )
+        if bound is not None:
+            return bound
         result = await service.set_deadline(
             user_id=context.user_id,
             thing_id=UUID(str(arguments["thing_id"])),
-            kind=str(arguments.get("kind", "DEADLINE")),
+            kind=ThingDateType(str(arguments.get("kind", "DEADLINE"))),
+            label=str(arguments["label"]) if arguments.get("label") else None,
             value=datetime.fromisoformat(str(arguments["value"])),
             timezone_name=str(arguments["timezone"]),
-            precision=DatePrecision(str(arguments.get("precision", "DATETIME"))),
+            precision=DatePrecision(str(arguments.get("precision", "DATE_TIME"))),
             certainty=DateCertainty(str(arguments["certainty"])),
             is_primary=bool(arguments.get("is_primary", True)),
             expected_version=int(arguments["expected_version"]),
@@ -332,138 +374,208 @@ def register_personal_state_tools(
             mutation_refs=(str(result.mutation_id),),
         )
 
-    async def get_blockers(
+    async def get_thing_context(
         context: ToolExecutionContext, arguments: dict[str, Any]
     ) -> ToolResult:
-        blockers = await service.get_blockers(
-            user_id=context.user_id, thing_id=UUID(str(arguments["thing_id"]))
-        )
-        return ToolResult(
-            ToolStatus.SUCCESS,
-            "OK",
-            "Blockers loaded.",
-            data={
-                "items": [
-                    {
-                        "id": str(blocker.id),
-                        "thing_id": str(blocker.thing_id),
-                        "task_id": str(blocker.task_id) if blocker.task_id is not None else None,
-                        "description": blocker.description,
-                        "severity": blocker.severity.value,
-                        "status": blocker.status.value,
-                        "version": blocker.version,
-                    }
-                    for blocker in blockers
-                ]
-            },
-        )
-
-    async def get_dates(
-        context: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
-        dates = await service.get_dates(
+        thing_id = UUID(str(arguments["thing_id"]))
+        payload = await service.get_thing_context_snapshot(
             user_id=context.user_id,
-            thing_id=UUID(str(arguments["thing_id"])),
-            limit=int(arguments.get("limit", 100)),
+            thing_id=thing_id,
         )
         return ToolResult(
             ToolStatus.SUCCESS,
             "OK",
-            "Dates loaded.",
-            data={
-                "items": [
-                    {
-                        "id": str(date.id),
-                        "kind": date.kind,
-                        "value": date.value.isoformat(),
-                        "certainty": date.certainty.value,
-                        "precision": date.precision.value,
-                        "is_primary": date.is_primary,
-                        "version": date.version,
-                    }
-                    for date in dates
-                ]
-            },
+            "Current Thing context loaded.",
+            data=payload,
         )
 
-    async def get_relations(
+    async def get_state_overview(
         context: ToolExecutionContext, arguments: dict[str, Any]
     ) -> ToolResult:
-        relations = await service.get_relations(
-            user_id=context.user_id, thing_id=UUID(str(arguments["thing_id"]))
-        )
+        overview = await service.get_state_overview(user_id=context.user_id)
         return ToolResult(
             ToolStatus.SUCCESS,
             "OK",
-            "Relations loaded.",
+            "Authoritative current-state overview loaded.",
             data={
-                "items": [
-                    {
-                        "from_thing_id": str(relation.from_thing_id),
-                        "to_thing_id": str(relation.to_thing_id),
-                        "relation_type": relation.relation_type.value,
-                        "note": relation.note,
-                    }
-                    for relation in relations
-                ]
+                "active": [
+                    {"thing_id": str(item.thing_id), "version": None} for item in overview.active
+                ],
+                "upcoming": [{"thing_id": str(item.thing_id)} for item in overview.upcoming],
+                "blocked": [{"thing_id": str(item.thing_id)} for item in overview.blocked],
+                "recent": [
+                    {"thing_id": str(item.thing_id), "version": None} for item in overview.recent
+                ],
             },
         )
 
-    async def get_state_history(
+    async def set_thing_context(
         context: ToolExecutionContext, arguments: dict[str, Any]
     ) -> ToolResult:
-        mutations = await service.get_state_history(
-            user_id=context.user_id,
-            thing_id=UUID(str(arguments["thing_id"])),
-            limit=int(arguments.get("limit", 50)),
-        )
-        return ToolResult(
-            ToolStatus.SUCCESS,
-            "OK",
-            "State history loaded.",
-            data={
-                "items": [
-                    {
-                        "id": str(mutation.id),
-                        "mutation_type": mutation.mutation_type,
-                        "before": mutation.before,
-                        "after": mutation.after,
-                        "reason": mutation.reason,
-                        "created_at": mutation.created_at.isoformat(),
-                    }
-                    for mutation in mutations
-                ]
-            },
-        )
-
-    async def update_thing(
-        context: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
-        thing = await service.update_thing(
-            user_id=context.user_id,
-            thing_id=UUID(str(arguments["thing_id"])),
-            expected_version=int(arguments["expected_version"]),
-            name=str(arguments["name"]) if arguments.get("name") else None,
-            status=ThingStatus(str(arguments["status"])) if arguments.get("status") else None,
-            current_stage=(
-                str(arguments["current_stage"]) if arguments.get("current_stage") else None
+        entry_id = arguments.get("entry_id")
+        bound = await try_bound(
+            context,
+            tool_name="thing_context_set",
+            code="THING_CONTEXT_SET",
+            message="Current Thing context set.",
+            apply_mutation=lambda uow: write_ops.apply_set_thing_context(
+                uow,
+                user_id=context.user_id,
+                thing_id=UUID(str(arguments["thing_id"])),
+                label=str(arguments["label"]),
+                content=str(arguments["content"]),
+                entry_id=UUID(str(entry_id)) if entry_id else None,
+                expected_version=arguments.get("expected_version"),
+                source_id=None,
+                action_id=context.action_id,
+                idempotency_key=idempotency_key(context),
+                reason=str(arguments.get("reason", "Agent updated current Thing context.")),
+                run_id=context.run_id,
             ),
-            update_current_stage="current_stage" in arguments,
+        )
+        if bound is not None:
+            return bound
+        result = await service.set_thing_context(
+            user_id=context.user_id,
+            thing_id=UUID(str(arguments["thing_id"])),
+            label=str(arguments["label"]),
+            content=str(arguments["content"]),
+            entry_id=UUID(str(entry_id)) if entry_id else None,
+            expected_version=arguments.get("expected_version"),
+            source_id=None,
             action_id=context.action_id,
             idempotency_key=idempotency_key(context),
-            reason=str(arguments.get("reason", "Agent updated Thing")),
+            reason=str(arguments.get("reason", "Agent updated current Thing context.")),
             run_id=context.run_id,
         )
         return ToolResult(
             ToolStatus.SUCCESS,
-            "THING_UPDATED",
-            "Thing updated.",
+            "THING_CONTEXT_SET",
+            "Current Thing context set.",
+            data={
+                "mutation_id": str(result.mutation_id),
+                "entry_id": str(result.target_id),
+                "version": result.target_version,
+                "replayed": result.replayed,
+            },
+            mutation_refs=(str(result.mutation_id),),
+        )
+
+    async def change_thing_state(
+        context: ToolExecutionContext, arguments: dict[str, Any]
+    ) -> ToolResult:
+        action = str(arguments["action"])
+        if action == "ARCHIVE":
+            return await archive_thing(context, arguments)
+        if action == "RESTORE":
+            bound = await try_bound(
+                context,
+                tool_name="thing_change_state",
+                code="THING_RESTORED",
+                message="Thing restored.",
+                apply_mutation=lambda uow: write_ops.apply_change_archive(
+                    uow,
+                    user_id=context.user_id,
+                    thing_id=UUID(str(arguments["thing_id"])),
+                    expected_version=int(arguments["expected_version"]),
+                    action_id=context.action_id,
+                    idempotency_key=idempotency_key(context),
+                    reason=str(arguments.get("reason", "Agent restored Thing")),
+                    run_id=context.run_id,
+                    archive=False,
+                ),
+            )
+            if bound is not None:
+                return bound
+            result = await service.unarchive_thing(
+                user_id=context.user_id,
+                thing_id=UUID(str(arguments["thing_id"])),
+                expected_version=int(arguments["expected_version"]),
+                action_id=context.action_id,
+                idempotency_key=idempotency_key(context),
+                reason=str(arguments.get("reason", "Agent restored Thing")),
+                run_id=context.run_id,
+            )
+            return ToolResult(
+                ToolStatus.SUCCESS,
+                "THING_RESTORED",
+                "Thing restored.",
+                data={"mutation_id": str(result.mutation_id), "version": result.target_version},
+                mutation_refs=(str(result.mutation_id),),
+            )
+        status_by_action = {
+            "COMPLETE": ThingStatus.COMPLETED,
+            "CANCEL": ThingStatus.CANCELLED,
+            "REACTIVATE": ThingStatus.ACTIVE,
+        }
+        status = status_by_action.get(action)
+        if status is None:
+            raise ValueError("Unsupported Thing state action.")
+        thing = await service.update_thing(
+            user_id=context.user_id,
+            thing_id=UUID(str(arguments["thing_id"])),
+            expected_version=int(arguments["expected_version"]),
+            name=None,
+            status=status,
+            current_stage=None,
+            update_current_stage=False,
+            action_id=context.action_id,
+            idempotency_key=idempotency_key(context),
+            reason=str(arguments.get("reason", f"Agent {action.lower()} Thing")),
+            run_id=context.run_id,
+        )
+        code_by_action = {
+            "COMPLETE": "THING_COMPLETED",
+            "CANCEL": "THING_CANCELLED",
+            "REACTIVATE": "THING_REACTIVATED",
+        }
+        return ToolResult(
+            ToolStatus.SUCCESS,
+            code_by_action[action],
+            f"Thing {action.lower()}d.",
             data={"id": str(thing.id), "version": thing.version},
         )
+
+    async def manage_blocker(
+        context: ToolExecutionContext, arguments: dict[str, Any]
+    ) -> ToolResult:
+        if str(arguments["operation"]) == "OPEN":
+            return await create_blocker(context, arguments)
+        if str(arguments["operation"]) == "RESOLVE":
+            return await resolve_blocker(context, arguments)
+        raise ValueError("Unsupported Blocker operation.")
+
+    async def set_thing_date(
+        context: ToolExecutionContext, arguments: dict[str, Any]
+    ) -> ToolResult:
+        if str(arguments["operation"]) == "CREATE":
+            return await set_deadline(context, arguments)
+        if str(arguments["operation"]) == "CORRECT":
+            return await update_date(context, arguments)
+        raise ValueError("Unsupported ThingDate operation.")
 
     async def transition_task(
         context: ToolExecutionContext, arguments: dict[str, Any]
     ) -> ToolResult:
+        bound = await try_bound(
+            context,
+            tool_name="task_change_status",
+            code="TASK_STATUS_CHANGED",
+            message="Task status changed.",
+            apply_mutation=lambda uow: write_ops.apply_transition_task(
+                uow,
+                user_id=context.user_id,
+                task_id=UUID(str(arguments["task_id"])),
+                target_status=TaskStatus(str(arguments["target_status"])),
+                expected_version=int(arguments["expected_version"]),
+                action_id=context.action_id,
+                idempotency_key=idempotency_key(context),
+                reason=str(arguments.get("reason", "Agent changed Task status")),
+                run_id=context.run_id,
+            ),
+        )
+        if bound is not None:
+            return bound
         result = await service.transition_task(
             user_id=context.user_id,
             task_id=UUID(str(arguments["task_id"])),
@@ -489,6 +601,26 @@ def register_personal_state_tools(
     async def create_blocker(
         context: ToolExecutionContext, arguments: dict[str, Any]
     ) -> ToolResult:
+        bound = await try_bound(
+            context,
+            tool_name="blocker_manage",
+            code="BLOCKER_ADDED",
+            message="Blocker added.",
+            apply_mutation=lambda uow: write_ops.apply_create_blocker(
+                uow,
+                user_id=context.user_id,
+                thing_id=UUID(str(arguments["thing_id"])),
+                description=str(arguments["description"]),
+                severity=BlockerSeverity(str(arguments.get("severity", "MEDIUM"))),
+                task_id=UUID(str(arguments["task_id"])) if arguments.get("task_id") else None,
+                source_id=None,
+                action_id=context.action_id,
+                idempotency_key=idempotency_key(context),
+                reason=str(arguments.get("reason", "Agent added Blocker")),
+            ),
+        )
+        if bound is not None:
+            return bound
         blocker = await service.create_blocker(
             user_id=context.user_id,
             thing_id=UUID(str(arguments["thing_id"])),
@@ -510,6 +642,23 @@ def register_personal_state_tools(
     async def resolve_blocker(
         context: ToolExecutionContext, arguments: dict[str, Any]
     ) -> ToolResult:
+        bound = await try_bound(
+            context,
+            tool_name="blocker_manage",
+            code="BLOCKER_RESOLVED",
+            message="Blocker resolved.",
+            apply_mutation=lambda uow: write_ops.apply_resolve_blocker(
+                uow,
+                user_id=context.user_id,
+                blocker_id=UUID(str(arguments["blocker_id"])),
+                expected_version=int(arguments["expected_version"]),
+                action_id=context.action_id,
+                idempotency_key=idempotency_key(context),
+                reason=str(arguments.get("reason", "Agent resolved Blocker")),
+            ),
+        )
+        if bound is not None:
+            return bound
         result = await service.resolve_blocker(
             user_id=context.user_id,
             blocker_id=UUID(str(arguments["blocker_id"])),
@@ -531,35 +680,36 @@ def register_personal_state_tools(
             mutation_refs=(str(result.mutation_id),),
         )
 
-    async def add_relation(
-        context: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
-        created = await service.add_relation(
-            user_id=context.user_id,
-            from_thing_id=UUID(str(arguments["from_thing_id"])),
-            to_thing_id=UUID(str(arguments["to_thing_id"])),
-            relation_type=ThingRelationType(str(arguments["relation_type"])),
-            note=str(arguments["note"]) if arguments.get("note") else None,
-            action_id=context.action_id,
-            idempotency_key=idempotency_key(context),
-            reason=str(arguments.get("reason", "Agent added Thing relation")),
+    async def update_date(context: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
+        bound = await try_bound(
+            context,
+            tool_name="thing_date_set",
+            code="DATE_UPDATED",
+            message="Date updated.",
+            apply_mutation=lambda uow: write_ops.apply_update_date(
+                uow,
+                user_id=context.user_id,
+                date_id=UUID(str(arguments["date_id"])),
+                value=datetime.fromisoformat(str(arguments["value"])),
+                timezone_name=str(arguments["timezone"]),
+                precision=DatePrecision(str(arguments.get("precision", "DATE_TIME"))),
+                certainty=DateCertainty(str(arguments["certainty"])),
+                is_primary=bool(arguments.get("is_primary", False)),
+                expected_version=int(arguments["expected_version"]),
+                expected_thing_version=int(arguments["expected_thing_version"]),
+                action_id=context.action_id,
+                idempotency_key=idempotency_key(context),
+                reason=str(arguments.get("reason", "Agent updated date")),
+            ),
         )
-        return ToolResult(
-            ToolStatus.SUCCESS,
-            "RELATION_ADDED",
-            "Thing relation added.",
-            data={"created": created},
-        )
-
-    async def update_date(
-        context: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
+        if bound is not None:
+            return bound
         result = await service.update_date(
             user_id=context.user_id,
             date_id=UUID(str(arguments["date_id"])),
             value=datetime.fromisoformat(str(arguments["value"])),
             timezone_name=str(arguments["timezone"]),
-            precision=DatePrecision(str(arguments.get("precision", "DATETIME"))),
+            precision=DatePrecision(str(arguments.get("precision", "DATE_TIME"))),
             certainty=DateCertainty(str(arguments["certainty"])),
             is_primary=bool(arguments.get("is_primary", False)),
             expected_version=int(arguments["expected_version"]),
@@ -581,9 +731,26 @@ def register_personal_state_tools(
             mutation_refs=(str(result.mutation_id),),
         )
 
-    async def archive_thing(
-        context: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
+    async def archive_thing(context: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
+        bound = await try_bound(
+            context,
+            tool_name="thing_change_state",
+            code="THING_ARCHIVED",
+            message="Thing archived.",
+            apply_mutation=lambda uow: write_ops.apply_change_archive(
+                uow,
+                user_id=context.user_id,
+                thing_id=UUID(str(arguments["thing_id"])),
+                expected_version=int(arguments["expected_version"]),
+                action_id=context.action_id,
+                idempotency_key=idempotency_key(context),
+                reason=str(arguments.get("reason", "Agent archived Thing")),
+                run_id=context.run_id,
+                archive=True,
+            ),
+        )
+        if bound is not None:
+            return bound
         result = await service.archive_thing(
             user_id=context.user_id,
             thing_id=UUID(str(arguments["thing_id"])),
@@ -606,159 +773,180 @@ def register_personal_state_tools(
             mutation_refs=(str(result.mutation_id),),
         )
 
-    registry.register(
-        ToolDefinition(
-            name="state.get_thing",
-            description="Read the current authoritative state of one Thing.",
-            risk=ToolRisk.READ,
-            handler=get_thing,
-            required_arguments=("thing_id",),
+    async def delete_thing(context: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
+        bound = await try_bound(
+            context,
+            tool_name="thing_delete",
+            code="THING_DELETED",
+            message="Thing deleted.",
+            apply_mutation=lambda uow: write_ops.apply_delete_thing(
+                uow,
+                user_id=context.user_id,
+                thing_id=UUID(str(arguments["thing_id"])),
+                expected_version=int(arguments["expected_version"]),
+                action_id=context.action_id,
+                idempotency_key=idempotency_key(context),
+                reason=str(arguments.get("reason", "Agent deleted Thing.")),
+                run_id=context.run_id,
+            ),
         )
-    )
+        if bound is not None:
+            return bound
+        result = await service.delete_thing(
+            user_id=context.user_id,
+            thing_id=UUID(str(arguments["thing_id"])),
+            expected_version=int(arguments["expected_version"]),
+            action_id=context.action_id,
+            idempotency_key=idempotency_key(context),
+            reason=str(arguments.get("reason", "Agent deleted Thing.")),
+            run_id=context.run_id,
+        )
+        return ToolResult(
+            ToolStatus.SUCCESS,
+            "THING_DELETED",
+            "Thing deleted.",
+            data={
+                "mutation_id": str(result.mutation_id),
+                "thing_id": str(result.target_id),
+                "version": result.target_version,
+                "replayed": result.replayed,
+            },
+            mutation_refs=(str(result.mutation_id),),
+        )
+
+    async def merge_things(context: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
+        bound = await try_bound(
+            context,
+            tool_name="thing_merge",
+            code="THING_MERGED",
+            message="Duplicate Thing merged into its canonical Thing.",
+            apply_mutation=lambda uow: write_ops.apply_merge_things(
+                uow,
+                user_id=context.user_id,
+                canonical_thing_id=UUID(str(arguments["canonical_thing_id"])),
+                duplicate_thing_id=UUID(str(arguments["duplicate_thing_id"])),
+                expected_canonical_version=int(arguments["expected_canonical_version"]),
+                expected_duplicate_version=int(arguments["expected_duplicate_version"]),
+                action_id=context.action_id,
+                idempotency_key=idempotency_key(context),
+                reason=str(arguments.get("reason", "Agent merged duplicate Things.")),
+                run_id=context.run_id,
+            ),
+        )
+        if bound is not None:
+            return bound
+        result = await service.merge_things(
+            user_id=context.user_id,
+            canonical_thing_id=UUID(str(arguments["canonical_thing_id"])),
+            duplicate_thing_id=UUID(str(arguments["duplicate_thing_id"])),
+            expected_canonical_version=int(arguments["expected_canonical_version"]),
+            expected_duplicate_version=int(arguments["expected_duplicate_version"]),
+            action_id=context.action_id,
+            idempotency_key=idempotency_key(context),
+            reason=str(arguments.get("reason", "Agent merged duplicate Things.")),
+            run_id=context.run_id,
+        )
+        return ToolResult(
+            ToolStatus.SUCCESS,
+            "THING_MERGED",
+            "Duplicate Thing merged into its canonical Thing.",
+            data={
+                "mutation_id": str(result.mutation_id),
+                "duplicate_thing_id": str(result.target_id),
+                "version": result.target_version,
+                "replayed": result.replayed,
+            },
+            mutation_refs=(str(result.mutation_id),),
+        )
+
     for definition in (
         ToolDefinition(
-            "state.list_things", "List authoritative Things.", ToolRisk.READ, list_things
+            "state_get_overview",
+            "Read the bounded authoritative current-state overview.",
+            ToolRisk.READ,
+            get_state_overview,
         ),
         ToolDefinition(
-            "state.list_tasks",
-            "List Tasks for a Thing.",
+            "state_get_thing_context",
+            "Read one Thing's current state with stable versions.",
             ToolRisk.READ,
-            list_tasks,
+            get_thing_context,
             required_arguments=("thing_id",),
         ),
         ToolDefinition(
-            "state.get_timeline",
-            "Read a Thing timeline.",
-            ToolRisk.READ,
-            get_timeline,
-            required_arguments=("thing_id",),
-        ),
-        ToolDefinition(
-            "state.create_thing",
-            "Create a Thing.",
+            "thing_create",
+            "Create a persistent Thing.",
             ToolRisk.REVERSIBLE_WRITE,
             create_thing,
             replay_policy=ToolReplayPolicy.IDEMPOTENT,
             required_arguments=("name",),
         ),
         ToolDefinition(
-            "state.create_task",
-            "Create a Task.",
+            "task_create",
+            "Create a standalone or Thing-linked Task.",
             ToolRisk.REVERSIBLE_WRITE,
             create_task,
             replay_policy=ToolReplayPolicy.IDEMPOTENT,
-            required_arguments=("thing_id", "title"),
+            required_arguments=("title",),
         ),
         ToolDefinition(
-            "state.complete_task",
-            "Complete a Task with optimistic concurrency.",
-            ToolRisk.REVERSIBLE_WRITE,
-            complete_task,
-            replay_policy=ToolReplayPolicy.IDEMPOTENT,
-            required_arguments=("task_id", "expected_version"),
-        ),
-        ToolDefinition(
-            "state.set_deadline",
-            "Set the formal deadline through the dedicated use case.",
-            ToolRisk.SENSITIVE_WRITE,
-            set_deadline,
-            replay_policy=ToolReplayPolicy.IDEMPOTENT,
-            required_arguments=(
-                "thing_id",
-                "value",
-                "timezone",
-                "certainty",
-                "expected_version",
-            ),
-        ),
-        ToolDefinition(
-            "state.get_blockers",
-            "List the blockers of a Thing.",
-            ToolRisk.READ,
-            get_blockers,
-            required_arguments=("thing_id",),
-        ),
-        ToolDefinition(
-            "state.get_dates",
-            "List the dates of a Thing.",
-            ToolRisk.READ,
-            get_dates,
-            required_arguments=("thing_id",),
-        ),
-        ToolDefinition(
-            "state.get_relations",
-            "List the relations of a Thing.",
-            ToolRisk.READ,
-            get_relations,
-            required_arguments=("thing_id",),
-        ),
-        ToolDefinition(
-            "state.get_state_history",
-            "Read a Thing's state mutation history.",
-            ToolRisk.READ,
-            get_state_history,
-            required_arguments=("thing_id",),
-        ),
-        ToolDefinition(
-            "state.update_thing",
-            "Edit a Thing's name, status or stage.",
-            ToolRisk.REVERSIBLE_WRITE,
-            update_thing,
-            replay_policy=ToolReplayPolicy.IDEMPOTENT,
-            required_arguments=("thing_id", "expected_version"),
-        ),
-        ToolDefinition(
-            "state.transition_task",
-            "Transition a Task to another status.",
+            "task_change_status",
+            "Change a Task status with optimistic concurrency.",
             ToolRisk.REVERSIBLE_WRITE,
             transition_task,
             replay_policy=ToolReplayPolicy.IDEMPOTENT,
             required_arguments=("task_id", "target_status", "expected_version"),
         ),
         ToolDefinition(
-            "state.create_blocker",
-            "Add a Blocker to a Thing.",
+            "thing_context_set",
+            "Create or correct one current soft-state entry.",
             ToolRisk.REVERSIBLE_WRITE,
-            create_blocker,
+            set_thing_context,
             replay_policy=ToolReplayPolicy.IDEMPOTENT,
-            required_arguments=("thing_id", "description"),
+            required_arguments=("thing_id", "label", "content"),
         ),
         ToolDefinition(
-            "state.resolve_blocker",
-            "Resolve a Blocker.",
-            ToolRisk.REVERSIBLE_WRITE,
-            resolve_blocker,
-            replay_policy=ToolReplayPolicy.IDEMPOTENT,
-            required_arguments=("blocker_id", "expected_version"),
-        ),
-        ToolDefinition(
-            "state.add_relation",
-            "Add a relation between two Things.",
-            ToolRisk.REVERSIBLE_WRITE,
-            add_relation,
-            replay_policy=ToolReplayPolicy.IDEMPOTENT,
-            required_arguments=("from_thing_id", "to_thing_id", "relation_type"),
-        ),
-        ToolDefinition(
-            "state.update_date",
-            "Update a Thing date.",
-            ToolRisk.SENSITIVE_WRITE,
-            update_date,
+            "thing_merge",
+            "Merge a duplicate Thing after confirmation.",
+            ToolRisk.IRREVERSIBLE,
+            merge_things,
             replay_policy=ToolReplayPolicy.IDEMPOTENT,
             required_arguments=(
-                "date_id",
-                "value",
-                "timezone",
-                "certainty",
-                "expected_version",
-                "expected_thing_version",
+                "canonical_thing_id",
+                "duplicate_thing_id",
+                "expected_canonical_version",
+                "expected_duplicate_version",
             ),
         ),
         ToolDefinition(
-            "state.archive_thing",
-            "Archive (soft-delete) a Thing.",
+            "thing_change_state",
+            "Change Thing lifecycle or archive state.",
+            ToolRisk.REVERSIBLE_WRITE,
+            change_thing_state,
+            replay_policy=ToolReplayPolicy.IDEMPOTENT,
+            required_arguments=("thing_id", "action", "expected_version"),
+        ),
+        ToolDefinition(
+            "thing_date_set",
+            "Create or correct a typed ThingDate.",
             ToolRisk.SENSITIVE_WRITE,
-            archive_thing,
+            set_thing_date,
+            replay_policy=ToolReplayPolicy.IDEMPOTENT,
+            required_arguments=("operation",),
+        ),
+        ToolDefinition(
+            "blocker_manage",
+            "Open or resolve a Blocker.",
+            ToolRisk.REVERSIBLE_WRITE,
+            manage_blocker,
+            replay_policy=ToolReplayPolicy.IDEMPOTENT,
+            required_arguments=("operation",),
+        ),
+        ToolDefinition(
+            "thing_delete",
+            "Permanently delete a Thing after confirmation.",
+            ToolRisk.IRREVERSIBLE,
+            delete_thing,
             replay_policy=ToolReplayPolicy.IDEMPOTENT,
             required_arguments=("thing_id", "expected_version"),
         ),
@@ -767,14 +955,44 @@ def register_personal_state_tools(
 
 
 def register_automation_tools(
-    registry: ToolRegistry, service: AutomationApplicationService
+    registry: ToolRegistry,
+    service: AutomationApplicationService,
+    runtime: Any | None = None,
 ) -> None:
+    from laoshiren.application.automations import write_ops as automation_write_ops
+
     def idempotency_key(context: ToolExecutionContext) -> str:
         return context.idempotency_key
 
     async def create_automation(
         context: ToolExecutionContext, arguments: dict[str, Any]
     ) -> ToolResult:
+        bound = await try_bound_mutation(
+            runtime,
+            context,
+            tool_name="automation_create",
+            code="AUTOMATION_CREATED",
+            message="Automation created.",
+            apply_mutation=lambda uow: automation_write_ops.apply_create_automation(
+                uow,
+                user_id=context.user_id,
+                automation_type=AutomationType(str(arguments["automation_type"])),
+                title=str(arguments["title"]),
+                message=str(arguments.get("message", arguments["title"])),
+                timezone_name=str(arguments.get("timezone", "Asia/Shanghai")),
+                next_trigger_at=datetime.fromisoformat(str(arguments["next_trigger_at"])),
+                idempotency_key=idempotency_key(context),
+                thing_id=UUID(str(arguments["thing_id"])) if arguments.get("thing_id") else None,
+                task_id=UUID(str(arguments["task_id"])) if arguments.get("task_id") else None,
+                recurrence_interval_seconds=(
+                    int(arguments["recurrence_interval_seconds"])
+                    if arguments.get("recurrence_interval_seconds")
+                    else None
+                ),
+            ),
+        )
+        if bound is not None:
+            return bound
         automation = await service.create(
             user_id=context.user_id,
             automation_type=AutomationType(str(arguments["automation_type"])),
@@ -805,6 +1023,25 @@ def register_automation_tools(
     async def change_automation(
         context: ToolExecutionContext, arguments: dict[str, Any]
     ) -> ToolResult:
+        action = str(arguments["action"])
+        code = "AUTOMATION_CANCELLED" if action == "CANCEL" else "AUTOMATION_CHANGED"
+        bound = await try_bound_mutation(
+            runtime,
+            context,
+            tool_name="automation_cancel" if action == "CANCEL" else "automation_create",
+            code=code,
+            message="Automation status changed.",
+            apply_mutation=lambda uow: automation_write_ops.apply_change_automation_status(
+                uow,
+                user_id=context.user_id,
+                automation_id=UUID(str(arguments["automation_id"])),
+                action=action,
+                expected_version=int(arguments["expected_version"]),
+                idempotency_key=idempotency_key(context),
+            ),
+        )
+        if bound is not None:
+            return bound
         automation = await service.change_status(
             user_id=context.user_id,
             automation_id=UUID(str(arguments["automation_id"])),
@@ -823,10 +1060,15 @@ def register_automation_tools(
             },
         )
 
+    async def cancel_automation(
+        context: ToolExecutionContext, arguments: dict[str, Any]
+    ) -> ToolResult:
+        return await change_automation(context, {**arguments, "action": "CANCEL"})
+
     registry.register(
         ToolDefinition(
-            "automation.create",
-            "Create an automation (one-shot or recurring reminder).",
+            "automation_create",
+            "Create an automation.",
             ToolRisk.REVERSIBLE_WRITE,
             create_automation,
             replay_policy=ToolReplayPolicy.IDEMPOTENT,
@@ -835,12 +1077,12 @@ def register_automation_tools(
     )
     registry.register(
         ToolDefinition(
-            "automation.change",
-            "Pause, resume or cancel an automation.",
+            "automation_cancel",
+            "Cancel an automation with optimistic concurrency.",
             ToolRisk.REVERSIBLE_WRITE,
-            change_automation,
+            cancel_automation,
             replay_policy=ToolReplayPolicy.IDEMPOTENT,
-            required_arguments=("automation_id", "action", "expected_version"),
+            required_arguments=("automation_id", "expected_version"),
         )
     )
 
@@ -849,10 +1091,12 @@ def register_memory_tools(
     registry: ToolRegistry,
     memory: AgentMemoryApplicationService,
     manager: MemoryManager | None = None,
+    runtime: Any | None = None,
 ) -> None:
-    async def search(
-        context: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
+    from laoshiren.application.memories import write_ops as memory_write_ops
+    from laoshiren.application.memories.candidate import rejects_state_authority
+
+    async def search(context: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
         results = await memory.search(
             user_id=context.user_id,
             query=str(arguments["query"]),
@@ -876,9 +1120,32 @@ def register_memory_tools(
             },
         )
 
-    async def remember(
-        context: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
+    async def remember(context: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
+        content = str(arguments["content"])
+        if rejects_state_authority(content):
+            return ToolResult(
+                ToolStatus.FAILED,
+                "STATE_AUTHORITY_VIOLATION",
+                "Memory must not override current Personal State authority.",
+            )
+        bound = await try_bound_mutation(
+            runtime,
+            context,
+            tool_name="memory_remember",
+            code="MEMORY_REMEMBERED",
+            message="Memory remembered.",
+            apply_mutation=lambda uow: memory_write_ops.apply_explicit_remember(
+                uow,
+                user_id=context.user_id,
+                run_id=context.run_id,
+                content=content,
+                memory_type=MemoryType(str(arguments["memory_type"])),
+                idempotency_key=context.idempotency_key,
+                thing_id=UUID(str(arguments["thing_id"])) if arguments.get("thing_id") else None,
+            ),
+        )
+        if bound is not None:
+            return bound
         if manager is None:
             return ToolResult(
                 ToolStatus.NOT_FOUND,
@@ -899,9 +1166,23 @@ def register_memory_tools(
             data={"id": str(formed.id), "type": formed.memory_type.value},
         )
 
-    async def forget(
-        context: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
+    async def forget(context: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
+        bound = await try_bound_mutation(
+            runtime,
+            context,
+            tool_name="memory_forget",
+            code="MEMORY_FORGOTTEN",
+            message="Memory forgotten.",
+            apply_mutation=lambda uow: memory_write_ops.apply_forget_memory(
+                uow,
+                user_id=context.user_id,
+                memory_id=UUID(str(arguments["memory_id"])),
+                expected_version=int(arguments["expected_version"]),
+                idempotency_key=context.idempotency_key,
+            ),
+        )
+        if bound is not None:
+            return bound
         if manager is None:
             return ToolResult(
                 ToolStatus.NOT_FOUND,
@@ -921,66 +1202,52 @@ def register_memory_tools(
             data={"id": str(memory.id)},
         )
 
-    registry.register(
+    for definition in (
         ToolDefinition(
-            "memory.search",
-            "Search long-term memory by meaning.",
+            "memory_search",
+            "Search long-term memory.",
             ToolRisk.READ,
             search,
             required_arguments=("query",),
-        )
-    )
-    registry.register(
+        ),
         ToolDefinition(
-            "memory.remember",
-            "Remember a long-term fact or preference from an explicit command.",
+            "memory_remember",
+            "Persist an explicit long-term memory.",
             ToolRisk.REVERSIBLE_WRITE,
             remember,
             replay_policy=ToolReplayPolicy.IDEMPOTENT,
             required_arguments=("content", "memory_type"),
-        )
-    )
-    registry.register(
+        ),
         ToolDefinition(
-            "memory.forget",
-            "Forget a memory as a user data-control action.",
+            "memory_forget",
+            "Forget one resolved memory.",
             ToolRisk.SENSITIVE_WRITE,
             forget,
             replay_policy=ToolReplayPolicy.IDEMPOTENT,
             required_arguments=("memory_id", "expected_version"),
-        )
-    )
+        ),
+    ):
+        registry.register(definition)
 
 
 def register_source_tools(
-    registry: ToolRegistry, service: SourceApplicationService
+    registry: ToolRegistry,
+    service: SourceApplicationService,
+    runtime: Any | None = None,
 ) -> None:
-    async def get_source(
-        context: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
-        source = await service.get(
-            user_id=context.user_id, source_id=UUID(str(arguments["source_id"]))
-        )
-        return ToolResult(
-            ToolStatus.SUCCESS,
-            "OK",
-            "Source loaded.",
-            data={
-                "id": str(source.id),
-                "title": source.title,
-                "source_type": source.source_type.value,
-                "processing_status": source.processing_status.value,
-                "mime_type": source.mime_type,
-                "size": source.size,
-                "extracted_text_preview": (source.extracted_text or "")[:500],
-            },
-        )
+    from laoshiren.application.sources import write_ops as source_write_ops
 
-    async def search_chunks(
-        context: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
-        source_id = UUID(str(arguments["source_id"]))
-        query = str(arguments.get("query", "")).strip() or None
+    def idempotency_key(context: ToolExecutionContext) -> str:
+        return context.idempotency_key
+
+    def resolve_file_id(arguments: dict[str, Any]) -> UUID:
+        raw = arguments.get("file_id") or arguments.get("source_id")
+        return UUID(str(raw))
+
+    async def inspect_file(context: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
+        source_id = resolve_file_id(arguments)
+        source = await service.get(user_id=context.user_id, source_id=source_id)
+        query = str(arguments.get("question", "")).strip() or None
         chunks = await service.get_context_chunks(
             user_id=context.user_id,
             source_id=source_id,
@@ -991,118 +1258,110 @@ def register_source_tools(
         return ToolResult(
             ToolStatus.SUCCESS,
             "OK",
-            "Source chunks loaded.",
+            "File inspected.",
             data={
-                "source_id": str(source_id),
-                "items": [
+                "file_id": str(source.id),
+                "title": source.title,
+                "mime_type": source.mime_type,
+                "processing_status": source.processing_status.value,
+                "chunks": [
                     {
+                        "segment_id": str(chunk.id),
                         "chunk_id": str(chunk.id),
                         "ordinal": chunk.ordinal,
-                        "page_number": chunk.page_number,
                         "content": chunk.content,
-                        "char_start": chunk.char_start,
-                        "char_end": chunk.char_end,
                     }
                     for chunk in chunks
                 ],
             },
         )
 
-    async def link_thing(
-        context: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
-        relation_type = SourceRelationType(
-            str(arguments.get("relation_type", SourceRelationType.REFERENCE.value))
-        )
-        created = await service.link_to_thing(
+    async def search_files(context: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
+        thing_id = arguments.get("thing_id")
+        items = await service.search_files(
             user_id=context.user_id,
-            thing_id=UUID(str(arguments["thing_id"])),
-            source_id=UUID(str(arguments["source_id"])),
-            relation_type=relation_type,
-            relevance=float(arguments.get("relevance", 1.0)),
-            action_id=context.action_id,
-            idempotency_key=context.idempotency_key,
-            reason=str(arguments.get("reason", "Agent linked Source to Thing.")),
-        )
-        return ToolResult(
-            ToolStatus.SUCCESS,
-            "SOURCE_LINKED",
-            "Source linked to Thing.",
-            data={"created": created},
-        )
-
-    async def list_for_thing(
-        context: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
-        sources = await service.list_for_thing(
-            user_id=context.user_id, thing_id=UUID(str(arguments["thing_id"]))
+            query=str(arguments["query"]),
+            thing_id=UUID(str(thing_id)) if thing_id else None,
+            limit=int(arguments.get("limit", 8)),
         )
         return ToolResult(
             ToolStatus.SUCCESS,
             "OK",
-            "Thing sources loaded.",
-            data={
-                "items": [
-                    {
-                        "id": str(item.id),
-                        "title": item.title,
-                        "processing_status": item.processing_status.value,
-                        "source_type": item.source_type.value,
-                    }
-                    for item in sources
-                ]
-            },
+            "Matching files loaded.",
+            data={"items": items},
         )
 
-    registry.register(
-        ToolDefinition(
-            "source.get",
-            "Read Source metadata and processing status.",
-            ToolRisk.READ,
-            get_source,
-            required_arguments=("source_id",),
+    async def delete_file(context: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
+        source_id = resolve_file_id(arguments)
+        bound = await try_bound_mutation(
+            runtime,
+            context,
+            tool_name="file_delete",
+            code="FILE_DELETED",
+            message="File deleted.",
+            apply_mutation=lambda uow: source_write_ops.apply_delete_file(
+                uow,
+                user_id=context.user_id,
+                source_id=source_id,
+                action_id=context.action_id,
+                idempotency_key=idempotency_key(context),
+                reason=str(arguments.get("reason", "Agent deleted file.")),
+            ),
         )
-    )
-    registry.register(
-        ToolDefinition(
-            "source.search_chunks",
-            "Retrieve relevant Source text chunks with optional semantic query.",
-            ToolRisk.READ,
-            search_chunks,
-            required_arguments=("source_id",),
+        if bound is not None:
+            return bound
+        source = await service.delete_file(
+            user_id=context.user_id,
+            source_id=source_id,
+            action_id=context.action_id,
+            idempotency_key=idempotency_key(context),
+            reason=str(arguments.get("reason", "Agent deleted file.")),
         )
-    )
-    registry.register(
+        return ToolResult(
+            ToolStatus.SUCCESS,
+            "FILE_DELETED",
+            "File deleted.",
+            data={"file_id": str(source.id), "replayed": source.replayed},
+        )
+
+    for definition in (
         ToolDefinition(
-            "source.link_thing",
-            "Associate a Source with a Thing.",
-            ToolRisk.REVERSIBLE_WRITE,
-            link_thing,
+            "file_search",
+            "Search user files and matching fragments.",
+            ToolRisk.READ,
+            search_files,
+            required_arguments=("query",),
+        ),
+        ToolDefinition(
+            "file_inspect",
+            "Inspect a file using its stable internal file_id.",
+            ToolRisk.READ,
+            inspect_file,
+            required_arguments=("file_id",),
+        ),
+        ToolDefinition(
+            "file_delete",
+            "Delete a user file after confirmation.",
+            ToolRisk.IRREVERSIBLE,
+            delete_file,
             replay_policy=ToolReplayPolicy.IDEMPOTENT,
-            required_arguments=("thing_id", "source_id"),
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            "source.list_for_thing",
-            "List Sources linked to a Thing.",
-            ToolRisk.READ,
-            list_for_thing,
-            required_arguments=("thing_id",),
-        )
-    )
+            required_arguments=("file_id",),
+        ),
+    ):
+        registry.register(definition)
 
 
 def register_search_tools(
     registry: ToolRegistry,
     service: SearchApplicationService | None,
+    unit_of_work_factory: Callable[[], Any] | None = None,
 ) -> None:
     if service is None:
         return
 
-    async def search_web(
-        context: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
+    from laoshiren.application.files.observations import promote_url_inspection
+
+    async def search_web(context: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
         query = normalize_search_query(str(arguments["query"]))
         domains_raw = arguments.get("domains")
         domains: tuple[str, ...] | None = None
@@ -1132,25 +1391,23 @@ def register_search_tools(
             source_refs=urls,
         )
 
-    async def search_official(
-        context: ToolExecutionContext, arguments: dict[str, Any]
-    ) -> ToolResult:
-        query = normalize_search_query(str(arguments["query"]))
-        domains_raw = arguments.get("official_domains")
-        domains: tuple[str, ...] | None = None
-        if isinstance(domains_raw, list):
-            domains = tuple(str(item) for item in domains_raw if str(item).strip())
-        payload = await service.search_official(
+    async def inspect_url(context: ToolExecutionContext, arguments: dict[str, Any]) -> ToolResult:
+        url = str(arguments["url"])
+        payload = await service.inspect_url(
             user_id=context.user_id,
-            query=query,
-            official_domains=domains,
-            limit=int(arguments["limit"]) if arguments.get("limit") is not None else None,
-            recency_days=(
-                int(arguments["recency_days"])
-                if arguments.get("recency_days") is not None
-                else None
-            ),
+            url=url,
         )
+        if bool(arguments.get("persist_observation")) and unit_of_work_factory is not None:
+            async with unit_of_work_factory() as unit_of_work:
+                observation_id = await promote_url_inspection(
+                    unit_of_work,
+                    user_id=context.user_id,
+                    requested_url=url,
+                    payload=payload,
+                )
+                await unit_of_work.commit()
+            payload = {**payload, "web_observation_id": str(observation_id)}
+            payload["evidence_ref"] = web_evidence_ref(observation_id).to_json()
         urls = tuple(
             str(item["url"])
             for item in payload.get("items", [])
@@ -1159,29 +1416,28 @@ def register_search_tools(
         return ToolResult(
             ToolStatus.SUCCESS,
             "OK",
-            "Official-biased search completed.",
+            "URL inspected.",
             data=payload,
             source_refs=urls,
         )
 
-    registry.register(
+    for definition in (
         ToolDefinition(
-            "search.web",
-            "Search the public web for background facts.",
+            "search_web",
+            "Search the public web.",
             ToolRisk.READ,
             search_web,
             required_arguments=("query",),
-        )
-    )
-    registry.register(
+        ),
         ToolDefinition(
-            "search.official",
-            "Search with official-domain bias for deadlines, rules and policies.",
+            "url_inspect",
+            "Inspect a known URL resource.",
             ToolRisk.READ,
-            search_official,
-            required_arguments=("query",),
-        )
-    )
+            inspect_url,
+            required_arguments=("url",),
+        ),
+    ):
+        registry.register(definition)
 
 
 def build_tool_manifest(registry: ToolRegistry) -> str:
@@ -1195,3 +1451,22 @@ def build_tool_manifest(registry: ToolRegistry) -> str:
         suffix = f"；参数：{arguments}" if arguments else ""
         lines.append(f"{name}：{definition.description}{suffix}")
     return "\n".join(lines)
+
+
+def export_tool_registry_contract(registry: ToolRegistry) -> list[dict[str, Any]]:
+    """Serialize the registered V2.2 tool surface for contract drift checks."""
+    contract: list[dict[str, Any]] = []
+    for name in registry.names():
+        definition = registry.get(name)
+        if definition is None:
+            continue
+        contract.append(
+            {
+                "name": name,
+                "description": definition.description,
+                "risk": definition.risk.value,
+                "replay_policy": definition.replay_policy.value,
+                "required_arguments": list(definition.required_arguments),
+            }
+        )
+    return contract

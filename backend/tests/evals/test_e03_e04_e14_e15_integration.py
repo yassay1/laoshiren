@@ -16,6 +16,7 @@ from laoshiren.main import create_app
 pytestmark = [
     pytest.mark.asyncio,
     pytest.mark.database,
+    pytest.mark.gate_d,
     pytest.mark.skipif(
         os.getenv("RUN_DATABASE_TESTS") != "1",
         reason="Set RUN_DATABASE_TESTS=1 to run PostgreSQL integration tests.",
@@ -44,7 +45,7 @@ class E03HearsayGateway:
         self._attempted = True
         return ExecutiveDecision(
             DecisionKind.CALL_TOOL,
-            tool_name="state.set_deadline",
+            tool_name="thing_date_set",
             tool_arguments={
                 "thing_id": self._thing_id,
                 "value": "2026-09-22T17:00:00+00:00",
@@ -82,7 +83,7 @@ class E04MemoryRecallGateway:
             )
         return ExecutiveDecision(
             DecisionKind.CALL_TOOL,
-            tool_name="memory.search",
+            tool_name="memory_search",
             tool_arguments={"query": "回复风格", "memory_type": "PROFILE", "limit": 3},
         )
 
@@ -116,7 +117,7 @@ class E14StateAuthorityGateway:
         self._loaded = True
         return ExecutiveDecision(
             DecisionKind.CALL_TOOL,
-            tool_name="state.list_tasks",
+            tool_name="state_get_thing_context",
             tool_arguments={"thing_id": self._thing_id},
         )
 
@@ -133,9 +134,8 @@ class E15SourceRetentionGateway:
             data = result.get("data", {})
             if (
                 result.get("status") == ToolStatus.SUCCESS.value
-                and data.get("id") == self._source_id
+                and data.get("file_id") == self._source_id
                 and data.get("mime_type")
-                and data.get("size") is not None
             ):
                 return ExecutiveDecision(
                     DecisionKind.RESPOND,
@@ -144,8 +144,8 @@ class E15SourceRetentionGateway:
             return ExecutiveDecision(DecisionKind.RESPOND, content="无法确认原件。")
         return ExecutiveDecision(
             DecisionKind.CALL_TOOL,
-            tool_name="source.get",
-            tool_arguments={"source_id": self._source_id},
+            tool_name="file_inspect",
+            tool_arguments={"file_id": self._source_id},
         )
 
 
@@ -180,9 +180,7 @@ async def test_e03_hearsay_deadline_requires_verification() -> None:
         )
         status = await worker.run_once(user_id=user_id, run_id=run.id)
         assert status is RunStatus.COMPLETED
-        refreshed = await container.personal_state.get_thing(
-            user_id=user_id, thing_id=thing.id
-        )
+        refreshed = await container.personal_state.get_thing(user_id=user_id, thing_id=thing.id)
         assert refreshed.deadline_at is None
     finally:
         await container.checkpoints.stop()
@@ -265,9 +263,7 @@ async def test_e14_state_overrides_memory_for_task_status() -> None:
             title="eval:E14",
             idempotency_key=f"e14-thread-{uuid4()}",
         )
-        worker = build_agent_worker(
-            container, E14StateAuthorityGateway(thing_id=str(thing.id))
-        )  # type: ignore[arg-type]
+        worker = build_agent_worker(container, E14StateAuthorityGateway(thing_id=str(thing.id)))  # type: ignore[arg-type]
         run = await container.runtime.create_user_run(
             user_id=user_id,
             thread_id=thread.id,

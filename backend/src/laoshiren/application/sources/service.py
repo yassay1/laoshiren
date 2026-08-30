@@ -7,7 +7,11 @@ from pathlib import PurePath
 from uuid import UUID, uuid4
 
 from laoshiren.application.ai.ports import EmbeddingProvider, EmbeddingProviderError
+from laoshiren.application.files import retrieval as file_retrieval
+from laoshiren.application.files import sync as file_sync
+from laoshiren.application.files.mappers import file_from_source
 from laoshiren.application.personal_state.ports import PersonalStateUnitOfWork
+from laoshiren.application.sources import write_ops as source_write_ops
 from laoshiren.application.sources.dto import (
     SourceContextChunkDTO,
     SourceDTO,
@@ -20,6 +24,7 @@ from laoshiren.application.sources.ports import (
     SourceParser,
     SourceParsingError,
 )
+from laoshiren.domain.files.entities import MessageAttachment
 from laoshiren.domain.personal_state.entities import StateMutation, TimelineEvent, utc_now
 from laoshiren.domain.personal_state.exceptions import EntityNotFound
 from laoshiren.domain.sources.entities import (
@@ -185,6 +190,7 @@ class SourceApplicationService:
         chunks: AsyncIterator[bytes],
         idempotency_key: str,
         origin: SourceOrigin = SourceOrigin.UPLOAD,
+        message_id: UUID | None = None,
     ) -> SourceDTO:
         safe_name = PurePath(filename).name
         extension = PurePath(safe_name).suffix.lower()
@@ -249,6 +255,20 @@ class SourceApplicationService:
             async with self._unit_of_work_factory() as unit_of_work:
                 await unit_of_work.users.ensure_exists(user_id)
                 await unit_of_work.sources.add(source)
+                await file_sync.mirror_source_upload(unit_of_work, source)
+                if message_id is not None:
+                    message = await unit_of_work.messages.get(
+                        user_id=user_id, message_id=message_id
+                    )
+                    if message is None:
+                        raise EntityNotFound("Message was not found.")
+                    await unit_of_work.files.add_message_attachment(
+                        MessageAttachment(
+                            message_id=message_id,
+                            file_id=source.id,
+                            attachment_order=0,
+                        )
+                    )
                 await unit_of_work.commit()
             return to_source_dto(source)
         except Exception:
@@ -259,6 +279,7 @@ class SourceApplicationService:
         self,
         *,
         owner: str,
+        user_id: UUID | None = None,
         lease_seconds: float,
         max_attempts: int,
     ) -> SourceProcessingJobDTO | None:
@@ -268,6 +289,7 @@ class SourceApplicationService:
         async with self._unit_of_work_factory() as unit_of_work:
             source = await unit_of_work.sources.claim_next_processing(
                 owner=owner,
+                user_id=user_id,
                 now=now,
                 lease_expires_at=now + timedelta(seconds=lease_seconds),
                 supported_mime_types=PROCESSABLE_MIME_TYPES,
@@ -286,9 +308,7 @@ class SourceApplicationService:
                 attempt_count=source.processing_attempt_count,
             )
 
-    async def extract_claimed_content(
-        self, job: SourceProcessingJobDTO
-    ) -> ParsedSourceContent:
+    async def extract_claimed_content(self, job: SourceProcessingJobDTO) -> ParsedSourceContent:
         if self._parser is None:
             raise RuntimeError("No Source parser is configured.")
         content = await self._storage.read(object_key=job.object_key)
@@ -343,9 +363,7 @@ class SourceApplicationService:
                 if page.text.strip()
             ),
         )
-        chunks = build_source_chunks_from_content(
-            source_id=source_id, content=normalized
-        )
+        chunks = build_source_chunks_from_content(source_id=source_id, content=normalized)
         chunks = [
             replace(
                 chunk,
@@ -379,6 +397,16 @@ class SourceApplicationService:
                 now=datetime.now(UTC),
             )
             if completed:
+                source = await unit_of_work.sources.get_by_id(source_id)
+                if source is not None:
+                    await file_sync.mirror_processing_complete(
+                        unit_of_work,
+                        source=source,
+                        chunks=chunks,
+                        parser_version=PARSER_VERSION,
+                        chunk_version=CHUNK_VERSION,
+                        embedding_model_version=self._embedding_model_version,
+                    )
                 await unit_of_work.commit()
             else:
                 await unit_of_work.rollback()
@@ -396,9 +424,7 @@ class SourceApplicationService:
         if max_chunks <= 0 or max_characters <= 0:
             raise ValueError("Source context limits must be positive.")
         async with self._unit_of_work_factory() as unit_of_work:
-            source = await unit_of_work.sources.get(
-                user_id=user_id, source_id=source_id
-            )
+            source = await unit_of_work.sources.get(user_id=user_id, source_id=source_id)
             if source is None:
                 raise EntityNotFound("Source was not found.")
             query_text = query.strip() if query and query.strip() else None
@@ -406,20 +432,45 @@ class SourceApplicationService:
             if query_text is not None and self._embedding_provider is not None:
                 with suppress(EmbeddingProviderError):
                     query_embedding = await self._embedding_provider.embed(query_text)
-            chunks = await unit_of_work.sources.list_chunks(
+            segments = await file_retrieval.list_inspect_segments(
+                unit_of_work,
                 user_id=user_id,
-                source_id=source_id,
-                limit=max_chunks,
+                file_id=source_id,
+                max_chunks=max_chunks,
                 query_embedding=query_embedding,
                 query_text=query_text if query_embedding is None else None,
             )
-            if not chunks and query_text is not None:
+            if segments:
+                chunks_dto = [
+                    file_retrieval.segment_to_context_chunk(segment) for segment in segments
+                ]
+            else:
                 chunks = await unit_of_work.sources.list_chunks(
-                    user_id=user_id, source_id=source_id, limit=max_chunks
+                    user_id=user_id,
+                    source_id=source_id,
+                    limit=max_chunks,
+                    query_embedding=query_embedding,
+                    query_text=query_text if query_embedding is None else None,
                 )
+                if not chunks and query_text is not None:
+                    chunks = await unit_of_work.sources.list_chunks(
+                        user_id=user_id, source_id=source_id, limit=max_chunks
+                    )
+                chunks_dto = [
+                    SourceContextChunkDTO(
+                        id=chunk.id,
+                        source_id=chunk.source_id,
+                        ordinal=chunk.ordinal,
+                        content=chunk.content,
+                        char_start=chunk.char_start,
+                        char_end=chunk.char_end,
+                        page_number=chunk.page_number,
+                    )
+                    for chunk in chunks
+                ]
         result: list[SourceContextChunkDTO] = []
         remaining = max_characters
-        for chunk in chunks:
+        for chunk in chunks_dto:
             if remaining <= 0:
                 break
             content = chunk.content[:remaining]
@@ -477,9 +528,7 @@ class SourceApplicationService:
             thing = await unit_of_work.things.get(user_id=user_id, thing_id=thing_id)
             if thing is None:
                 raise EntityNotFound("Thing was not found.")
-            sources = await unit_of_work.sources.list_for_thing(
-                user_id=user_id, thing_id=thing_id
-            )
+            sources = await unit_of_work.sources.list_for_thing(user_id=user_id, thing_id=thing_id)
             return [to_source_dto(source) for source in sources]
 
     async def link_to_thing(
@@ -548,3 +597,93 @@ class SourceApplicationService:
                 )
             await unit_of_work.commit()
             return created
+
+    async def search_files(
+        self,
+        *,
+        user_id: UUID,
+        query: str,
+        thing_id: UUID | None = None,
+        limit: int = 8,
+    ) -> list[dict[str, object]]:
+        if not 1 <= limit <= 20:
+            raise ValueError("File search limit must be between 1 and 20.")
+        async with self._unit_of_work_factory() as unit_of_work:
+            if thing_id is not None:
+                thing = await unit_of_work.things.get(user_id=user_id, thing_id=thing_id)
+                if thing is None:
+                    raise EntityNotFound("Thing was not found.")
+            files = await file_retrieval.search_active_files(
+                unit_of_work,
+                user_id=user_id,
+                query=query,
+                thing_id=thing_id,
+                limit=limit,
+            )
+            if not files:
+                files = [
+                    file_from_source(source)
+                    for source in await unit_of_work.sources.search_for_user(
+                        user_id=user_id,
+                        query=query,
+                        thing_id=thing_id,
+                        limit=limit,
+                    )
+                ]
+            results: list[dict[str, object]] = []
+            normalized_query = query.strip()
+            for file in files:
+                source = await unit_of_work.sources.get(user_id=user_id, source_id=file.id)
+                segments = await file_retrieval.list_inspect_segments(
+                    unit_of_work,
+                    user_id=user_id,
+                    file_id=file.id,
+                    max_chunks=3,
+                    query_text=normalized_query or None,
+                )
+                legacy_chunks = []
+                if not segments and normalized_query:
+                    legacy_chunks = await unit_of_work.sources.list_chunks(
+                        user_id=user_id,
+                        source_id=file.id,
+                        limit=3,
+                        query_text=normalized_query,
+                    )
+                results.append(
+                    file_retrieval.build_search_result_item(
+                        file=file,
+                        source=source,
+                        segments=segments,
+                        legacy_chunks=legacy_chunks,
+                    )
+                )
+            return results
+
+    async def delete_file(
+        self,
+        *,
+        user_id: UUID,
+        source_id: UUID,
+        action_id: str,
+        idempotency_key: str,
+        reason: str,
+    ) -> SourceDTO:
+        async with self._unit_of_work_factory() as unit_of_work:
+            outcome = await source_write_ops.apply_delete_file(
+                unit_of_work,
+                user_id=user_id,
+                source_id=source_id,
+                action_id=action_id,
+                idempotency_key=idempotency_key,
+                reason=reason,
+            )
+            await unit_of_work.commit()
+            deleted = await unit_of_work.sources.get_including_deleted(
+                user_id=user_id, source_id=source_id
+            )
+            if deleted is None:
+                raise RuntimeError("File delete did not persist.")
+            return to_source_dto(deleted, replayed=outcome.replayed)
+
+    async def purge_object_storage(self, *, object_key: str) -> None:
+        await self._storage.delete(object_key=object_key)

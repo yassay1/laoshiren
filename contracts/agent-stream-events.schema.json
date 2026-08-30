@@ -3,26 +3,31 @@
   "$id": "https://laoshiren.local/schemas/agent-stream-events.schema.json",
   "title": "Laoshiren Agent Stream Event",
   "type": "object",
-  "required": ["event_id", "event", "run_id", "occurred_at", "data"],
+  "required": ["event_id", "sequence", "event", "run_id", "occurred_at", "visibility", "schema_version", "data"],
   "properties": {
     "event_id": { "type": "string", "minLength": 1 },
+    "sequence": { "type": "integer", "minimum": 1 },
     "event": {
       "enum": [
+        "run.queued",
         "run.started",
-        "assistant.delta",
-        "assistant.message",
+        "assistant.started",
+        "assistant.completed",
         "tool.started",
         "tool.completed",
         "tool.failed",
-        "status.updated",
-        "interrupt.required",
+        "hitl.requested",
+        "run.waiting_for_user",
+        "run.resumed",
         "run.completed",
         "run.failed",
-        "heartbeat"
+        "run.cancelled"
       ]
     },
     "run_id": { "type": "string", "minLength": 1 },
     "occurred_at": { "type": "string", "format": "date-time" },
+    "visibility": { "enum": ["CLIENT", "INTERNAL"] },
+    "schema_version": { "type": "integer", "minimum": 1 },
     "data": { "type": "object" }
   },
   "additionalProperties": false

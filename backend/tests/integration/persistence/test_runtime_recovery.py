@@ -38,9 +38,7 @@ async def test_running_run_is_requeued_after_service_restart_recovery() -> None:
             idempotency_key=f"recovery-run-{uuid4()}",
         )
         run_id = run.id
-        await runtime.start_run(
-            user_id=user_id, run_id=run.id, phase="tool", label="in flight"
-        )
+        await runtime.start_run(user_id=user_id, run_id=run.id, phase="tool", label="in flight")
 
         recovered = await runtime.recover_pending_runs()
         current = await runtime.get_run(user_id=user_id, run_id=run.id)

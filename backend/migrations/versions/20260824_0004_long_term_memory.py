@@ -64,9 +64,7 @@ def upgrade() -> None:
         "long_term_memories",
         ["user_id", "status", "memory_type"],
     )
-    op.create_index(
-        "ix_memories_thing_status", "long_term_memories", ["thing_id", "status"]
-    )
+    op.create_index("ix_memories_thing_status", "long_term_memories", ["thing_id", "status"])
     op.create_table(
         "memory_operations",
         sa.Column("id", sa.Uuid(), nullable=False),

@@ -13,6 +13,7 @@ from laoshiren.main import create_app
 pytestmark = [
     pytest.mark.asyncio,
     pytest.mark.database,
+    pytest.mark.gate_d,
     pytest.mark.skipif(
         os.getenv("RUN_DATABASE_TESTS") != "1",
         reason="Set RUN_DATABASE_TESTS=1 to run PostgreSQL integration tests.",
@@ -33,10 +34,11 @@ class E01CompleteTaskGateway:
             return ExecutiveDecision(DecisionKind.RESPOND, content="Demo 已标记完成。")
         return ExecutiveDecision(
             DecisionKind.CALL_TOOL,
-            tool_name="state.complete_task",
+            tool_name="task_change_status",
             tool_arguments={
                 "task_id": self._task_id,
                 "expected_version": 1,
+                "target_status": "DONE",
             },
         )
 
@@ -85,7 +87,7 @@ async def test_core_scenario_worker_smoke(code: str) -> None:
             idempotency_key=f"eval-run-{code}-{uuid4()}",
         )
         status = await worker.run_once(user_id=user_id, run_id=run.id)
-        assert status in {RunStatus.COMPLETED, RunStatus.WAITING_USER}
+        assert status in {RunStatus.COMPLETED, RunStatus.WAITING_FOR_USER}
         if code == "E01":
             tasks = await app.state.container.personal_state.get_tasks(
                 user_id=user_id, thing_id=thing.id

@@ -78,9 +78,9 @@ def build_registry() -> ToolRegistry:
 async def test_memory_forget_is_sensitive_and_remember_is_reversible() -> None:
     registry = build_registry()
 
-    assert registry.get("memory.forget").risk is ToolRisk.SENSITIVE_WRITE
-    assert registry.get("memory.remember").risk is ToolRisk.REVERSIBLE_WRITE
-    assert registry.get("memory.search").risk is ToolRisk.READ
+    assert registry.get("memory_forget").risk is ToolRisk.SENSITIVE_WRITE
+    assert registry.get("memory_remember").risk is ToolRisk.REVERSIBLE_WRITE
+    assert registry.get("memory_search").risk is ToolRisk.READ
 
 
 async def test_memory_remember_tool_delegates_to_manager() -> None:
@@ -94,7 +94,7 @@ async def test_memory_remember_tool_delegates_to_manager() -> None:
     context = ToolExecutionContext(user_id=uuid4(), run_id=uuid4(), action_id="remember-1")
 
     result = await registry.execute(
-        name="memory.remember",
+        name="memory_remember",
         context=context,
         arguments={"content": "预算定为 5000", "memory_type": "SEMANTIC"},
     )
@@ -117,7 +117,7 @@ async def test_memory_forget_tool_delegates_to_manager() -> None:
     memory_id = uuid4()
 
     result = await registry.execute(
-        name="memory.forget",
+        name="memory_forget",
         context=context,
         arguments={"memory_id": str(memory_id), "expected_version": 2},
     )
@@ -137,7 +137,7 @@ async def test_memory_remember_without_manager_reports_unavailable() -> None:
     )
 
     result = await registry.execute(
-        name="memory.remember",
+        name="memory_remember",
         context=ToolExecutionContext(uuid4(), uuid4(), "remember-1"),
         arguments={"content": "预算 5000", "memory_type": "SEMANTIC"},
     )

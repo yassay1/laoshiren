@@ -7,11 +7,12 @@ from laoshiren.domain.automations.entities import (
     AutomationStatus,
     NotificationStatus,
 )
-from laoshiren.domain.runtime.entities import RunStatus
+from laoshiren.domain.runtime.entities import DurableJobStatus, RunStatus
 from laoshiren.domain.sources.entities import ProcessingStatus
 from laoshiren.infrastructure.persistence.orm.personal_state import (
     AgentRunORM,
     AutomationORM,
+    DurableJobORM,
     NotificationOutboxORM,
     SourceORM,
 )
@@ -23,14 +24,18 @@ class SqlAlchemyOperationalStatusAdapter:
 
     async def count_backlogs(self, *, now: datetime) -> dict[str, int]:
         counters = {
-            "runs_queued": select(func.count()).select_from(AgentRunORM).where(
-                AgentRunORM.status == RunStatus.QUEUED
-            ),
-            "runs_expired": select(func.count()).select_from(AgentRunORM).where(
+            "runs_queued": select(func.count())
+            .select_from(AgentRunORM)
+            .where(AgentRunORM.status == RunStatus.QUEUED),
+            "runs_expired": select(func.count())
+            .select_from(AgentRunORM)
+            .where(
                 AgentRunORM.status == RunStatus.RUNNING,
                 AgentRunORM.lease_expires_at <= now,
             ),
-            "sources_due": select(func.count()).select_from(SourceORM).where(
+            "sources_due": select(func.count())
+            .select_from(SourceORM)
+            .where(
                 or_(
                     and_(
                         SourceORM.processing_status == ProcessingStatus.PENDING,
@@ -45,7 +50,9 @@ class SqlAlchemyOperationalStatusAdapter:
                     ),
                 )
             ),
-            "automations_due": select(func.count()).select_from(AutomationORM).where(
+            "automations_due": select(func.count())
+            .select_from(AutomationORM)
+            .where(
                 AutomationORM.status == AutomationStatus.ACTIVE,
                 AutomationORM.next_trigger_at <= now,
             ),
@@ -65,6 +72,12 @@ class SqlAlchemyOperationalStatusAdapter:
                         NotificationOutboxORM.next_attempt_at <= now,
                     ),
                 )
+            ),
+            "durable_jobs_ready": select(func.count())
+            .select_from(DurableJobORM)
+            .where(
+                DurableJobORM.status == DurableJobStatus.READY,
+                DurableJobORM.available_at <= now,
             ),
         }
         statement = select(

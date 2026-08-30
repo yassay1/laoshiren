@@ -14,9 +14,7 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.add_column("sources", sa.Column("extracted_text", sa.Text(), nullable=True))
     op.add_column("sources", sa.Column("processing_error", sa.String(100), nullable=True))
-    op.add_column(
-        "sources", sa.Column("processed_at", sa.DateTime(timezone=True), nullable=True)
-    )
+    op.add_column("sources", sa.Column("processed_at", sa.DateTime(timezone=True), nullable=True))
 
 
 def downgrade() -> None:

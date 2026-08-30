@@ -78,6 +78,9 @@ class FakeMemories:
         self.stored[memory.id] = memory
         return memory
 
+    async def create_if_allowed(self, **values: object) -> MemoryDTO | None:
+        return await self.create(**values)
+
     async def update(
         self,
         *,
@@ -129,9 +132,7 @@ async def test_create_action_forms_memory_with_provenance() -> None:
         ),
     )
 
-    formed = await manager.form(
-        context=make_context(uuid4(), run_id, message_id, "预算定为 5000")
-    )
+    formed = await manager.form(context=make_context(uuid4(), run_id, message_id, "预算定为 5000"))
 
     assert len(formed) == 1
     assert memories.created[0]["provenance_run_id"] == run_id

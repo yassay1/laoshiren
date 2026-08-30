@@ -1,27 +1,43 @@
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
+from laoshiren.application.personal_state.ports import PersonalStateUnitOfWork
+from laoshiren.application.personal_state.write_ops import WriteOutcome
 from laoshiren.application.runtime.dto import (
+    DurableJobClaimDTO,
+    EphemeralFrameDTO,
     MessageDTO,
     RunDTO,
     RunEventDTO,
     ThreadDTO,
     ToolExecutionClaimDTO,
 )
-from laoshiren.application.runtime.ports import RunDispatcher, RuntimeUnitOfWork
+from laoshiren.application.runtime.durable_job_claim import claim_ready_jobs
+from laoshiren.application.runtime.ports import (
+    RunDispatcher,
+    RuntimeLiveSubscription,
+    RuntimeUnitOfWork,
+    RuntimeWakeup,
+)
+from laoshiren.application.runtime.receipts import build_tool_receipt
 from laoshiren.domain.personal_state.exceptions import (
     EntityNotFound,
     InvalidStateTransition,
     VersionConflict,
 )
 from laoshiren.domain.runtime.entities import (
+    TERMINAL_RUN_STATUSES,
     AgentRun,
+    DurableJob,
+    DurableJobKind,
+    DurableJobStatus,
     Message,
     MessageRole,
     RunEvent,
     RunEventType,
+    RunInteraction,
     RunStatus,
     RunTrigger,
     Thread,
@@ -69,9 +85,7 @@ def to_run_dto(value: AgentRun, *, replayed: bool = False) -> RunDTO:
         final_message_id=value.final_message_id,
         interrupt_id=value.interrupt_id,
         interrupt=dict(value.interrupt) if value.interrupt is not None else None,
-        resume_payload=(
-            dict(value.resume_payload) if value.resume_payload is not None else None
-        ),
+        resume_payload=(dict(value.resume_payload) if value.resume_payload is not None else None),
         error_code=value.error_code,
         claim_owner=value.claim_owner,
         claim_token=value.claim_token,
@@ -79,6 +93,24 @@ def to_run_dto(value: AgentRun, *, replayed: bool = False) -> RunDTO:
         heartbeat_at=value.heartbeat_at,
         attempt_count=value.attempt_count,
         version=value.version,
+        last_event_sequence=value.event_sequence,
+        pending_interaction=(
+            {
+                "interaction_id": str(value.interrupt_id),
+                "type": value.interrupt.get("type", "CONFIRMATION"),
+                "action_id": value.interrupt.get("action_id"),
+                "request": dict(value.interrupt),
+            }
+            if value.interrupt_id is not None and value.interrupt is not None
+            else None
+        ),
+        active_time_used_ms=value.active_time_used_ms,
+        active_started_at=value.active_started_at,
+        terminal_output=(
+            dict(value.terminal_output) if value.terminal_output is not None else None
+        ),
+        graph_terminal_at=value.graph_terminal_at,
+        budget_snapshot=dict(value.budget_snapshot),
         created_at=value.created_at,
         started_at=value.started_at,
         completed_at=value.completed_at,
@@ -96,6 +128,8 @@ def to_event_dto(value: RunEvent) -> RunEventDTO:
         event=value.event_type,
         occurred_at=value.occurred_at,
         data=dict(value.data),
+        visibility=value.visibility,
+        schema_version=value.schema_version,
     )
 
 
@@ -104,9 +138,42 @@ class RuntimeApplicationService:
         self,
         unit_of_work_factory: UnitOfWorkFactory,
         run_dispatcher: RunDispatcher | None = None,
+        wakeup: RuntimeWakeup | None = None,
+        budget_snapshot: dict[str, Any] | None = None,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._run_dispatcher = run_dispatcher
+        self._wakeup = wakeup
+        self._budget_snapshot = dict(budget_snapshot or {})
+
+    async def publish_wakeup(self, *, run_id: UUID, latest_sequence: int) -> None:
+        if self._wakeup is not None:
+            await self._wakeup.publish(run_id=run_id, latest_sequence=latest_sequence)
+
+    async def wait_for_wakeup(
+        self, *, run_id: UUID, timeout_seconds: float
+    ) -> EphemeralFrameDTO | None:
+        if self._wakeup is None:
+            return None
+        return await self._wakeup.wait(run_id=run_id, timeout_seconds=timeout_seconds)
+
+    async def subscribe_to_live_frames(self, *, run_id: UUID) -> RuntimeLiveSubscription | None:
+        if self._wakeup is None:
+            return None
+        return await self._wakeup.subscribe(run_id=run_id)
+
+    async def emit_ephemeral_frame(
+        self, *, user_id: UUID, run_id: UUID, frame_type: str, data: dict[str, Any]
+    ) -> None:
+        if frame_type not in {"assistant.delta", "stream.reset"}:
+            raise ValueError("Unsupported ephemeral frame type.")
+        async with self._unit_of_work_factory() as uow:
+            if await uow.runs.get(user_id=user_id, run_id=run_id) is None:
+                raise EntityNotFound("Run was not found.")
+        if self._wakeup is not None:
+            await self._wakeup.publish_frame(
+                EphemeralFrameDTO(run_id=run_id, frame_type=frame_type, data=dict(data))
+            )
 
     async def create_thread(
         self,
@@ -125,9 +192,10 @@ class RuntimeApplicationService:
             if existing is not None:
                 return to_thread_dto(existing, replayed=True)
             await uow.users.ensure_exists(user_id)
-            if active_thing_id is not None and await uow.things.get(
-                user_id=user_id, thing_id=active_thing_id
-            ) is None:
+            if (
+                active_thing_id is not None
+                and await uow.things.get(user_id=user_id, thing_id=active_thing_id) is None
+            ):
                 raise EntityNotFound("Thing was not found.")
             thread = Thread(
                 user_id=user_id,
@@ -206,6 +274,7 @@ class RuntimeApplicationService:
                 thread_id=thread_id,
                 trigger=RunTrigger.USER_MESSAGE,
                 idempotency_key=idempotency_key,
+                budget_snapshot=dict(self._budget_snapshot),
             )
             message = Message(
                 user_id=user_id,
@@ -221,8 +290,16 @@ class RuntimeApplicationService:
             await uow.messages.add(message)
             await uow.runs.append_event(
                 run_id=run.id,
-                event_type=RunEventType.STATUS_UPDATED,
+                event_type=RunEventType.RUN_QUEUED,
                 data={"status": RunStatus.QUEUED, "label": "等待开始", "phase": "queued"},
+            )
+            await uow.durable_jobs.add(
+                DurableJob(
+                    user_id=user_id,
+                    kind=DurableJobKind.AGENT_RUN,
+                    dedupe_key=f"agent-run:{run.id}",
+                    payload={"run_id": str(run.id)},
+                )
             )
             await uow.commit()
             result = to_run_dto(run)
@@ -272,6 +349,7 @@ class RuntimeApplicationService:
                 thread_id=thread.id,
                 trigger=RunTrigger.AUTOMATION,
                 idempotency_key=run_key,
+                budget_snapshot=dict(self._budget_snapshot),
             )
             input_message = Message(
                 user_id=user_id,
@@ -291,13 +369,21 @@ class RuntimeApplicationService:
             await uow.messages.add(input_message)
             await uow.runs.append_event(
                 run_id=run.id,
-                event_type=RunEventType.STATUS_UPDATED,
+                event_type=RunEventType.RUN_QUEUED,
                 data={
                     "status": RunStatus.QUEUED.value,
                     "label": "自动化触发",
                     "phase": "automation",
                     "automation_id": str(automation_id),
                 },
+            )
+            await uow.durable_jobs.add(
+                DurableJob(
+                    user_id=user_id,
+                    kind=DurableJobKind.AGENT_RUN,
+                    dedupe_key=f"agent-run:{run.id}",
+                    payload={"run_id": str(run.id)},
+                )
             )
             await uow.commit()
             result = to_run_dto(run)
@@ -312,6 +398,91 @@ class RuntimeApplicationService:
                 raise EntityNotFound("Run was not found.")
             return to_run_dto(run)
 
+    async def claim_agent_run_jobs(
+        self, *, owner: str, lease_seconds: float, limit: int
+    ) -> list[DurableJobClaimDTO]:
+        if not owner.strip() or lease_seconds <= 0 or limit <= 0:
+            raise ValueError("Durable Job claim parameters must be positive.")
+        now = datetime.now(UTC)
+        async with self._unit_of_work_factory() as uow:
+            jobs = await claim_ready_jobs(
+                uow,
+                kind=DurableJobKind.AGENT_RUN,
+                owner=owner,
+                now=now,
+                lease_until=now + timedelta(seconds=lease_seconds),
+                limit=limit,
+            )
+            claims: list[DurableJobClaimDTO] = []
+            for job in jobs:
+                run_id = UUID(str(job.payload["run_id"]))
+                claims.append(
+                    DurableJobClaimDTO(
+                        job_id=job.id,
+                        user_id=job.user_id,
+                        run_id=run_id,
+                        claim_epoch=job.claim_epoch,
+                    )
+                )
+            await uow.commit()
+            return claims
+
+    async def settle_agent_run_job(
+        self,
+        *,
+        claim: DurableJobClaimDTO,
+        owner: str,
+        error_code: str | None = None,
+    ) -> None:
+        async with self._unit_of_work_factory() as uow:
+            run = await uow.runs.get(user_id=claim.user_id, run_id=claim.run_id)
+            if run is None:
+                status = DurableJobStatus.FAILED
+                error_code = "RUN_NOT_FOUND"
+            elif run.status is RunStatus.WAITING_FOR_USER:
+                status = DurableJobStatus.PAUSED
+            elif run.status is RunStatus.CANCELLED:
+                status = DurableJobStatus.CANCELLED
+            elif run.status in TERMINAL_RUN_STATUSES:
+                status = DurableJobStatus.COMPLETED
+            else:
+                status = DurableJobStatus.READY
+            if status is DurableJobStatus.READY:
+                raise InvalidStateTransition("Agent Run returned without settling its state.")
+            settled = await uow.durable_jobs.settle(
+                job_id=claim.job_id,
+                owner=owner,
+                claim_epoch=claim.claim_epoch,
+                status=status,
+                now=datetime.now(UTC),
+                error_code=error_code,
+            )
+            if not settled:
+                raise InvalidStateTransition("Durable Job fencing token was lost.")
+            await uow.commit()
+
+    async def renew_agent_run_job(
+        self,
+        *,
+        claim: DurableJobClaimDTO,
+        owner: str,
+        lease_seconds: float,
+    ) -> bool:
+        now = datetime.now(UTC)
+        async with self._unit_of_work_factory() as uow:
+            renewed = await uow.durable_jobs.renew(
+                job_id=claim.job_id,
+                owner=owner,
+                claim_epoch=claim.claim_epoch,
+                lease_until=now + timedelta(seconds=lease_seconds),
+                now=now,
+            )
+            if renewed:
+                await uow.commit()
+            else:
+                await uow.rollback()
+            return renewed
+
     async def recover_pending_runs(self, *, limit: int = 500) -> int:
         """Requeue crash-abandoned Runs and dispatch all durable queued work."""
         dispatches: list[tuple[UUID, UUID]] = []
@@ -325,7 +496,7 @@ class RuntimeApplicationService:
                         continue
                     await uow.runs.append_event(
                         run_id=run.id,
-                        event_type=RunEventType.STATUS_UPDATED,
+                        event_type=RunEventType.RUN_QUEUED,
                         data={
                             "status": RunStatus.QUEUED.value,
                             "phase": run.current_phase,
@@ -364,7 +535,7 @@ class RuntimeApplicationService:
             if run is None:
                 await uow.rollback()
                 return None
-            await uow.runs.append_event(
+            event = await uow.runs.append_event(
                 run_id=run.id,
                 event_type=RunEventType.RUN_STARTED,
                 data={
@@ -375,7 +546,9 @@ class RuntimeApplicationService:
                 },
             )
             await uow.commit()
-            return to_run_dto(run)
+            result = to_run_dto(run)
+        await self.publish_wakeup(run_id=run_id, latest_sequence=event.sequence)
+        return result
 
     async def renew_run_lease(
         self,
@@ -423,7 +596,7 @@ class RuntimeApplicationService:
             action_id=action_id,
             tool_name=tool_name,
             arguments_hash=arguments_hash,
-            status=ToolExecutionStatus.RUNNING,
+            status=ToolExecutionStatus.IN_PROGRESS,
             claim_owner=owner,
             claim_token=claim_token,
             lease_expires_at=now + timedelta(seconds=lease_seconds),
@@ -442,33 +615,21 @@ class RuntimeApplicationService:
                 raise InvalidStateTransition("Run is not owned by this Tool worker.")
             if await uow.tool_executions.add_if_absent(execution):
                 await uow.commit()
-                return ToolExecutionClaimDTO(
-                    acquired=True, claim_token=claim_token
-                )
-            existing = await uow.tool_executions.get(
-                run_id=run_id, action_id=action_id
-            )
+                return ToolExecutionClaimDTO(acquired=True, claim_token=claim_token)
+            existing = await uow.tool_executions.get(run_id=run_id, action_id=action_id)
             if existing is None:
                 raise RuntimeError("Tool execution conflict points to missing data.")
-            if (
-                existing.tool_name != tool_name
-                or existing.arguments_hash != arguments_hash
-            ):
-                raise InvalidStateTransition(
-                    "Tool action id was reused with different arguments."
-                )
+            if existing.tool_name != tool_name or existing.arguments_hash != arguments_hash:
+                raise InvalidStateTransition("Tool action id was reused with different arguments.")
             if existing.replay_safe != replay_safe or (
-                existing.idempotency_key is not None
-                and existing.idempotency_key != idempotency_key
+                existing.idempotency_key is not None and existing.idempotency_key != idempotency_key
             ):
                 raise InvalidStateTransition(
                     "Tool action id was reused with a different replay contract."
                 )
             if existing.result is not None:
                 await uow.rollback()
-                return ToolExecutionClaimDTO(
-                    acquired=False, cached_result=dict(existing.result)
-                )
+                return ToolExecutionClaimDTO(acquired=False, cached_result=dict(existing.result))
             if existing.lease_expires_at <= now and not existing.replay_safe:
                 marked_unknown = await uow.tool_executions.mark_unknown_if_expired(
                     execution_id=existing.id, now=now
@@ -515,10 +676,7 @@ class RuntimeApplicationService:
             run = await uow.runs.get(user_id=user_id, run_id=run_id)
             if run is None:
                 raise EntityNotFound("Run was not found.")
-            if (
-                run.claim_owner != owner
-                or run.status is not RunStatus.RUNNING
-            ):
+            if run.claim_owner != owner or run.status is not RunStatus.RUNNING:
                 raise InvalidStateTransition("Run is not owned by this Tool worker.")
             completed = await uow.tool_executions.complete(
                 run_id=run_id,
@@ -531,6 +689,138 @@ class RuntimeApplicationService:
             )
             if not completed:
                 raise InvalidStateTransition("Tool execution lease was lost.")
+            await uow.commit()
+
+    async def complete_personal_state_mutation_tool(
+        self,
+        *,
+        user_id: UUID,
+        run_id: UUID,
+        action_id: str,
+        owner: str,
+        claim_token: UUID,
+        tool_name: str,
+        apply_mutation: Callable[[PersonalStateUnitOfWork], Awaitable[WriteOutcome]],
+    ) -> dict[str, Any]:
+        """Atomically persist a Personal State mutation and its Tool ledger receipt."""
+        async with self._unit_of_work_factory() as uow:
+            run = await uow.runs.get(user_id=user_id, run_id=run_id)
+            if run is None:
+                raise EntityNotFound("Run was not found.")
+            if run.claim_owner != owner or run.status is not RunStatus.RUNNING:
+                raise InvalidStateTransition("Run is not owned by this Tool worker.")
+            personal_state_uow = cast(PersonalStateUnitOfWork, uow)
+            outcome = await apply_mutation(personal_state_uow)
+            receipt = build_tool_receipt(
+                tool_name=tool_name,
+                status="SUCCESS",
+                code=outcome.code,
+                message=outcome.message,
+                data=outcome.data,
+                mutation_refs=outcome.mutation_refs,
+            )
+            completed = await uow.tool_executions.complete(
+                run_id=run_id,
+                action_id=action_id,
+                owner=owner,
+                claim_token=claim_token,
+                result=receipt,
+                succeeded=True,
+                now=datetime.now(UTC),
+            )
+            if not completed:
+                raise InvalidStateTransition("Tool execution lease was lost.")
+            await uow.commit()
+            return outcome.data
+
+    async def complete_mutation_tool(
+        self,
+        *,
+        user_id: UUID,
+        run_id: UUID,
+        action_id: str,
+        owner: str,
+        claim_token: UUID,
+        tool_name: str,
+        apply_mutation: Callable[[PersonalStateUnitOfWork], Awaitable[WriteOutcome]],
+    ) -> dict[str, Any]:
+        """Atomically persist a domain mutation and its Tool ledger receipt."""
+        return await self.complete_personal_state_mutation_tool(
+            user_id=user_id,
+            run_id=run_id,
+            action_id=action_id,
+            owner=owner,
+            claim_token=claim_token,
+            tool_name=tool_name,
+            apply_mutation=apply_mutation,
+        )
+
+    async def archive_thing_and_complete_tool_execution(
+        self,
+        *,
+        user_id: UUID,
+        run_id: UUID,
+        action_id: str,
+        owner: str,
+        claim_token: UUID,
+        thing_id: UUID,
+        expected_version: int,
+        idempotency_key: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        from laoshiren.application.personal_state import write_ops
+
+        return await self.complete_personal_state_mutation_tool(
+            user_id=user_id,
+            run_id=run_id,
+            action_id=action_id,
+            owner=owner,
+            claim_token=claim_token,
+            tool_name="thing_change_state",
+            apply_mutation=lambda uow: write_ops.apply_change_archive(
+                uow,
+                user_id=user_id,
+                thing_id=thing_id,
+                expected_version=expected_version,
+                action_id=action_id,
+                idempotency_key=idempotency_key,
+                reason=reason,
+                run_id=run_id,
+                archive=True,
+            ),
+        )
+
+    async def reconcile_unknown_tool_execution(
+        self,
+        *,
+        user_id: UUID,
+        run_id: UUID,
+        action_id: str,
+        result: dict[str, Any],
+        succeeded: bool,
+        provider_request_id: str | None = None,
+    ) -> None:
+        """Record an explicit external observation; never blindly retries."""
+        async with self._unit_of_work_factory() as uow:
+            run = await uow.runs.get(user_id=user_id, run_id=run_id)
+            if run is None:
+                raise EntityNotFound("Run was not found.")
+            execution = await uow.tool_executions.get(run_id=run_id, action_id=action_id)
+            if execution is None:
+                raise EntityNotFound("Tool execution was not found.")
+            if execution.status is not ToolExecutionStatus.UNKNOWN_OUTCOME:
+                raise InvalidStateTransition(
+                    "Only UNKNOWN_OUTCOME Tool executions can be reconciled."
+                )
+            reconciled = await uow.tool_executions.reconcile_unknown(
+                execution_id=execution.id,
+                result=dict(result),
+                succeeded=succeeded,
+                provider_request_id=provider_request_id,
+                now=datetime.now(UTC),
+            )
+            if not reconciled:
+                raise VersionConflict("Tool execution was reconciled concurrently.")
             await uow.commit()
 
     async def resume_run(
@@ -564,6 +854,17 @@ class RuntimeApplicationService:
         expected_version: int,
         idempotency_key: str,
     ) -> RunDTO:
+        async with self._unit_of_work_factory() as uow:
+            run = await uow.runs.get(user_id=user_id, run_id=run_id)
+            if run is None:
+                raise EntityNotFound("Run was not found.")
+            in_flight = await uow.tool_executions.list_in_progress(run_id=run_id)
+            if in_flight:
+                raise InvalidStateTransition(
+                    "Cannot cancel while a Tool execution is in flight; "
+                    "wait for its outcome to be persisted first."
+                )
+            await uow.rollback()
         return await self._change_run(
             user_id=user_id,
             run_id=run_id,
@@ -600,15 +901,36 @@ class RuntimeApplicationService:
             try:
                 if operation == "RESUME":
                     assert interrupt_id is not None and response is not None
+                    interaction = await uow.interactions.get(
+                        user_id=user_id,
+                        run_id=run_id,
+                        interaction_id=interrupt_id,
+                    )
+                    if interaction is None:
+                        raise InvalidStateTransition("Run Interaction was not found.")
+                    interaction.resolve(response)
+                    await uow.interactions.resolve(interaction)
                     run.resume(interrupt_id=interrupt_id, response=response)
                     event_data: dict[str, Any] = {
                         "status": RunStatus.QUEUED,
                         "label": run.status_label,
                         "phase": run.current_phase,
                     }
+                    resumed = await uow.durable_jobs.resume(
+                        user_id=user_id,
+                        dedupe_key=f"agent-run:{run.id}",
+                        now=datetime.now(UTC),
+                    )
+                    if not resumed:
+                        raise InvalidStateTransition("Paused Durable Job was not found.")
                 else:
                     run.cancel()
                     event_data = {"status": RunStatus.CANCELLED}
+                    await uow.durable_jobs.cancel(
+                        user_id=user_id,
+                        dedupe_key=f"agent-run:{run.id}",
+                        now=datetime.now(UTC),
+                    )
             except ValueError as exception:
                 raise InvalidStateTransition(str(exception)) from exception
             if not await uow.runs.update(run, expected_version=expected_version):
@@ -620,9 +942,12 @@ class RuntimeApplicationService:
                 operation=operation,
                 target_version=run.version,
             )
+            event_type = (
+                RunEventType.RUN_RESUMED if operation == "RESUME" else RunEventType.RUN_CANCELLED
+            )
             await uow.runs.append_event(
                 run_id=run.id,
-                event_type=RunEventType.STATUS_UPDATED,
+                event_type=event_type,
                 data=event_data,
             )
             await uow.commit()
@@ -634,6 +959,7 @@ class RuntimeApplicationService:
         user_id: UUID,
         run_id: UUID,
         after_event_id: UUID | None = None,
+        after_sequence: int | None = None,
         limit: int = 200,
     ) -> list[RunEventDTO]:
         async with self._unit_of_work_factory() as uow:
@@ -643,13 +969,12 @@ class RuntimeApplicationService:
                 user_id=user_id,
                 run_id=run_id,
                 after_event_id=after_event_id,
+                after_sequence=after_sequence,
                 limit=limit,
             )
             return [to_event_dto(value) for value in values]
 
-    async def start_run(
-        self, *, user_id: UUID, run_id: UUID, phase: str, label: str
-    ) -> RunDTO:
+    async def start_run(self, *, user_id: UUID, run_id: UUID, phase: str, label: str) -> RunDTO:
         return await self._worker_transition(
             user_id=user_id, run_id=run_id, action="START", phase=phase, label=label
         )
@@ -660,6 +985,7 @@ class RuntimeApplicationService:
         user_id: UUID,
         run_id: UUID,
         payload: dict[str, Any],
+        interaction_id: UUID | None = None,
         claim_owner: str | None = None,
         claim_token: UUID | None = None,
     ) -> RunDTO:
@@ -668,6 +994,7 @@ class RuntimeApplicationService:
             run_id=run_id,
             action="WAIT",
             payload=payload,
+            interaction_id=interaction_id,
             claim_owner=claim_owner,
             claim_token=claim_token,
         )
@@ -689,6 +1016,33 @@ class RuntimeApplicationService:
             claim_owner=claim_owner,
             claim_token=claim_token,
         )
+
+    async def accept_terminal_output(
+        self,
+        *,
+        user_id: UUID,
+        run_id: UUID,
+        output: dict[str, Any],
+        claim_owner: str,
+        claim_token: UUID,
+    ) -> RunDTO:
+        async with self._unit_of_work_factory() as uow:
+            run = await uow.runs.get(user_id=user_id, run_id=run_id)
+            if run is None:
+                raise EntityNotFound("Run was not found.")
+            if run.claim_owner != claim_owner or run.claim_token != claim_token:
+                raise InvalidStateTransition("Run lease is no longer owned by this worker.")
+            expected_version = run.version
+            try:
+                run.accept_terminal_output(output)
+            except ValueError as exception:
+                raise InvalidStateTransition(str(exception)) from exception
+            if run.version != expected_version and not await uow.runs.update(
+                run, expected_version=expected_version
+            ):
+                raise VersionConflict("Run was updated concurrently.")
+            await uow.commit()
+            return to_run_dto(run)
 
     async def fail_run(
         self,
@@ -719,11 +1073,11 @@ class RuntimeApplicationService:
         async with self._unit_of_work_factory() as uow:
             if await uow.runs.get(user_id=user_id, run_id=run_id) is None:
                 raise EntityNotFound("Run was not found.")
-            event = await uow.runs.append_event(
-                run_id=run_id, event_type=event_type, data=data
-            )
+            event = await uow.runs.append_event(run_id=run_id, event_type=event_type, data=data)
             await uow.commit()
-            return to_event_dto(event)
+            result = to_event_dto(event)
+        await self.publish_wakeup(run_id=run_id, latest_sequence=result.sequence)
+        return result
 
     async def _worker_transition(
         self,
@@ -736,6 +1090,7 @@ class RuntimeApplicationService:
         payload: dict[str, Any] | None = None,
         content: str | None = None,
         error_code: str | None = None,
+        interaction_id: UUID | None = None,
         claim_owner: str | None = None,
         claim_token: UUID | None = None,
     ) -> RunDTO:
@@ -757,9 +1112,23 @@ class RuntimeApplicationService:
                     data: dict[str, Any] = {"phase": phase, "label": label}
                 elif action == "WAIT":
                     assert payload is not None
-                    interrupt_id = uuid4()
+                    interrupt_id = interaction_id or uuid4()
                     run.wait_for_user(interrupt_id=interrupt_id, payload=payload)
-                    event_type = RunEventType.INTERRUPT_REQUIRED
+                    await uow.interactions.add(
+                        RunInteraction(
+                            id=interrupt_id,
+                            user_id=user_id,
+                            run_id=run.id,
+                            action_id=(
+                                str(payload["action_id"])
+                                if payload.get("action_id") is not None
+                                else None
+                            ),
+                            interaction_type=str(payload.get("type", "CONFIRMATION")),
+                            request_payload=dict(payload),
+                        )
+                    )
+                    event_type = RunEventType.HITL_REQUESTED
                     data = {"interrupt_id": str(interrupt_id), **payload}
                 elif action == "COMPLETE":
                     if content is None or not content.strip():
@@ -787,9 +1156,19 @@ class RuntimeApplicationService:
             if action == "COMPLETE":
                 await uow.runs.append_event(
                     run_id=run.id,
-                    event_type=RunEventType.ASSISTANT_MESSAGE,
+                    event_type=RunEventType.ASSISTANT_COMPLETED,
                     data={"message_id": data["message_id"], "content": content},
                 )
-            await uow.runs.append_event(run_id=run.id, event_type=event_type, data=data)
+            last_event = await uow.runs.append_event(
+                run_id=run.id, event_type=event_type, data=data
+            )
+            if action == "WAIT":
+                last_event = await uow.runs.append_event(
+                    run_id=run.id,
+                    event_type=RunEventType.RUN_WAITING_FOR_USER,
+                    data={"interaction_id": data["interrupt_id"]},
+                )
             await uow.commit()
-            return to_run_dto(run)
+            result = to_run_dto(run)
+        await self.publish_wakeup(run_id=run_id, latest_sequence=last_event.sequence)
+        return result

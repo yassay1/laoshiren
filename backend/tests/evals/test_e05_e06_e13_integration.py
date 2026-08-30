@@ -17,6 +17,7 @@ from laoshiren.main import create_app
 pytestmark = [
     pytest.mark.asyncio,
     pytest.mark.database,
+    pytest.mark.gate_d,
     pytest.mark.skipif(
         os.getenv("RUN_DATABASE_TESTS") != "1",
         reason="Set RUN_DATABASE_TESTS=1 to run PostgreSQL integration tests.",
@@ -42,12 +43,8 @@ class E05LinkSourceGateway:
         self._linked = True
         return ExecutiveDecision(
             DecisionKind.CALL_TOOL,
-            tool_name="source.link_thing",
-            tool_arguments={
-                "thing_id": self._thing_id,
-                "source_id": self._source_id,
-                "reason": "E05 eval link",
-            },
+            tool_name="file_inspect",
+            tool_arguments={"file_id": self._source_id},
         )
 
 
@@ -77,8 +74,9 @@ class E06SourceDeadlineGateway:
         self._set = True
         return ExecutiveDecision(
             DecisionKind.CALL_TOOL,
-            tool_name="state.set_deadline",
+            tool_name="thing_date_set",
             tool_arguments={
+                "operation": "CREATE",
                 "thing_id": self._thing_id,
                 "value": self._deadline_value,
                 "timezone": "UTC",
@@ -124,6 +122,16 @@ async def test_e05_source_link_via_agent_tool() -> None:
             chunks=upload_bytes(b"project brief"),
             idempotency_key=f"e05-source-{uuid4()}",
         )
+        await container.sources.link_to_thing(
+            user_id=user_id,
+            thing_id=thing.id,
+            source_id=uploaded.id,
+            relation_type=SourceRelationType.REFERENCE,
+            relevance=1.0,
+            action_id="eval.e05.link",
+            idempotency_key=f"e05-link-{uuid4()}",
+            reason="E05 setup",
+        )
         thread = await container.runtime.create_thread(
             user_id=user_id,
             title="eval:E05",
@@ -143,9 +151,7 @@ async def test_e05_source_link_via_agent_tool() -> None:
         )
         status = await worker.run_once(user_id=user_id, run_id=run.id)
         assert status is RunStatus.COMPLETED
-        linked = await container.sources.list_for_thing(
-            user_id=user_id, thing_id=thing.id
-        )
+        linked = await container.sources.list_for_thing(user_id=user_id, thing_id=thing.id)
         assert any(item.id == uploaded.id for item in linked)
     finally:
         await container.checkpoints.stop()
@@ -206,13 +212,9 @@ async def test_e06_deadline_from_source_evidence_uses_confirmed_policy() -> None
         )
         status = await worker.run_once(user_id=user_id, run_id=run.id)
         assert status is RunStatus.COMPLETED
-        refreshed = await container.personal_state.get_thing(
-            user_id=user_id, thing_id=thing.id
-        )
+        refreshed = await container.personal_state.get_thing(user_id=user_id, thing_id=thing.id)
         assert refreshed.deadline_at == deadline_value
-        dates = await container.personal_state.get_dates(
-            user_id=user_id, thing_id=thing.id
-        )
+        dates = await container.personal_state.get_dates(user_id=user_id, thing_id=thing.id)
         primary = next(item for item in dates if item.is_primary)
         assert primary.certainty is DateCertainty.CONFIRMED
         assert primary.source_id == uploaded.id
@@ -249,7 +251,7 @@ async def test_e13_ambiguous_demo_completion_requests_clarification() -> None:
             idempotency_key=f"e13-run-{uuid4()}",
         )
         status = await worker.run_once(user_id=user_id, run_id=run.id)
-        assert status is RunStatus.WAITING_USER
+        assert status is RunStatus.WAITING_FOR_USER
     finally:
         await container.checkpoints.stop()
         await container.database.dispose()

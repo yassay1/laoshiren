@@ -1,66 +1,71 @@
 # 老实人
 
-“老实人”是一个以 Personal State 为现实状态权威源、以单一 Executive Agent 为默认决策入口的 HarmonyOS 个人事务智能体项目。
+“老实人”是面向 HarmonyOS 的个人 Agent：用户用自然语言表达现实目标、信息、行动、资料、纠错和未来要求，Single Executive 负责开放式语义理解，Backend 负责将结果安全、持久、可追溯、可恢复地落到现实。
 
-当前仓库已经不是初始化骨架：后端已具备 Personal State、Source、Memory、Automation/Attention、Thread/Run/SSE、LangGraph Executive Agent 和 DeepSeek/智谱适配器；HarmonyOS 客户端已完成可安装的四入口应用壳，并跑通 Chat → Run → Agent → Assistant Message 的模拟器闭环。
+当前处于 Backend V2.2 **Phase 0–8 核心完成**阶段。真实现状见 [CURRENT_IMPLEMENTATION](docs/CURRENT_IMPLEMENTATION.md)，剩余生产化差距见 [Gap List](docs/CURRENT_V2_2_GAP_LIST.md)，发布前 Gate 见 [RELEASE_FREEZE_GATES](docs/RELEASE_FREEZE_GATES.md)。
 
-## 当前权威说明
+## V2.2 正式设计导航
 
-- [当前实现与审核说明](docs/CURRENT_IMPLEMENTATION.md)：以实际代码为准的能力、调用链、缺口和风险。
-- [后端说明](backend/README.md)：启动、配置、迁移和测试命令。
-- [HarmonyOS 客户端说明](apps/harmonyos/README.md)：实际工程、构建限制和当前页面完成度。
-- `老实人_*_v1.0.txt`：七份产品与技术设计基线。它们描述目标架构，不等同于当前全部实现。
-- [HarmonyOS 官方资源调研](docs/research/HarmonyOS_Official_Resources_Research.txt)：平台能力研究资料，不是当前功能完成清单。
+以下七份文档是 Backend V2.2 的最高优先级开发基线：
 
-## 主要目录
+1. [Backend V2 总体架构](老实人_Backend_V2_总体架构设计_v2.2_正式基线版.md)
+2. [Agent Runtime](老实人_Agent_Runtime技术设计_v2.2.md)
+3. [Tool / API / Policy](老实人_Tool_API_Policy技术设计_v2.2.md)
+4. [Personal State 与 Memory](老实人_Personal_State与Memory技术设计_v2.2.md)
+5. [File / Multimodal / Search / Evidence](老实人_File_Multimodal_Search_Evidence技术设计_v2.2.md)
+6. [Automation / Scheduler / Notification](老实人_Automation_Scheduler_Notification技术设计_v2.2.md)
+7. [上线最小用户与通知支持](老实人_上线最小用户与通知支持设计_v2.2.md)
+
+领域专项设计优先于同版本通用设计。Automation、Scheduler、Notification 以第 6 份文档为 authoritative source。
+
+## 技术栈与目录
+
+- Backend：Python 3.12、FastAPI、SQLAlchemy 2、Alembic、PostgreSQL 17、pgvector、Redis、LangGraph、PostgreSQL Checkpointer、uv。
+- Client：HarmonyOS ArkTS + ArkUI Stage Model。
+- Object Storage：当前为本地文件 Adapter；V2.2 目标保持 Port/Adapter 边界。
+- Model/Search：DeepSeek/智谱和 Tavily Adapter；业务层保持 provider-neutral。
 
 ```text
-apps/harmonyos/       ArkTS + ArkUI Stage Model 客户端
-backend/              FastAPI 模块化单体、业务核心、Agent 与 Worker
-contracts/            OpenAPI 快照与 SSE 事件 JSON Schema
-deploy/               PostgreSQL/pgvector 本地开发配置
-docs/                 ADR、当前实现说明和研究资料
+apps/harmonyos/       HarmonyOS 客户端
+backend/              模块化单体、Agent Runtime 与 Workers
+contracts/            OpenAPI snapshot 与 SSE JSON Schema
+deploy/               PostgreSQL/pgvector、Redis 本地开发配置
+docs/                 当前实现、Gap、阶段、ADR、发布 Gate 与研究资料
 ```
 
 后端依赖方向：
 
 ```text
-Presentation / Agent / Worker
-             ↓
-         Application
-             ↓
-           Domain
-
-Infrastructure 实现 Application ports，bootstrap.py 负责组装。
+Presentation / Agent / Worker → Application → Domain
+Infrastructure implements Application ports
 ```
 
-## 快速验证
+## 本地启动与验证
 
-后端要求 Python 3.12、uv、PostgreSQL 17 + pgvector。详细步骤见 [backend/README.md](backend/README.md)。
+先启动 PostgreSQL/pgvector 与 Redis（需要 Docker Desktop）：
 
 ```powershell
+docker compose -f deploy/compose/docker-compose.dev.yml up -d
 cd backend
-uv sync
-uv run ruff check .
-uv run mypy
-$env:RUN_DATABASE_TESTS='1'
-uv run pytest -m "not live_model"
-```
-
-Windows 启动入口：
-
-```powershell
+uv sync --locked
+uv run alembic upgrade head
 $env:PYTHONPATH='src'
 uv run python -m laoshiren
 ```
 
-## 重要限制
+服务默认监听 http://127.0.0.1:8000，API 前缀为 /api/v1。开发环境可使用固定 Bearer Token；生产应使用 Huawei 登录 Session（见 Phase 7 API）。
 
-- 当前是固定开发令牌和固定开发用户，不是正式账号体系。
-- Run 调度使用进程内队列；服务重启不会自动扫描并恢复数据库中的 QUEUED Run。
-- HarmonyOS Chat 每次 ViewModel 初始化都会新建 Thread，尚未实现历史会话恢复。
-- Today、Things、Me 目前主要是展示壳，尚未接入对应 Product API。
-- 客户端与后端的确认载荷存在已知不一致，详见当前实现说明。
-- 开发期客户端使用本地 HTTP 和 `change-me` 令牌；生产必须改为 HTTPS、正式认证和环境化配置。
+质量验证：
 
-Provider API Key 只允许保存在被忽略的 `backend/.env`，不得进入代码、客户端或文档。
+```powershell
+cd backend
+uv run ruff check .
+uv run mypy
+uv run python scripts/check_contract_schemas.py
+$env:RUN_DATABASE_TESTS='1'
+uv run python scripts/run_freeze_gates.py
+uv run pytest -m "not live_model"
+uv run python scripts/export_openapi.py
+```
+
+Provider Key 只允许保存在被忽略的 backend/.env 或正式 Secret Store，不得进入代码、客户端、日志或文档。

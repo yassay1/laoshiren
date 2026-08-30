@@ -46,6 +46,11 @@ class ResumeRunRequest(BaseModel):
     expected_version: int = Field(ge=1)
 
 
+class InteractionResponseRequest(BaseModel):
+    response: dict[str, Any]
+    expected_version: int = Field(ge=1)
+
+
 class CancelRunRequest(BaseModel):
     expected_version: int = Field(ge=1)
 
@@ -66,6 +71,10 @@ class RunResponse(BaseModel):
     error_code: str | None
     attempt_count: int
     version: int
+    last_event_sequence: int
+    pending_interaction: dict[str, Any] | None
+    budget_snapshot: dict[str, Any]
+    active_time_used_ms: int
     created_at: datetime
     started_at: datetime | None
     completed_at: datetime | None

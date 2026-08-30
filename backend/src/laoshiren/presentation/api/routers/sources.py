@@ -29,6 +29,7 @@ async def upload_source(
     idempotency_key: IdempotencyKey,
     file: Annotated[UploadFile, File()],
     origin: Annotated[SourceOrigin, Form()] = SourceOrigin.UPLOAD,
+    message_id: Annotated[UUID | None, Form()] = None,
 ) -> SourceResponse:
     try:
         source = await container.sources.upload(
@@ -38,6 +39,7 @@ async def upload_source(
             chunks=upload_chunks(file),
             idempotency_key=idempotency_key,
             origin=origin,
+            message_id=message_id,
         )
         return SourceResponse.from_dto(source)
     finally:
