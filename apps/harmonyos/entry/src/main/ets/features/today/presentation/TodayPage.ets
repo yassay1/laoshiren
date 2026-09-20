@@ -1,7 +1,14 @@
 import { PageHeader } from '../../../common/components/PageHeader';
+import { TodayViewModel } from './TodayViewModel';
 
 @Component
 export struct TodayPage {
+  @State private viewModel: TodayViewModel = new TodayViewModel();
+
+  aboutToAppear(): void {
+    this.viewModel.initialize();
+  }
+
   build() {
     Scroll() {
       Column({ space: 14 }) {

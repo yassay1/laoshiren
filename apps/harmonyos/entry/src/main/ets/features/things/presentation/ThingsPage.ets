@@ -1,11 +1,25 @@
 import { PageHeader } from '../../../common/components/PageHeader';
+import { Thing } from '../domain/ThingModels';
+import { ThingsViewModel } from './ThingsViewModel';
 
 @Component
 export struct ThingsPage {
+  @State private viewModel: ThingsViewModel = new ThingsViewModel();
+
+  aboutToAppear(): void {
+    this.viewModel.initialize();
+  }
+
   build() {
     Column() {
       PageHeader({ title: '事务', subtitle: '现实中的事情，以服务端 Personal State 为准' })
       Column({ space: 12 }) {
+        ForEach(this.viewModel.things, (thing: Thing) => {
+          Row() {
+            Text(thing.name).fontSize(17).fontColor('#17251E').layoutWeight(1)
+            Text(thing.status).fontSize(13).fontColor('#276749')
+          }.width('100%').padding(14).borderRadius(14).backgroundColor('#FFFFFF')
+        }, (thing: Thing) => thing.id)
         TextInput({ placeholder: '搜索事务' })
           .height(46)
           .borderRadius(14)

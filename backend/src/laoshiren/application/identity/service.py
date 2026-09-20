@@ -3,13 +3,13 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from laoshiren.application.identity.dto import DeviceDTO, LoginResultDTO, UserProfileDTO
+from laoshiren.application.identity.ports import HuaweiAccountClient
 from laoshiren.application.personal_state.ports import PersonalStateUnitOfWork
 from laoshiren.domain.automations.entities import AutomationStatus, PushEndpoint
 from laoshiren.domain.identity.entities import BusinessSession, Device, User
 from laoshiren.domain.identity.value_objects import DevicePlatform, UserStatus
 from laoshiren.domain.personal_state.exceptions import EntityNotFound, InvalidStateTransition
 from laoshiren.domain.runtime.entities import DurableJob, DurableJobKind
-from laoshiren.infrastructure.auth.huawei_stub import resolve_external_subject
 from laoshiren.infrastructure.auth.session_tokens import hash_access_token, issue_access_token
 
 UnitOfWorkFactory = Callable[[], PersonalStateUnitOfWork]
@@ -19,23 +19,26 @@ class IdentityApplicationService:
     def __init__(
         self,
         unit_of_work_factory: UnitOfWorkFactory,
+        huawei_account_client: HuaweiAccountClient,
         *,
-        app_env: str,
         session_ttl_hours: int = 24 * 30,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
-        self._app_env = app_env
+        self._huawei_account_client = huawei_account_client
         self._session_ttl_hours = session_ttl_hours
 
     async def huawei_login(
         self,
         *,
-        id_token: str,
+        authorization_code: str,
         device_id: UUID | None = None,
         timezone_name: str | None = None,
         platform: DevicePlatform = DevicePlatform.HARMONYOS,
     ) -> LoginResultDTO:
-        external_subject = resolve_external_subject(id_token=id_token, app_env=self._app_env)
+        identity = await self._huawei_account_client.exchange_authorization_code(
+            authorization_code=authorization_code
+        )
+        external_subject = identity.external_subject
         async with self._unit_of_work_factory() as uow:
             user = await uow.users.get_by_external_subject(external_subject=external_subject)
             if user is None:

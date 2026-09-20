@@ -1,6 +1,6 @@
 # Current V2.2 Gap List
 
-更新时间：2026-08-30。Phase 0–8 核心开发已完成；下列为**仍与设计正式版有差距**或**生产发布前**待办项，不代表仓库无实现。
+更新时间：2026-09-20。Phase 0–8 核心开发已完成；下列为**仍与设计正式版有差距**或**生产发布前**待办项，不代表仓库无实现。
 
 ## 已收敛（原 Gap 关闭）
 
@@ -11,9 +11,10 @@
 | Personal State | 21 capability、ThingContextEntry、merge/recurring/tombstone |
 | File | V2 retrieval、FILE_PURGE、MessageAttachment、EvidenceRef |
 | Memory | RRF、forget suppression、durable formation、state reconciliation（formation） |
-| Automation / Notification | Occurrence → Intent → Delivery 管线；PushEndpoint |
+| Automation / Notification | Occurrence → Intent → Delivery 管线；PushEndpoint；Occurrence/通知/Job 原子结算与失败恢复；一次性触发时间清空 |
 | Identity | Session、Device/Push API、account deletion worker |
 | Hardening | Freeze Gate B/C/D、契约 drift CI、Prometheus `/health/metrics`、隐私清单 |
+| DB Contract drift | 受管 ORM metadata 与 PostgreSQL 对齐，`alembic check` 纳入 CI；checkpoint 表由框架管理 |
 
 ## 仍开放 Gap
 

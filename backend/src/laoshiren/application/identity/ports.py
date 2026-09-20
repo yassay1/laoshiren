@@ -1,7 +1,28 @@
 from typing import Protocol
 from uuid import UUID
 
+from laoshiren.application.identity.dto import HuaweiAccountIdentityDTO
 from laoshiren.domain.identity.entities import BusinessSession, Device
+
+
+class HuaweiAccountError(RuntimeError):
+    """Base error exposed by a Huawei Account infrastructure adapter."""
+
+
+class HuaweiAuthorizationCodeRejected(HuaweiAccountError):
+    """The authorization code is invalid, expired, or already consumed."""
+
+
+class HuaweiAccountUnavailable(HuaweiAccountError):
+    """Huawei Account could not complete a trustworthy identity exchange."""
+
+
+class HuaweiAccountClient(Protocol):
+    async def exchange_authorization_code(
+        self,
+        *,
+        authorization_code: str,
+    ) -> HuaweiAccountIdentityDTO: ...
 
 
 class DeviceRepository(Protocol):

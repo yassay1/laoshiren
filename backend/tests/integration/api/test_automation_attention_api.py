@@ -6,6 +6,9 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 
+from laoshiren.application.automations.occurrence_execution import (
+    AutomationOccurrenceApplicationService,
+)
 from laoshiren.infrastructure.automation.run_trigger import RuntimeAutomationRunTrigger
 from laoshiren.main import create_app
 from laoshiren.workers.automation import run_once
@@ -100,7 +103,10 @@ async def test_automation_scheduler_outbox_and_attention_feedback() -> None:
                 app.state.container.automations,
                 AutomationOccurrenceWorker(
                     app.state.container.database.automation_unit_of_work,
-                    run_trigger=RuntimeAutomationRunTrigger(app.state.container.runtime),
+                    AutomationOccurrenceApplicationService(
+                        app.state.container.database.automation_unit_of_work,
+                        RuntimeAutomationRunTrigger(app.state.container.runtime),
+                    ),
                 ),
                 PushDeliveryWorker(
                     app.state.container.database.automation_unit_of_work,
@@ -112,7 +118,10 @@ async def test_automation_scheduler_outbox_and_attention_feedback() -> None:
                 app.state.container.automations,
                 AutomationOccurrenceWorker(
                     app.state.container.database.automation_unit_of_work,
-                    run_trigger=RuntimeAutomationRunTrigger(app.state.container.runtime),
+                    AutomationOccurrenceApplicationService(
+                        app.state.container.database.automation_unit_of_work,
+                        RuntimeAutomationRunTrigger(app.state.container.runtime),
+                    ),
                 ),
                 PushDeliveryWorker(
                     app.state.container.database.automation_unit_of_work,
@@ -127,6 +136,7 @@ async def test_automation_scheduler_outbox_and_attention_feedback() -> None:
             current = await client.get(f"/api/v1/automations/{automation_id}")
             notifications = await client.get("/api/v1/automations/notifications")
             assert current.json()["status"] == "COMPLETED"
+            assert current.json()["next_trigger_at"] is None
             assert all(
                 item["automation_id"] != str(automation_id) for item in notifications.json()
             )

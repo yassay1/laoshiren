@@ -1,9 +1,24 @@
 {
   "app": {
-    "signingConfigs": [],
+    "signingConfigs": [
+      {
+        "name": "release",
+        "type": "HarmonyOS",
+        "material": {
+          "storeFile": "D:/laoshiren-signing/release/laoshiren_release.p12",
+          "storePassword": "0000001A02696E71E4A94968B82673E80AEB5FF1FAA0E198CB821FF5856D66DC1456ADA12F2121EEF71E",
+          "keyAlias": "laoshiren_release",
+          "keyPassword": "0000001AB5011D3B0C3019CE73FBB3D2F7BA86E59C49C3777DEE834AE36B69B23969421D5B761D56EB42",
+          "signAlg": "SHA256withECDSA",
+          "profile": "D:/laoshiren-signing/release/老实人发布Release.p7b",
+          "certpath": "D:/laoshiren-signing/release/老实人发布.cer"
+        }
+      }
+    ],
     "products": [
       {
         "name": "default",
+        "signingConfig": "release",
         "targetSdkVersion": "6.1.1(24)",
         "compatibleSdkVersion": "5.0.0(12)",
         "runtimeOS": "HarmonyOS",

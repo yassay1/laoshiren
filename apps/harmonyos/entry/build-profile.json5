@@ -9,8 +9,23 @@
   },
   "buildOptionSet": [
     {
+      "name": "debug",
+      "arkOptions": {
+        "buildProfileFields": {
+          "runtimeMode": "debug",
+          "backendApiUrl": "http://127.0.0.1:8000/api/v1",
+          "debugAuthToken": "change-me"
+        }
+      }
+    },
+    {
       "name": "release",
       "arkOptions": {
+        "buildProfileFields": {
+          "runtimeMode": "release",
+          "backendApiUrl": "",
+          "debugAuthToken": ""
+        },
         "obfuscation": {
           "ruleOptions": {
             "enable": false,
@@ -20,7 +35,17 @@
           }
         }
       }
+    }
+  ],
+  "buildModeBinder": [
+    {
+      "buildModeName": "debug",
+      "mappings": [{ "targetName": "default", "buildOptionName": "debug" }]
     },
+    {
+      "buildModeName": "release",
+      "mappings": [{ "targetName": "default", "buildOptionName": "release" }]
+    }
   ],
   "targets": [
     {

@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     Enum,
     ForeignKey,
@@ -78,6 +79,7 @@ class UserORM(Base):
     status: Mapped[UserStatus] = mapped_column(
         Enum(UserStatus, name="user_status"),
         default=UserStatus.ACTIVE,
+        server_default=sa_text("'ACTIVE'::user_status"),
     )
     external_subject: Mapped[str | None] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -92,7 +94,7 @@ class DeviceORM(Base):
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
     platform: Mapped[DevicePlatform] = mapped_column(Enum(DevicePlatform, name="device_platform"))
     timezone_name: Mapped[str] = mapped_column(String(100))
-    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=sa_text("true"))
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -113,7 +115,11 @@ class BusinessSessionORM(Base):
 
 class ThingORM(Base):
     __tablename__ = "things"
-    __table_args__ = (Index("ix_things_user_updated", "user_id", "updated_at"),)
+    __table_args__ = (
+        Index("ix_things_user_updated", "user_id", "updated_at"),
+        Index("ix_things_user_deleted", "user_id", "deleted_at"),
+        Index("ix_things_merged_into", "merged_into_thing_id"),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
@@ -121,7 +127,7 @@ class ThingORM(Base):
     status: Mapped[ThingStatus] = mapped_column(Enum(ThingStatus, name="thing_status"))
     current_stage: Mapped[str | None] = mapped_column(String(200))
     deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    version: Mapped[int] = mapped_column(Integer, default=1)
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default=sa_text("1"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -131,14 +137,21 @@ class ThingORM(Base):
 
 class TaskORM(Base):
     __tablename__ = "tasks"
-    __table_args__ = (Index("ix_tasks_thing_status", "thing_id", "status"),)
+    __table_args__ = (
+        Index("ix_tasks_thing_status", "thing_id", "status"),
+        CheckConstraint(
+            "recurrence_interval_days IS NULL OR "
+            "(recurrence_interval_days > 0 AND due_at IS NOT NULL)",
+            name="ck_tasks_recurrence_requires_due",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
     thing_id: Mapped[UUID | None] = mapped_column(ForeignKey("things.id"))
     title: Mapped[str] = mapped_column(String(300))
     status: Mapped[TaskStatus] = mapped_column(Enum(TaskStatus, name="task_status"))
-    version: Mapped[int] = mapped_column(Integer, default=1)
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default=sa_text("1"))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     recurrence_interval_days: Mapped[int | None] = mapped_column(Integer)
@@ -167,9 +180,11 @@ class ThingDateORM(Base):
     timezone_name: Mapped[str] = mapped_column(String(64))
     precision: Mapped[DatePrecision] = mapped_column(Enum(DatePrecision, name="date_precision"))
     certainty: Mapped[DateCertainty] = mapped_column(Enum(DateCertainty, name="date_certainty"))
-    is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_primary: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=sa_text("false")
+    )
     source_id: Mapped[UUID | None]
-    version: Mapped[int] = mapped_column(Integer, default=1)
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default=sa_text("1"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -183,7 +198,7 @@ class ThingContextEntryORM(Base):
     label: Mapped[str] = mapped_column(String(120))
     content: Mapped[str] = mapped_column(Text)
     source_id: Mapped[UUID | None]
-    version: Mapped[int] = mapped_column(Integer, default=1)
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default=sa_text("1"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -220,7 +235,9 @@ class TimelineEventORM(Base):
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     source_id: Mapped[UUID | None]
     mutation_id: Mapped[UUID | None] = mapped_column(ForeignKey("state_mutations.id"))
-    metadata_: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict)
+    metadata_: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, default=dict, server_default=sa_text("'{}'::jsonb")
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -229,6 +246,13 @@ class SourceORM(Base):
     __table_args__ = (
         UniqueConstraint("user_id", "idempotency_key", name="uq_sources_user_idempotency"),
         Index("ix_sources_user_created", "user_id", "created_at"),
+        Index("ix_sources_user_deleted", "user_id", "deleted_at"),
+        Index(
+            "ix_sources_processing_claim",
+            "processing_status",
+            "next_processing_attempt_at",
+            "processing_lease_expires_at",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -242,7 +266,9 @@ class SourceORM(Base):
     content_hash: Mapped[str] = mapped_column(String(64))
     size: Mapped[int] = mapped_column(Integer)
     captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    metadata_: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict)
+    metadata_: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, default=dict, server_default=sa_text("'{}'::jsonb")
+    )
     processing_status: Mapped[ProcessingStatus] = mapped_column(
         Enum(ProcessingStatus, name="source_processing_status")
     )
@@ -252,7 +278,9 @@ class SourceORM(Base):
     processing_claim_owner: Mapped[str | None] = mapped_column(String(200))
     processing_lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     processing_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    processing_attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    processing_attempt_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default=sa_text("0")
+    )
     next_processing_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     idempotency_key: Mapped[str] = mapped_column(String(200))
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -276,6 +304,12 @@ class SourceChunkORM(Base):
     __table_args__ = (
         UniqueConstraint("source_id", "ordinal", name="uq_source_chunks_ordinal"),
         Index("ix_source_chunks_source_ordinal", "source_id", "ordinal"),
+        Index(
+            "ix_source_chunks_embedding_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -286,7 +320,9 @@ class SourceChunkORM(Base):
     char_end: Mapped[int] = mapped_column(Integer)
     page_number: Mapped[int | None] = mapped_column(Integer)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(1536))
-    metadata_: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict)
+    metadata_: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, default=dict, server_default=sa_text("'{}'::jsonb")
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -296,6 +332,21 @@ class MemoryORM(Base):
         UniqueConstraint("user_id", "idempotency_key", name="uq_memories_user_idempotency"),
         Index("ix_memories_user_status_type", "user_id", "status", "memory_type"),
         Index("ix_memories_thing_status", "thing_id", "status"),
+        Index(
+            "uq_memories_active_profile_key",
+            "user_id",
+            "profile_key",
+            unique=True,
+            postgresql_where=sa_text(
+                "memory_type = 'PROFILE' AND status = 'ACTIVE' AND profile_key IS NOT NULL"
+            ),
+        ),
+        CheckConstraint("importance >= 0 AND importance <= 1", name="ck_memory_importance"),
+        CheckConstraint("confidence >= 0 AND confidence <= 1", name="ck_memory_confidence"),
+        CheckConstraint(
+            "valid_until IS NULL OR valid_from IS NULL OR valid_until > valid_from",
+            name="ck_memory_valid_range",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -306,7 +357,9 @@ class MemoryORM(Base):
     importance: Mapped[float]
     confidence: Mapped[float]
     thing_id: Mapped[UUID | None] = mapped_column(ForeignKey("things.id"))
-    source_ids: Mapped[list[UUID]] = mapped_column(ARRAY(PG_UUID(as_uuid=True)), default=list)
+    source_ids: Mapped[list[UUID]] = mapped_column(
+        ARRAY(PG_UUID(as_uuid=True)), default=list, server_default=sa_text("'{}'::uuid[]")
+    )
     valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     embedding: Mapped[list[float] | None] = mapped_column(Vector(1536))
@@ -314,10 +367,10 @@ class MemoryORM(Base):
     supersedes_id: Mapped[UUID | None] = mapped_column(ForeignKey("long_term_memories.id"))
     provenance_run_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
     source_message_ids: Mapped[list[UUID]] = mapped_column(
-        ARRAY(PG_UUID(as_uuid=True)), default=list
+        ARRAY(PG_UUID(as_uuid=True)), default=list, server_default=sa_text("'{}'::uuid[]")
     )
     status: Mapped[MemoryStatus] = mapped_column(Enum(MemoryStatus, name="memory_status"))
-    version: Mapped[int] = mapped_column(Integer, default=1)
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default=sa_text("1"))
     idempotency_key: Mapped[str] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -338,7 +391,9 @@ class MemorySuppressionORM(Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
     content_fingerprint: Mapped[str] = mapped_column(String(64))
-    memory_id: Mapped[UUID | None] = mapped_column(ForeignKey("long_term_memories.id"))
+    memory_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("long_term_memories.id", ondelete="SET NULL")
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -371,13 +426,16 @@ class BlockerORM(Base):
     blocked_since: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     source_id: Mapped[UUID | None]
-    version: Mapped[int] = mapped_column(Integer, default=1)
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default=sa_text("1"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class ThingRelationORM(Base):
     __tablename__ = "thing_relations"
+    __table_args__ = (
+        CheckConstraint("from_thing_id <> to_thing_id", name="ck_relation_not_self"),
+    )
 
     from_thing_id: Mapped[UUID] = mapped_column(ForeignKey("things.id"), primary_key=True)
     to_thing_id: Mapped[UUID] = mapped_column(ForeignKey("things.id"), primary_key=True)
@@ -393,6 +451,10 @@ class AutomationORM(Base):
     __table_args__ = (
         UniqueConstraint("user_id", "idempotency_key", name="uq_automations_user_key"),
         Index("ix_automations_due", "status", "next_trigger_at"),
+        CheckConstraint(
+            "recurrence_interval_seconds IS NULL OR recurrence_interval_seconds >= 60",
+            name="ck_automation_interval",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -403,20 +465,24 @@ class AutomationORM(Base):
     title: Mapped[str] = mapped_column(String(300))
     message: Mapped[str] = mapped_column(Text)
     timezone_name: Mapped[str] = mapped_column(String(100))
-    next_trigger_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    next_trigger_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     thing_id: Mapped[UUID | None] = mapped_column(ForeignKey("things.id"))
     task_id: Mapped[UUID | None] = mapped_column(ForeignKey("tasks.id"))
     source_id: Mapped[UUID | None] = mapped_column(ForeignKey("sources.id"))
     recurrence_interval_seconds: Mapped[int | None]
-    definition_revision: Mapped[int] = mapped_column(Integer, default=1)
+    definition_revision: Mapped[int] = mapped_column(
+        Integer, default=1, server_default=sa_text("1")
+    )
     misfire_policy: Mapped[MisfirePolicy] = mapped_column(
-        Enum(MisfirePolicy, name="misfire_policy"), default=MisfirePolicy.FIRE_ONCE
+        Enum(MisfirePolicy, name="misfire_policy"),
+        default=MisfirePolicy.FIRE_ONCE,
+        server_default=sa_text("'FIRE_ONCE'::misfire_policy"),
     )
     status: Mapped[AutomationStatus] = mapped_column(
         Enum(AutomationStatus, name="automation_status")
     )
     last_triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    version: Mapped[int] = mapped_column(Integer, default=1)
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default=sa_text("1"))
     idempotency_key: Mapped[str] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -473,8 +539,10 @@ class PushEndpointORM(Base):
     device_id: Mapped[UUID] = mapped_column(ForeignKey("devices.id"))
     provider: Mapped[str] = mapped_column(String(50))
     push_token: Mapped[str] = mapped_column(String(500))
-    active: Mapped[bool] = mapped_column(Boolean, default=True)
-    notifications_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=sa_text("true"))
+    notifications_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=sa_text("true")
+    )
     last_registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     invalidated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -516,7 +584,7 @@ class NotificationDeliveryORM(Base):
     status: Mapped[DeliveryStatus] = mapped_column(
         Enum(DeliveryStatus, name="delivery_status")
     )
-    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default=sa_text("0"))
     provider_message_id: Mapped[str | None] = mapped_column(String(200))
     error_code: Mapped[str | None] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -528,6 +596,9 @@ class NotificationOutboxORM(Base):
     __table_args__ = (
         UniqueConstraint("occurrence_key", name="uq_notification_occurrence"),
         Index("ix_notification_outbox_status_created", "status", "created_at"),
+        Index(
+            "ix_notification_outbox_dispatch", "status", "next_attempt_at", "lease_expires_at"
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -540,7 +611,7 @@ class NotificationOutboxORM(Base):
     status: Mapped[NotificationStatus] = mapped_column(
         Enum(NotificationStatus, name="notification_status")
     )
-    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default=sa_text("0"))
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error_code: Mapped[str | None] = mapped_column(String(100))
     claim_owner: Mapped[str | None] = mapped_column(String(200))
@@ -559,7 +630,7 @@ class AttentionFeedbackORM(Base):
     )
     subject_id: Mapped[UUID] = mapped_column(primary_key=True)
     last_surfaced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    surface_count: Mapped[int] = mapped_column(Integer, default=0)
+    surface_count: Mapped[int] = mapped_column(Integer, default=0, server_default=sa_text("0"))
     acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     dismissed_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -608,10 +679,12 @@ class AgentRunORM(Base):
     claim_token: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
-    version: Mapped[int] = mapped_column(Integer, default=1)
-    event_sequence: Mapped[int] = mapped_column(Integer, default=0)
-    active_time_used_ms: Mapped[int] = mapped_column(Integer, default=0)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default=sa_text("0"))
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default=sa_text("1"))
+    event_sequence: Mapped[int] = mapped_column(Integer, default=0, server_default=sa_text("0"))
+    active_time_used_ms: Mapped[int] = mapped_column(
+        Integer, default=0, server_default=sa_text("0")
+    )
     active_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     terminal_output: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     graph_terminal_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -656,8 +729,10 @@ class RunEventORM(Base):
         )
     )
     data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
-    visibility: Mapped[str] = mapped_column(String(30), default="CLIENT")
-    schema_version: Mapped[int] = mapped_column(Integer, default=1)
+    visibility: Mapped[str] = mapped_column(
+        String(30), default="CLIENT", server_default=sa_text("'CLIENT'")
+    )
+    schema_version: Mapped[int] = mapped_column(Integer, default=1, server_default=sa_text("1"))
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -678,7 +753,15 @@ class RunOperationORM(Base):
 
 class RunInteractionORM(Base):
     __tablename__ = "run_interactions"
-    __table_args__ = (Index("ix_run_interactions_run_status", "run_id", "status"),)
+    __table_args__ = (
+        Index("ix_run_interactions_run_status", "run_id", "status"),
+        Index(
+            "uq_run_interactions_one_pending",
+            "run_id",
+            unique=True,
+            postgresql_where=sa_text("status = 'PENDING'"),
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
@@ -717,9 +800,9 @@ class ToolExecutionORM(Base):
     claim_owner: Mapped[str] = mapped_column(String(200))
     claim_token: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True))
     lease_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    replay_safe: Mapped[bool] = mapped_column(default=True)
+    replay_safe: Mapped[bool] = mapped_column(default=True, server_default=sa_text("true"))
     idempotency_key: Mapped[str | None] = mapped_column(String(300))
-    attempt_count: Mapped[int] = mapped_column(Integer, default=1)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=1, server_default=sa_text("1"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

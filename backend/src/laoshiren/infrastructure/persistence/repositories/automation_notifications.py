@@ -13,8 +13,11 @@ from laoshiren.domain.automations.entities import (
     NotificationIntent,
     PushEndpoint,
 )
+from laoshiren.domain.automations.value_objects import OccurrenceStatus
+from laoshiren.domain.runtime.entities import DurableJobKind, DurableJobStatus
 from laoshiren.infrastructure.persistence.orm.personal_state import (
     AutomationOccurrenceORM,
+    DurableJobORM,
     NotificationDeliveryORM,
     NotificationIntentORM,
     PushEndpointORM,
@@ -125,6 +128,26 @@ class SqlAlchemyAutomationOccurrenceRepository:
                 settled_at=occurrence.settled_at,
             )
         )
+
+    async def fail_exhausted(self, *, now: datetime) -> list[tuple[UUID, UUID, int]]:
+        exhausted_jobs = select(DurableJobORM.id).where(
+            DurableJobORM.kind == DurableJobKind.AUTOMATION_OCCURRENCE,
+            DurableJobORM.status == DurableJobStatus.FAILED,
+        )
+        result = await self._session.execute(
+            update(AutomationOccurrenceORM)
+            .where(
+                AutomationOccurrenceORM.status == OccurrenceStatus.MATERIALIZED,
+                AutomationOccurrenceORM.durable_job_id.in_(exhausted_jobs),
+            )
+            .values(status=OccurrenceStatus.FAILED, settled_at=now)
+            .returning(
+                AutomationOccurrenceORM.user_id,
+                AutomationOccurrenceORM.automation_id,
+                AutomationOccurrenceORM.definition_revision,
+            )
+        )
+        return [(row.user_id, row.automation_id, row.definition_revision) for row in result]
 
 
 class SqlAlchemyNotificationIntentRepository:

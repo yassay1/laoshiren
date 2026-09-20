@@ -7,7 +7,7 @@ from laoshiren.domain.identity.value_objects import DevicePlatform, UserStatus
 
 
 class HuaweiLoginRequest(BaseModel):
-    id_token: str = Field(min_length=1)
+    authorization_code: str = Field(min_length=1)
     device_id: UUID | None = None
     timezone: str | None = Field(default=None, min_length=1, max_length=100)
     platform: DevicePlatform = DevicePlatform.HARMONYOS

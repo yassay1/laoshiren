@@ -1,33 +1,33 @@
 # HarmonyOS Client
 
-本目录是可编译的 ArkTS + ArkUI Stage Model 应用，采用单 `entry` module、feature-first + MVVM。
+本目录是 ArkTS + ArkUI Stage Model 应用，采用单 `entry` module、feature-first + MVVM。
 
-## 已验证基线
+## 工程基线
 
-- bundleName：`com.caonan.campusagent`
-- DevEco Studio：本机实际使用 6.1.1.300
-- compile/target SDK：HarmonyOS 6.1.1(24) / API 24
+- Bundle Name：`com.yenan.laoshiren`
+- DevEco Studio：6.1.1.300；target SDK：HarmonyOS 6.1.1(24)
 - compatible SDK：HarmonyOS 5.0.0(12)
-- 模拟器：`CampusAgent_API24`，Pura 90 Pro，x86_64，API 24
-- Hvigor：6.24.4
+- 运行时配置入口：`entry/build-profile.json5` 的 `buildOptionSet` / `buildModeBinder`
 
-源码权威位置是当前目录。Hvigor 会拒绝中文真实路径，因此本机验证时把源码机械同步到 `D:\proj\campusagent-harmony-build` 后构建；该镜像不属于仓库，也不是第二份源码。
+## Debug 与 Release
 
-## 当前实现
+`EntryAbility` 在启动时初始化 `ClientDependencies`。运行模式和 API 地址来自 Hvigor 生成的 `BuildProfile`，没有运行时默认回退。
 
-- `AppShell.ets`：Today / Things / Chat / Me 四栏导航。
-- `features/chat/`：真实 Thread 创建、Run 提交、SSE 消费、消息刷新、错误重试和等待确认 UI。
-- `common/network/ApiClient.ets`：当前集中使用 `http://127.0.0.1:8000/api/v1` 和开发令牌。
-- Today、Things、Me：目前是静态产品壳，尚未接入后端 Product API。
+| 模式 | 后端地址 | 认证 | 推送 | 主动提醒 |
+| --- | --- | --- | --- | --- |
+| Debug | 本地 `http://127.0.0.1:8000/api/v1` | Mock | Mock | Mock（当前无业务调用） |
+| Release | `backendApiUrl`，当前为空 | Huawei Account | Huawei Push | 不可用 |
 
-模拟器联调需要将设备端 8000 端口反向转发到宿主机后端。开发期 `network_config.json` 允许明文 HTTP；发布前必须改为 HTTPS 并移除全局明文放行。
+Release 的 `backendApiUrl` 必须配置为真实的非本机 HTTPS API 根地址。当前留空是明确的发布阻塞项：应用会显示“未配置 HTTPS 服务地址”，网络请求会报错，不会连接本机地址或切换到 Mock。填入地址后，用 `devecocli build --product default --build-mode release` 构建，并检查最终 APP。
 
-## 已知限制
+设备 ID 通过 ArkData Preferences 持久化，在同一次安装内复用。提醒当前没有真实实现，也没有业务调用；Release 明确关闭。`MePage` 根据运行时配置、推送令牌上传结果显示状态。
 
-- Chat 初始化时总是创建新 Thread，没有历史列表、选中会话持久化或前台恢复。
-- 当前只支持文本输入，没有 Source 附件、Picker、Share、STT、Push 或深链。
-- 确认/拒绝请求的 response 字段与后端 Graph 当前契约不一致，这是待修复缺陷，不应视为 HITL 已完整可用。
-- Base URL 与开发 Token 仍硬编码；只适合本地开发。
-- 客户端没有自动化测试目录，当前验证依赖 ArkTS 编译、HAP 打包和模拟器人工闭环。
+## 发布前仍需验证
 
-任何模型 Provider Key、数据库凭据、AGC/Push 服务端凭据和 Release 签名材料都不得进入客户端。
+1. 配置真实 HTTPS 后端地址，并在真机上验证连接与会话接口。服务端的 Huawei Account 集成必须使用真实模式，不能保持 stub。
+2. `entry/src/main/module.json5` 已填写先前确认的应用级 Account Kit `client_id`。仍需核对它与 AGC 应用凭据一致、发布证书身份有效、Push Kit 已开通，并用真机验证授权码交换、Push Token 获取和上传。当前工程没有 `agconnect-services.json`；应按所使用的 HarmonyOS SDK 官方接入要求核对是否需要该文件或其他应用配置。
+3. 全局 `network_config.json` 不再允许明文流量。Debug 若仍需通过 HTTP 联调，应使用单独的开发设备配置；Release 只接受 HTTPS。
+4. Release 混淆仍关闭。先完成账号、推送和关键业务的真机回归，再决定是否开启并补齐规则。
+5. `Chat` 的历史会话、附件、HITL 等仍有功能限制；这些事项与本次运行时配置分开跟踪。
+
+构建和签名成功只证明包可生成，不代表上述服务已通过真机验证或可提交 AGC。

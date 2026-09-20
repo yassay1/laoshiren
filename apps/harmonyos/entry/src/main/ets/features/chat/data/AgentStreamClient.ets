@@ -1,19 +1,19 @@
 import { http } from '@kit.NetworkKit';
 import { util } from '@kit.ArkTS';
-import { ApiClient } from '../../../common/network/ApiClient';
+import { BackendApiClient } from '../../../common/network/BackendApiClient';
 import { RunEventEnvelope, RunEventHandler } from '../domain/ChatModels';
 
 export class AgentStreamClient {
   private activeRequest?: http.HttpRequest;
   private buffer: string = '';
 
-  private readonly api: ApiClient;
+  private readonly api: BackendApiClient;
 
-  constructor(api: ApiClient) {
+  constructor(api: BackendApiClient) {
     this.api = api;
   }
 
-  async follow(path: string, onEvent: RunEventHandler): Promise<void> {
+  async follow(path: string, onEvent: RunEventHandler, afterSequence?: number): Promise<void> {
     this.close();
     const request = http.createHttp();
     this.activeRequest = request;
@@ -29,12 +29,16 @@ export class AgentStreamClient {
     });
 
     try {
+      const headers: Record<string, string> = {
+        'Authorization': await this.api.authorizationHeader(),
+        'Accept': 'text/event-stream'
+      };
+      if (afterSequence !== undefined) {
+        headers['Last-Event-ID'] = `${afterSequence}`;
+      }
       const statusCode = await request.requestInStream(this.api.streamUrl(path), {
         method: http.RequestMethod.GET,
-        header: {
-          'Authorization': this.api.authorizationHeader(),
-          'Accept': 'text/event-stream'
-        },
+        header: headers,
         connectTimeout: 10000,
         readTimeout: 120000,
         usingCache: false

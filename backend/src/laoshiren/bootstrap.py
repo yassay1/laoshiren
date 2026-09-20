@@ -16,12 +16,16 @@ from laoshiren.agent.tools import (
     register_source_tools,
 )
 from laoshiren.application.ai.ports import EmbeddingProvider
+from laoshiren.application.automations.occurrence_execution import (
+    AutomationOccurrenceApplicationService,
+)
 from laoshiren.application.automations.service import (
     AttentionApplicationService,
     AutomationApplicationService,
 )
 from laoshiren.application.context import AgentContextBuilder
 from laoshiren.application.files.attachments import load_message_attachment_context
+from laoshiren.application.identity.ports import HuaweiAccountClient
 from laoshiren.application.identity.service import IdentityApplicationService
 from laoshiren.application.memories.context import AgentMemoryApplicationService
 from laoshiren.application.memories.manager import MemoryManager
@@ -45,6 +49,8 @@ from laoshiren.infrastructure.ai.retrying import (
     RetryingExecutiveModelGateway,
 )
 from laoshiren.infrastructure.ai.zhipu import ZhipuExecutiveModelGateway
+from laoshiren.infrastructure.auth.huawei_account import HttpHuaweiAccountClient
+from laoshiren.infrastructure.auth.huawei_stub import StubHuaweiAccountClient
 from laoshiren.infrastructure.automation.run_trigger import RuntimeAutomationRunTrigger
 from laoshiren.infrastructure.coordination.checkpoint_inspector import (
     LangGraphCheckpointInspector,
@@ -162,9 +168,21 @@ def bootstrap() -> Container:
         interval_seconds=settings.source_poll_seconds,
         batch_size=settings.source_batch_size,
     )
+    huawei_account_client: HuaweiAccountClient
+    if settings.huawei_account_mode == "http":
+        huawei_account_client = HttpHuaweiAccountClient(
+            client_id=settings.huawei_account_client_id,
+            client_secret=settings.huawei_account_client_secret,
+            token_url=settings.huawei_account_token_url,
+            token_info_url=settings.huawei_account_token_info_url,
+            redirect_uri=settings.huawei_account_redirect_uri,
+            timeout_seconds=settings.huawei_account_timeout_seconds,
+        )
+    else:
+        huawei_account_client = StubHuaweiAccountClient(app_env=settings.app_env)
     identity = IdentityApplicationService(
         database.personal_state_unit_of_work,
-        app_env=settings.app_env,
+        huawei_account_client,
         session_ttl_hours=settings.session_ttl_hours,
     )
     memories = MemoryApplicationService(database.memory_unit_of_work)
@@ -202,7 +220,7 @@ def bootstrap() -> Container:
     checkpoints = PostgresCheckpointLifecycle(settings.database_url)
     automation_occurrence_worker = AutomationOccurrenceWorker(
         database.automation_unit_of_work,
-        run_trigger=run_trigger,
+        AutomationOccurrenceApplicationService(database.automation_unit_of_work, run_trigger),
     )
     push_delivery_worker = PushDeliveryWorker(
         database.automation_unit_of_work,

@@ -64,6 +64,8 @@ uv run python scripts/run_freeze_gates.py
 uv run python scripts/export_openapi.py
 uv run python scripts/export_tool_registry.py
 uv run python scripts/check_contract_schemas.py
+uv run alembic upgrade head
+uv run alembic check
 git diff --exit-code ../contracts/openapi.json ../contracts/tool-registry.json
 curl -s http://127.0.0.1:8000/api/v1/health/metrics
 ```

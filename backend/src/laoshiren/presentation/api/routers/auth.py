@@ -3,6 +3,10 @@ from typing import Annotated
 from fastapi import APIRouter, Header, HTTPException, status
 
 from laoshiren.application.identity.dto import DeviceDTO
+from laoshiren.application.identity.ports import (
+    HuaweiAccountUnavailable,
+    HuaweiAuthorizationCodeRejected,
+)
 from laoshiren.domain.personal_state.exceptions import EntityNotFound, InvalidStateTransition
 from laoshiren.presentation.api.dependencies import ContainerDependency, CurrentUserId
 from laoshiren.presentation.api.schemas.identity import (
@@ -20,12 +24,23 @@ async def huawei_login(
     payload: HuaweiLoginRequest,
     container: ContainerDependency,
 ) -> LoginResponse:
-    result = await container.identity.huawei_login(
-        id_token=payload.id_token,
-        device_id=payload.device_id,
-        timezone_name=payload.timezone,
-        platform=payload.platform,
-    )
+    try:
+        result = await container.identity.huawei_login(
+            authorization_code=payload.authorization_code,
+            device_id=payload.device_id,
+            timezone_name=payload.timezone,
+            platform=payload.platform,
+        )
+    except HuaweiAuthorizationCodeRejected as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Huawei authorization code was rejected.",
+        ) from exc
+    except HuaweiAccountUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Huawei Account is temporarily unavailable.",
+        ) from exc
     return LoginResponse(
         access_token=result.access_token,
         user_id=result.user_id,

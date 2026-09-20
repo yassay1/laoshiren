@@ -6,7 +6,7 @@ Executable subsets of the V2.2 Backend Freeze Gates (architecture §19).
 |--------|------|-------------------|
 | `gate_a` | User journey (live) | `evals/test_live_agent_scenarios.py`（`RUN_MODEL_EVALS=1`） |
 | `gate_b` | Safety & consistency | Version conflict, memory authority, UNKNOWN_OUTCOME |
-| `gate_c` | Resilience | Durable job lease recovery, Redis fail-open |
+| `gate_c` | Resilience | Durable job lease recovery, Redis fail-open; managed DB drift uses `alembic check` in CI |
 | `gate_d` | Agent quality | `tests/evals` E01–E15（`not live_model`） |
 
 ## Run locally

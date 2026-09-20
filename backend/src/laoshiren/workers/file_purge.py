@@ -43,7 +43,7 @@ class FilePurgeWorker:
                 limit=1,
             )
             if not jobs:
-                await unit_of_work.rollback()
+                await unit_of_work.commit()
                 return False
             job = jobs[0]
             file_id = UUID(str(job.payload["file_id"]))

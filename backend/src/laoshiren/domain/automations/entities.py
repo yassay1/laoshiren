@@ -58,7 +58,7 @@ class Automation:
     title: str
     message: str
     timezone_name: str
-    next_trigger_at: datetime
+    next_trigger_at: datetime | None
     idempotency_key: str
     id: UUID = field(default_factory=uuid4)
     thing_id: UUID | None = None
@@ -74,7 +74,12 @@ class Automation:
     updated_at: datetime = field(default_factory=utc_now)
 
     def __post_init__(self) -> None:
-        if self.next_trigger_at.tzinfo is None:
+        if self.next_trigger_at is None and (
+            not is_one_shot_type(self.automation_type.value)
+            or self.last_triggered_at is None
+        ):
+            raise ValueError("Only a materialized one-shot Automation may clear its trigger.")
+        if self.next_trigger_at is not None and self.next_trigger_at.tzinfo is None:
             raise ValueError("Automation trigger must include timezone information.")
         if self.automation_type is AutomationType.RECURRING:
             if self.recurrence_interval_seconds is None or self.recurrence_interval_seconds < 60:
@@ -106,12 +111,18 @@ class Automation:
     def mark_triggered(self, occurred_at: datetime) -> None:
         self.last_triggered_at = occurred_at
         if is_one_shot_type(self.automation_type.value):
-            self.status = AutomationStatus.COMPLETED
+            self.next_trigger_at = None
         elif self.automation_type is AutomationType.RECURRING:
             assert self.recurrence_interval_seconds is not None
             self.next_trigger_at = occurred_at + timedelta(seconds=self.recurrence_interval_seconds)
         self.updated_at = occurred_at
         self.version += 1
+
+    def complete_one_shot(self) -> None:
+        if is_one_shot_type(self.automation_type.value) and self.status is AutomationStatus.ACTIVE:
+            self.status = AutomationStatus.COMPLETED
+            self.updated_at = utc_now()
+            self.version += 1
 
     def bump_definition_revision(self) -> None:
         self.definition_revision += 1

@@ -27,7 +27,7 @@ async def test_identity_login_device_and_account_deletion_flow() -> None:
             login = await client.post(
                 "/api/v1/auth/huawei/login",
                 json={
-                    "id_token": f"dev:{subject}",
+                    "authorization_code": f"dev:{subject}",
                     "device_id": str(device_id),
                     "timezone": "Asia/Shanghai",
                 },

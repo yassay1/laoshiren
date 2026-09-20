@@ -30,7 +30,7 @@ async def test_account_deletion_job_recovers_after_expired_lease() -> None:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             login = await client.post(
                 "/api/v1/auth/huawei/login",
-                json={"id_token": f"dev:{subject}", "timezone": "UTC"},
+                json={"authorization_code": f"dev:{subject}", "timezone": "UTC"},
             )
             assert login.status_code == 200
             body = login.json()

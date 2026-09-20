@@ -14,6 +14,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -46,7 +47,7 @@ class FileORM(Base):
     asset_status: Mapped[FileAssetStatus] = mapped_column(
         Enum(FileAssetStatus, name="file_asset_status")
     )
-    version: Mapped[int] = mapped_column(Integer, default=1)
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"))
     idempotency_key: Mapped[str] = mapped_column(String(200))
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -69,7 +70,7 @@ class FileProcessingGenerationORM(Base):
     status: Mapped[GenerationStatus] = mapped_column(
         Enum(GenerationStatus, name="file_generation_status")
     )
-    is_active: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -92,7 +93,9 @@ class RetrievalSegmentORM(Base):
         Enum(RepresentationKind, name="representation_kind")
     )
     content: Mapped[str] = mapped_column(Text)
-    locator: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    locator: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb")
+    )
     embedding: Mapped[list[float] | None] = mapped_column(Vector(1536))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -110,7 +113,9 @@ class WebObservationORM(Base):
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     retrieval_method: Mapped[str] = mapped_column(String(100))
     bounded_excerpt: Mapped[str | None] = mapped_column(Text)
-    locator: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    locator: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb")
+    )
     content_hash: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

@@ -31,4 +31,4 @@ class MisfirePolicy(StrEnum):
 
 
 def is_one_shot_type(automation_type: str) -> bool:
-    return automation_type in {"ONE_SHOT", "ONCE"}
+    return automation_type in {"ONE_SHOT", "ONCE", "RELATIVE"}

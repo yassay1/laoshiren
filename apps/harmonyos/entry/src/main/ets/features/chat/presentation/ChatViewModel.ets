@@ -12,6 +12,7 @@ export class ChatViewModel {
   private threadId: string = '';
   private lastDraft: string = '';
   private lastRunKey: string = '';
+  private lastEventSequence: number = 0;
   private readonly repository: ChatRepository = new ChatRepository();
 
   async initialize(): Promise<void> {
@@ -102,7 +103,9 @@ export class ChatViewModel {
 
   private async follow(run: AgentRun): Promise<void> {
     let interrupted = false;
+    this.lastEventSequence = run.last_event_sequence ?? 0;
     await this.repository.followRun(run.id, (event: RunEventEnvelope) => {
+      this.lastEventSequence = Math.max(this.lastEventSequence, event.sequence);
       if (event.event === 'assistant.message') {
         this.statusText = '正在整理回复…';
       } else if (event.event === 'status.updated' || event.event === 'tool.started') {
@@ -113,7 +116,7 @@ export class ChatViewModel {
       } else if (event.event === 'run.failed') {
         this.errorText = '处理失败，可以重试上一条消息';
       }
-    }).catch((error: Error) => {
+    }, this.lastEventSequence > 0 ? this.lastEventSequence : undefined).catch((error: Error) => {
       if (!interrupted) throw error;
     });
     const latest = await this.repository.getRun(run.id);

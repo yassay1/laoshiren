@@ -41,6 +41,15 @@ def test_openapi_contract_includes_core_routes() -> None:
     paths = set(schema.get("paths", {}))
     missing = [path for path in REQUIRED_PATHS if path not in paths]
     assert not missing, f"OpenAPI contract missing routes: {missing}"
+    login_schema = schema["components"]["schemas"]["HuaweiLoginRequest"]
+    assert "authorization_code" in login_schema["required"]
+    assert "id_token" not in login_schema["properties"]
+    automation_response = schema["components"]["schemas"]["AutomationResponse"]
+    assert "next_trigger_at" in automation_response["required"]
+    trigger_variants = automation_response["properties"]["next_trigger_at"]["anyOf"]
+    assert {item["type"] for item in trigger_variants} == {"string", "null"}
+    create_request = schema["components"]["schemas"]["CreateAutomationRequest"]
+    assert create_request["properties"]["next_trigger_at"]["type"] == "string"
 
 
 def test_runtime_stream_contracts_separate_durable_and_ephemeral_types() -> None:

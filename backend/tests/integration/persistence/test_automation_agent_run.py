@@ -5,6 +5,9 @@ from uuid import UUID, uuid4
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from laoshiren.application.automations.occurrence_execution import (
+    AutomationOccurrenceApplicationService,
+)
 from laoshiren.domain.runtime.entities import RunStatus, RunTrigger
 from laoshiren.infrastructure.automation.run_trigger import RuntimeAutomationRunTrigger
 from laoshiren.main import create_app
@@ -54,7 +57,10 @@ async def test_automation_dispatch_triggers_agent_run() -> None:
 
     occurrence_worker = AutomationOccurrenceWorker(
         container.database.automation_unit_of_work,
-        run_trigger=RuntimeAutomationRunTrigger(container.runtime),
+        AutomationOccurrenceApplicationService(
+            container.database.automation_unit_of_work,
+            RuntimeAutomationRunTrigger(container.runtime),
+        ),
     )
     push_worker = PushDeliveryWorker(
         container.database.automation_unit_of_work,

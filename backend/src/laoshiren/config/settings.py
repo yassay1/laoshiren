@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -72,6 +73,16 @@ class Settings(BaseSettings):
     search_max_queries_per_run: int = Field(default=6, gt=0)
     parallel_read_max: int = Field(default=4, gt=0)
     session_ttl_hours: int = Field(default=24 * 30, gt=0)
+    huawei_account_mode: Literal["stub", "http"] = "stub"
+    huawei_account_client_id: str = ""
+    huawei_account_client_secret: str = Field(default="", repr=False)
+    huawei_account_token_url: str = "https://oauth-login.cloud.huawei.com/oauth2/v3/token"
+    huawei_account_token_info_url: str = (
+        "https://oauth-api.cloud.huawei.com/rest.php"
+        "?nsp_fmt=JSON&nsp_svc=huawei.oauth2.user.getTokenInfo"
+    )
+    huawei_account_redirect_uri: str = ""
+    huawei_account_timeout_seconds: float = Field(default=10.0, gt=0)
     rate_limit_enabled: bool = True
     rate_limit_requests_per_minute: int = Field(default=120, gt=0)
     object_storage_backend: str = "local"

@@ -1,9 +1,12 @@
 import asyncio
+import logging
 from contextlib import suppress
 
 from laoshiren.application.automations.service import AutomationApplicationService
 from laoshiren.workers.automation_occurrence import AutomationOccurrenceWorker
 from laoshiren.workers.push_delivery import PushDeliveryWorker
+
+logger = logging.getLogger(__name__)
 
 
 async def run_once(
@@ -51,13 +54,15 @@ class AutomationScheduler:
 
         async def loop() -> None:
             while True:
-                with suppress(Exception):
+                try:
                     await run_once(
                         self._service,
                         self._occurrence_worker,
                         self._push_worker,
                         limit=self._batch_size,
                     )
+                except Exception:
+                    logger.exception("automation_scheduler_iteration_failed")
                 await asyncio.sleep(self._interval_seconds)
 
         self._task = asyncio.create_task(loop(), name="automation-scheduler")

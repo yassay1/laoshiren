@@ -6,6 +6,13 @@ from laoshiren.domain.identity.value_objects import DevicePlatform, UserStatus
 
 
 @dataclass(frozen=True, slots=True)
+class HuaweiAccountIdentityDTO:
+    external_subject: str
+    union_id: str | None = None
+    open_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class LoginResultDTO:
     access_token: str
     user_id: UUID

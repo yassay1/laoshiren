@@ -4660,8 +4660,15 @@
             "title": "Timezone Name"
           },
           "next_trigger_at": {
-            "type": "string",
-            "format": "date-time",
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Next Trigger At"
           },
           "thing_id": {
@@ -5476,10 +5483,10 @@
       },
       "HuaweiLoginRequest": {
         "properties": {
-          "id_token": {
+          "authorization_code": {
             "type": "string",
             "minLength": 1,
-            "title": "Id Token"
+            "title": "Authorization Code"
           },
           "device_id": {
             "anyOf": [
@@ -5513,7 +5520,7 @@
         },
         "type": "object",
         "required": [
-          "id_token"
+          "authorization_code"
         ],
         "title": "HuaweiLoginRequest"
       },

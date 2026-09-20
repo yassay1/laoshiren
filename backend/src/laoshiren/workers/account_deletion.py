@@ -40,7 +40,7 @@ class AccountDeletionWorker:
                 limit=1,
             )
             if not jobs:
-                await unit_of_work.rollback()
+                await unit_of_work.commit()
                 return False
             job = jobs[0]
             await apply_account_deletion(unit_of_work, user_id=job.user_id)

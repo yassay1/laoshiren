@@ -17,7 +17,7 @@ class AutomationDTO:
     title: str
     message: str
     timezone_name: str
-    next_trigger_at: datetime
+    next_trigger_at: datetime | None
     thing_id: UUID | None
     task_id: UUID | None
     source_id: UUID | None

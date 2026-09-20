@@ -45,6 +45,8 @@ async def materialize_due_automation(
             return None
 
     scheduled_for = automation.next_trigger_at
+    if scheduled_for is None:
+        raise ValueError("An Automation without a scheduled trigger cannot be materialized.")
     if (
         automation.misfire_policy is MisfirePolicy.SKIP
         and occurred_at - scheduled_for > MISFIRE_HORIZON
@@ -61,6 +63,7 @@ async def materialize_due_automation(
         if not created:
             return None
         automation.mark_triggered(occurred_at)
+        automation.complete_one_shot()
         if not await uow.automations.update(automation, expected_version=expected_version):
             raise VersionConflict("Automation was claimed concurrently.")
         return occurrence

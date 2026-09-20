@@ -683,11 +683,45 @@ class SqlAlchemyDurableJobRepository:
                     DurableJobORM.status == DurableJobStatus.CLAIMED,
                     DurableJobORM.claimed_by == owner,
                     DurableJobORM.claim_epoch == claim_epoch,
+                    DurableJobORM.lease_until >= now,
                 )
                 .values(
                     status=status,
                     claimed_by=None,
                     lease_until=None,
+                    last_error_code=error_code,
+                    updated_at=now,
+                )
+            ),
+        )
+        return result.rowcount == 1
+
+    async def release_for_retry(
+        self,
+        *,
+        job_id: UUID,
+        owner: str,
+        claim_epoch: int,
+        available_at: datetime,
+        now: datetime,
+        error_code: str,
+    ) -> bool:
+        result = cast(
+            CursorResult[Any],
+            await self._session.execute(
+                update(DurableJobORM)
+                .where(
+                    DurableJobORM.id == job_id,
+                    DurableJobORM.status == DurableJobStatus.CLAIMED,
+                    DurableJobORM.claimed_by == owner,
+                    DurableJobORM.claim_epoch == claim_epoch,
+                    DurableJobORM.lease_until >= now,
+                )
+                .values(
+                    status=DurableJobStatus.READY,
+                    claimed_by=None,
+                    lease_until=None,
+                    available_at=available_at,
                     last_error_code=error_code,
                     updated_at=now,
                 )

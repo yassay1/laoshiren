@@ -155,6 +155,16 @@ class DurableJobRepository(Protocol):
         now: datetime,
         error_code: str | None = None,
     ) -> bool: ...
+    async def release_for_retry(
+        self,
+        *,
+        job_id: UUID,
+        owner: str,
+        claim_epoch: int,
+        available_at: datetime,
+        now: datetime,
+        error_code: str,
+    ) -> bool: ...
     async def renew(
         self,
         *,
