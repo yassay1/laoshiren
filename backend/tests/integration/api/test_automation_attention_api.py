@@ -200,6 +200,7 @@ async def test_automation_scheduler_outbox_and_attention_feedback() -> None:
                     "DELETE FROM timeline_events WHERE thing_id = :thing_id",
                     "DELETE FROM state_mutations WHERE thing_id = :thing_id",
                     "DELETE FROM thing_dates WHERE thing_id = :thing_id",
+                    "UPDATE threads SET active_thing_id = NULL WHERE active_thing_id = :thing_id",
                     "DELETE FROM things WHERE id = :thing_id",
                 ):
                     await connection.execute(
